@@ -2,8 +2,6 @@
 package kotlin
 
 import (
-	"fmt"
-
 	"github.com/user/auraphone-blue/wire"
 )
 
@@ -18,8 +16,6 @@ func (d *BluetoothDevice) SetWire(w *wire.Wire) {
 }
 
 func (d *BluetoothDevice) ConnectGatt(context interface{}, autoConnect bool, callback BluetoothGattCallback) *BluetoothGatt {
-	fmt.Printf("Connecting to GATT for device %s...\n", d.Address)
-
 	gatt := &BluetoothGatt{
 		callback:   callback,
 		wire:       d.wire,

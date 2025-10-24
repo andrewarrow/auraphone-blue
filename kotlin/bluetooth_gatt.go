@@ -41,8 +41,6 @@ func (g *BluetoothGatt) WriteCharacteristic(data []byte) error {
 		return err
 	}
 
-	fmt.Printf("Android device sent data to %s: %s\n", g.remoteUUID, string(data))
-
 	if g.callback != nil {
 		g.callback.OnCharacteristicWrite(g, 0) // GATT_SUCCESS = 0
 	}

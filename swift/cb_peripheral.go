@@ -41,8 +41,6 @@ func (p *CBPeripheral) WriteValue(data []byte) error {
 		return err
 	}
 
-	fmt.Printf("iOS device sent data to %s: %s\n", p.remoteUUID, string(data))
-
 	if p.Delegate != nil {
 		p.Delegate.DidWriteValueForCharacteristic(*p, nil)
 	}

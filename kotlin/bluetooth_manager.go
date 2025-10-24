@@ -1,8 +1,6 @@
 package kotlin
 
 import (
-	"fmt"
-
 	"github.com/user/auraphone-blue/wire"
 )
 
@@ -50,7 +48,6 @@ func NewBluetoothLeScanner(uuid string) *BluetoothLeScanner {
 
 func (s *BluetoothLeScanner) StartScan(callback ScanCallback) {
 	s.callback = callback
-	fmt.Println("Starting scan...")
 
 	s.stopChan = s.wire.StartDiscovery(func(deviceUUID string) {
 		device := &BluetoothDevice{

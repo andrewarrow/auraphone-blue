@@ -1,8 +1,6 @@
 package swift
 
 import (
-	"fmt"
-
 	"github.com/user/auraphone-blue/wire"
 )
 
@@ -31,8 +29,6 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string) *CBCent
 }
 
 func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map[string]interface{}) {
-	fmt.Println("Scanning for peripherals...")
-
 	c.stopChan = c.wire.StartDiscovery(func(deviceUUID string) {
 		c.Delegate.DidDiscoverPeripheral(*c, CBPeripheral{
 			Name: "Android Test Device",
@@ -49,8 +45,6 @@ func (c *CBCentralManager) StopScan() {
 }
 
 func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]interface{}) {
-	fmt.Printf("Connecting to peripheral %s...\n", peripheral.UUID)
-
 	// Set up the peripheral's wire connection
 	peripheral.wire = c.wire
 	peripheral.remoteUUID = peripheral.UUID
