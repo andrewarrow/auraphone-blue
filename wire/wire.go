@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,42 @@ type DeviceInfo struct {
 	UUID string
 	Name string
 	Rssi int
+}
+
+// GATTDescriptor represents a BLE descriptor
+type GATTDescriptor struct {
+	UUID string `json:"uuid"`
+	Type string `json:"type,omitempty"` // e.g., "CCCD" for Client Characteristic Configuration
+}
+
+// GATTCharacteristic represents a BLE characteristic
+type GATTCharacteristic struct {
+	UUID        string           `json:"uuid"`
+	Properties  []string         `json:"properties"`  // "read", "write", "notify", "indicate", etc.
+	Descriptors []GATTDescriptor `json:"descriptors,omitempty"`
+	Value       []byte           `json:"-"` // Current value (not serialized in gatt.json)
+}
+
+// GATTService represents a BLE service
+type GATTService struct {
+	UUID            string               `json:"uuid"`
+	Type            string               `json:"type"` // "primary" or "secondary"
+	Characteristics []GATTCharacteristic `json:"characteristics"`
+}
+
+// GATTTable represents a device's complete GATT database
+type GATTTable struct {
+	Services []GATTService `json:"services"`
+}
+
+// CharacteristicMessage represents a read/write/notify operation on a characteristic
+type CharacteristicMessage struct {
+	Operation      string `json:"op"`             // "write", "read", "notify", "indicate"
+	ServiceUUID    string `json:"service"`
+	CharUUID       string `json:"characteristic"`
+	Data           []byte `json:"data"`
+	Timestamp      int64  `json:"timestamp"`
+	SenderUUID     string `json:"sender,omitempty"`
 }
 
 // Wire manages the filesystem-based communication between fake devices
@@ -176,4 +213,113 @@ func (w *Wire) DeleteOutboxFile(filename string) error {
 	filePath := filepath.Join(outboxPath, filename)
 
 	return os.Remove(filePath)
+}
+
+// WriteGATTTable writes the GATT table to this device's gatt.json file
+func (w *Wire) WriteGATTTable(table *GATTTable) error {
+	devicePath := filepath.Join(w.basePath, w.localUUID)
+	gattPath := filepath.Join(devicePath, "gatt.json")
+
+	data, err := json.MarshalIndent(table, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal GATT table: %w", err)
+	}
+
+	return os.WriteFile(gattPath, data, 0644)
+}
+
+// ReadGATTTable reads the GATT table from a device's gatt.json file
+func (w *Wire) ReadGATTTable(deviceUUID string) (*GATTTable, error) {
+	devicePath := filepath.Join(w.basePath, deviceUUID)
+	gattPath := filepath.Join(devicePath, "gatt.json")
+
+	data, err := os.ReadFile(gattPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read GATT table: %w", err)
+	}
+
+	var table GATTTable
+	if err := json.Unmarshal(data, &table); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal GATT table: %w", err)
+	}
+
+	return &table, nil
+}
+
+// WriteCharacteristic sends a characteristic operation message to target device
+func (w *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
+	msg := CharacteristicMessage{
+		Operation:   "write",
+		ServiceUUID: serviceUUID,
+		CharUUID:    charUUID,
+		Data:        data,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  w.localUUID,
+	}
+
+	return w.sendCharacteristicMessage(targetUUID, &msg)
+}
+
+// ReadCharacteristic sends a read request to target device
+func (w *Wire) ReadCharacteristic(targetUUID, serviceUUID, charUUID string) error {
+	msg := CharacteristicMessage{
+		Operation:   "read",
+		ServiceUUID: serviceUUID,
+		CharUUID:    charUUID,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  w.localUUID,
+	}
+
+	return w.sendCharacteristicMessage(targetUUID, &msg)
+}
+
+// NotifyCharacteristic sends a notification to target device
+func (w *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
+	msg := CharacteristicMessage{
+		Operation:   "notify",
+		ServiceUUID: serviceUUID,
+		CharUUID:    charUUID,
+		Data:        data,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  w.localUUID,
+	}
+
+	return w.sendCharacteristicMessage(targetUUID, &msg)
+}
+
+// sendCharacteristicMessage writes a characteristic message to target's inbox as JSON
+func (w *Wire) sendCharacteristicMessage(targetUUID string, msg *CharacteristicMessage) error {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
+	return w.SendToDevice(targetUUID, data, filename)
+}
+
+// ReadCharacteristicMessages reads all characteristic messages from inbox
+func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
+	files, err := w.ListInbox()
+	if err != nil {
+		return nil, err
+	}
+
+	var messages []*CharacteristicMessage
+	for _, filename := range files {
+		data, err := w.ReadData(filename)
+		if err != nil {
+			continue
+		}
+
+		var msg CharacteristicMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			// Not a characteristic message, skip
+			continue
+		}
+
+		messages = append(messages, &msg)
+	}
+
+	return messages, nil
 }
