@@ -5,25 +5,44 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
+	"github.com/user/auraphone-blue/phototransfer"
+	"github.com/user/auraphone-blue/proto"
 	"github.com/user/auraphone-blue/swift"
 	"github.com/user/auraphone-blue/wire"
+	"google.golang.org/protobuf/encoding/protojson"
 )
+
+// photoReceiveState tracks photo reception progress
+type photoReceiveState struct {
+	isReceiving     bool
+	expectedSize    uint32
+	expectedCRC     uint32
+	expectedChunks  uint16
+	receivedChunks  map[uint16][]byte
+	senderDeviceID  string
+	buffer          []byte
+}
 
 // iPhone represents an iOS device with BLE capabilities
 type iPhone struct {
-	deviceUUID        string
-	deviceName        string
-	wire              *wire.Wire
-	manager           *swift.CBCentralManager
-	discoveryCallback phone.DeviceDiscoveryCallback
-	photoPath         string
-	photoHash         string
-	photoData         []byte
+	deviceUUID           string
+	deviceName           string
+	wire                 *wire.Wire
+	manager              *swift.CBCentralManager
+	discoveryCallback    phone.DeviceDiscoveryCallback
+	photoPath            string
+	photoHash            string
+	photoData            []byte
+	connectedPeripherals map[string]*swift.CBPeripheral // UUID -> peripheral
+	deviceIDToPhotoHash  map[string]string              // deviceID -> their TX photo hash
+	receivedPhotoHashes  map[string]string              // deviceID -> RX hash (photos we got from them)
+	photoReceiveState    *photoReceiveState
 }
 
 // NewIPhone creates a new iPhone instance
@@ -32,8 +51,14 @@ func NewIPhone() *iPhone {
 	deviceName := "iOS Device"
 
 	ip := &iPhone{
-		deviceUUID: deviceUUID,
-		deviceName: deviceName,
+		deviceUUID:           deviceUUID,
+		deviceName:           deviceName,
+		connectedPeripherals: make(map[string]*swift.CBPeripheral),
+		deviceIDToPhotoHash:  make(map[string]string),
+		receivedPhotoHashes:  make(map[string]string),
+		photoReceiveState: &photoReceiveState{
+			receivedChunks: make(map[uint16][]byte),
+		},
 	}
 
 	// Initialize wire
@@ -172,14 +197,32 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 			PhotoHash: txPhotoHash, // Remote device's TX hash (photo they have available)
 		})
 	}
+
+	// Auto-connect if not already connected
+	if _, exists := ip.connectedPeripherals[peripheral.UUID]; !exists {
+		logger.Debug(prefix, "🔌 Connecting to %s", peripheral.UUID[:8])
+		ip.manager.Connect(&peripheral, nil)
+	}
 }
 
 func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral) {
-	// Connection handling for future
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	logger.Info(prefix, "✅ Connected to %s", peripheral.UUID[:8])
+
+	// Store peripheral
+	ip.connectedPeripherals[peripheral.UUID] = &peripheral
+
+	// Set self as delegate
+	peripheral.Delegate = ip
+
+	// Discover services
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	peripheral.DiscoverServices([]string{auraServiceUUID})
 }
 
 func (ip *iPhone) DidFailToConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, err error) {
-	// Connection failure handling for future
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	logger.Error(prefix, "❌ Failed to connect to %s: %v", peripheral.UUID[:8], err)
 }
 
 // SetProfilePhoto sets the profile photo and broadcasts the hash
@@ -221,4 +264,282 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 // GetProfilePhotoHash returns the hash of the current profile photo
 func (ip *iPhone) GetProfilePhotoHash() string {
 	return ip.photoHash
+}
+
+// CBPeripheralDelegate methods
+
+func (ip *iPhone) DidDiscoverServices(peripheral *swift.CBPeripheral, services []*swift.CBService, err error) {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	if err != nil {
+		logger.Error(prefix, "❌ Service discovery failed: %v", err)
+		return
+	}
+
+	logger.Debug(prefix, "🔍 Discovered %d services", len(services))
+
+	// Discover characteristics for all services
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+
+	for _, service := range services {
+		peripheral.DiscoverCharacteristics([]string{auraTextCharUUID, auraPhotoCharUUID}, service)
+	}
+}
+
+func (ip *iPhone) DidDiscoverCharacteristics(peripheral *swift.CBPeripheral, service *swift.CBService, err error) {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	if err != nil {
+		logger.Error(prefix, "❌ Characteristic discovery failed: %v", err)
+		return
+	}
+
+	logger.Debug(prefix, "🔍 Discovered %d characteristics", len(service.Characteristics))
+
+	// Start listening for notifications
+	peripheral.StartListening()
+
+	// Send handshake
+	ip.sendHandshakeMessage(peripheral)
+}
+
+func (ip *iPhone) DidWriteValueForCharacteristic(peripheral *swift.CBPeripheral, characteristic *swift.CBCharacteristic, err error) {
+	if err != nil {
+		prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+		logger.Error(prefix, "❌ Write failed for characteristic %s: %v", characteristic.UUID[:8], err)
+	}
+}
+
+func (ip *iPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral, characteristic *swift.CBCharacteristic, err error) {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	if err != nil {
+		logger.Error(prefix, "❌ Read failed: %v", err)
+		return
+	}
+
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+
+	// Handle based on characteristic type
+	if characteristic.UUID == auraTextCharUUID {
+		ip.handleHandshakeMessage(peripheral, characteristic.Value)
+	} else if characteristic.UUID == auraPhotoCharUUID {
+		ip.handlePhotoMessage(peripheral, characteristic.Value)
+	}
+}
+
+// sendHandshakeMessage sends a handshake to a connected peripheral
+func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+
+	// Get the text characteristic
+	textChar := peripheral.GetCharacteristic(auraServiceUUID, auraTextCharUUID)
+	if textChar == nil {
+		return fmt.Errorf("text characteristic not found")
+	}
+
+	msg := &proto.HandshakeMessage{
+		DeviceId:        ip.deviceUUID,
+		FirstName:       "iOS",
+		ProtocolVersion: 1,
+		TxPhotoHash:     ip.photoHash,
+		RxPhotoHash:     ip.receivedPhotoHashes[peripheral.UUID],
+	}
+
+	data, err := protojson.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal handshake: %w", err)
+	}
+
+	logger.DebugJSON(prefix, "📤 TX Handshake", msg)
+
+	return peripheral.WriteValue(data, textChar)
+}
+
+// handleHandshakeMessage processes incoming handshake messages
+func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []byte) {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+
+	var handshake proto.HandshakeMessage
+	if err := protojson.Unmarshal(data, &handshake); err != nil {
+		logger.Error(prefix, "❌ Failed to parse handshake: %v", err)
+		return
+	}
+
+	logger.DebugJSON(prefix, "📥 RX Handshake", &handshake)
+
+	// Store their TX photo hash
+	if handshake.TxPhotoHash != "" {
+		ip.deviceIDToPhotoHash[peripheral.UUID] = handshake.TxPhotoHash
+	}
+
+	// Check if we need to send our photo
+	if handshake.RxPhotoHash != ip.photoHash {
+		logger.Debug(prefix, "📸 Remote doesn't have our photo, sending...")
+		go ip.sendPhoto(peripheral, handshake.RxPhotoHash)
+	} else {
+		logger.Debug(prefix, "⏭️  Remote already has our photo")
+	}
+}
+
+// sendPhoto sends our profile photo to a connected device
+func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash string) error {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+
+	// Check if they already have our photo
+	if remoteRxPhotoHash == ip.photoHash {
+		logger.Debug(prefix, "⏭️  Remote already has our photo, skipping")
+		return nil
+	}
+
+	// Load our cached photo
+	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.deviceUUID)
+	photoData, err := os.ReadFile(cachePath)
+	if err != nil {
+		return fmt.Errorf("failed to load photo: %w", err)
+	}
+
+	// Calculate total CRC
+	totalCRC := phototransfer.CalculateCRC32(photoData)
+
+	// Split into chunks
+	chunks := phototransfer.SplitIntoChunks(photoData, phototransfer.DefaultChunkSize)
+
+	logger.Info(prefix, "📸 Sending photo to %s (%d bytes, %d chunks, CRC: %08X)",
+		peripheral.UUID[:8], len(photoData), len(chunks), totalCRC)
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+
+	photoChar := peripheral.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+	if photoChar == nil {
+		return fmt.Errorf("photo characteristic not found")
+	}
+
+	// Send metadata packet
+	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
+	if err := peripheral.WriteValue(metadata, photoChar); err != nil {
+		return fmt.Errorf("failed to send metadata: %w", err)
+	}
+
+	// Send chunks with delays
+	for i, chunk := range chunks {
+		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
+		if err := peripheral.WriteValue(chunkPacket, photoChar); err != nil {
+			return fmt.Errorf("failed to send chunk %d: %w", i, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+
+		if i == 0 || i == len(chunks)-1 {
+			logger.Debug(prefix, "📤 Sent chunk %d/%d", i+1, len(chunks))
+		}
+	}
+
+	logger.Info(prefix, "✅ Photo send complete to %s", peripheral.UUID[:8])
+	return nil
+}
+
+// handlePhotoMessage processes incoming photo data
+func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte) {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+
+	// Try to decode metadata
+	if len(data) >= phototransfer.MetadataSize {
+		meta, remaining, err := phototransfer.DecodeMetadata(data)
+		if err == nil {
+			// Metadata packet received
+			logger.Info(prefix, "📸 Receiving photo from %s (size: %d, CRC: %08X, chunks: %d)",
+				peripheral.UUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
+
+			ip.photoReceiveState.isReceiving = true
+			ip.photoReceiveState.expectedSize = meta.TotalSize
+			ip.photoReceiveState.expectedCRC = meta.TotalCRC
+			ip.photoReceiveState.expectedChunks = meta.TotalChunks
+			ip.photoReceiveState.receivedChunks = make(map[uint16][]byte)
+			ip.photoReceiveState.senderDeviceID = peripheral.UUID
+			ip.photoReceiveState.buffer = remaining
+
+			if len(remaining) > 0 {
+				ip.processPhotoChunks()
+			}
+			return
+		}
+	}
+
+	// Regular chunk data
+	if ip.photoReceiveState.isReceiving {
+		ip.photoReceiveState.buffer = append(ip.photoReceiveState.buffer, data...)
+		ip.processPhotoChunks()
+	}
+}
+
+// processPhotoChunks processes buffered photo chunks
+func (ip *iPhone) processPhotoChunks() {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+
+	for {
+		if len(ip.photoReceiveState.buffer) < phototransfer.ChunkHeaderSize {
+			break
+		}
+
+		chunk, consumed, err := phototransfer.DecodeChunk(ip.photoReceiveState.buffer)
+		if err != nil {
+			break
+		}
+
+		ip.photoReceiveState.receivedChunks[chunk.Index] = chunk.Data
+		ip.photoReceiveState.buffer = ip.photoReceiveState.buffer[consumed:]
+
+		if chunk.Index == 0 || chunk.Index == ip.photoReceiveState.expectedChunks-1 {
+			logger.Debug(prefix, "📥 Received chunk %d/%d",
+				len(ip.photoReceiveState.receivedChunks), ip.photoReceiveState.expectedChunks)
+		}
+
+		// Check if complete
+		if uint16(len(ip.photoReceiveState.receivedChunks)) == ip.photoReceiveState.expectedChunks {
+			ip.reassembleAndSavePhoto()
+			ip.photoReceiveState.isReceiving = false
+			break
+		}
+	}
+}
+
+// reassembleAndSavePhoto reassembles chunks and saves the photo
+func (ip *iPhone) reassembleAndSavePhoto() error {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+
+	// Reassemble in order
+	var photoData []byte
+	for i := uint16(0); i < ip.photoReceiveState.expectedChunks; i++ {
+		photoData = append(photoData, ip.photoReceiveState.receivedChunks[i]...)
+	}
+
+	// Verify CRC
+	calculatedCRC := phototransfer.CalculateCRC32(photoData)
+	if calculatedCRC != ip.photoReceiveState.expectedCRC {
+		logger.Error(prefix, "❌ Photo CRC mismatch: expected %08X, got %08X",
+			ip.photoReceiveState.expectedCRC, calculatedCRC)
+		return fmt.Errorf("CRC mismatch")
+	}
+
+	// Calculate hash
+	hash := sha256.Sum256(photoData)
+	hashStr := hex.EncodeToString(hash[:])
+
+	// Save with hash as filename
+	cachePath := fmt.Sprintf("data/%s/cache/photos/%s.jpg", ip.deviceUUID, hashStr)
+	os.MkdirAll(filepath.Dir(cachePath), 0755)
+	if err := os.WriteFile(cachePath, photoData, 0644); err != nil {
+		return err
+	}
+
+	logger.Info(prefix, "✅ Photo saved from %s (hash: %s, size: %d bytes)",
+		ip.photoReceiveState.senderDeviceID[:8], hashStr[:8], len(photoData))
+
+	// Update received photo hash mapping
+	ip.receivedPhotoHashes[ip.photoReceiveState.senderDeviceID] = hashStr
+
+	return nil
 }

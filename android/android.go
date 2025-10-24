@@ -5,14 +5,29 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/user/auraphone-blue/kotlin"
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
+	"github.com/user/auraphone-blue/phototransfer"
+	"github.com/user/auraphone-blue/proto"
 	"github.com/user/auraphone-blue/wire"
+	"google.golang.org/protobuf/encoding/protojson"
 )
+
+// photoReceiveState tracks photo reception progress
+type photoReceiveState struct {
+	isReceiving     bool
+	expectedSize    uint32
+	expectedCRC     uint32
+	expectedChunks  uint16
+	receivedChunks  map[uint16][]byte
+	senderDeviceID  string
+	buffer          []byte
+}
 
 // Android represents an Android device with BLE capabilities
 type Android struct {
@@ -24,6 +39,10 @@ type Android struct {
 	photoPath         string
 	photoHash         string
 	photoData         []byte
+	connectedGatts    map[string]*kotlin.BluetoothGatt // UUID -> GATT connection
+	deviceIDToPhotoHash  map[string]string              // deviceID -> their TX photo hash
+	receivedPhotoHashes  map[string]string              // deviceID -> RX hash (photos we got from them)
+	photoReceiveState    *photoReceiveState
 }
 
 // NewAndroid creates a new Android instance
@@ -32,8 +51,14 @@ func NewAndroid() *Android {
 	deviceName := "Android Device"
 
 	a := &Android{
-		deviceUUID: deviceUUID,
-		deviceName: deviceName,
+		deviceUUID:           deviceUUID,
+		deviceName:           deviceName,
+		connectedGatts:       make(map[string]*kotlin.BluetoothGatt),
+		deviceIDToPhotoHash:  make(map[string]string),
+		receivedPhotoHashes:  make(map[string]string),
+		photoReceiveState: &photoReceiveState{
+			receivedChunks: make(map[uint16][]byte),
+		},
 	}
 
 	// Initialize wire
@@ -171,6 +196,13 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 			PhotoHash: txPhotoHash, // Remote device's TX hash (photo they have available)
 		})
 	}
+
+	// Auto-connect if not already connected
+	if _, exists := a.connectedGatts[result.Device.Address]; !exists {
+		logger.Debug(prefix, "🔌 Connecting to %s", result.Device.Address[:8])
+		gatt := result.Device.ConnectGatt(nil, false, a)
+		a.connectedGatts[result.Device.Address] = gatt
+	}
 }
 
 // SetProfilePhoto sets the profile photo and broadcasts the hash
@@ -212,4 +244,283 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 // GetProfilePhotoHash returns the hash of the current profile photo
 func (a *Android) GetProfilePhotoHash() string {
 	return a.photoHash
+}
+
+// BluetoothGattCallback methods
+
+func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int, newState int) {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+
+	if newState == 2 { // STATE_CONNECTED
+		logger.Info(prefix, "✅ Connected to device")
+		// Discover services
+		gatt.DiscoverServices()
+	} else if newState == 0 { // STATE_DISCONNECTED
+		logger.Info(prefix, "❌ Disconnected from device")
+	}
+}
+
+func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+
+	if status != 0 { // GATT_SUCCESS = 0
+		logger.Error(prefix, "❌ Service discovery failed")
+		return
+	}
+
+	logger.Debug(prefix, "🔍 Discovered %d services", len(gatt.GetServices()))
+
+	// Start listening for notifications
+	gatt.StartListening()
+
+	// Send handshake
+	a.sendHandshakeMessage(gatt)
+}
+
+func (a *Android) OnCharacteristicWrite(gatt *kotlin.BluetoothGatt, characteristic *kotlin.BluetoothGattCharacteristic, status int) {
+	if status != 0 { // GATT_SUCCESS = 0
+		prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+		logger.Error(prefix, "❌ Write failed for characteristic %s", characteristic.UUID[:8])
+	}
+}
+
+func (a *Android) OnCharacteristicRead(gatt *kotlin.BluetoothGatt, characteristic *kotlin.BluetoothGattCharacteristic, status int) {
+	// Not used in this implementation
+}
+
+func (a *Android) OnCharacteristicChanged(gatt *kotlin.BluetoothGatt, characteristic *kotlin.BluetoothGattCharacteristic) {
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+
+	// Handle based on characteristic type
+	if characteristic.UUID == auraTextCharUUID {
+		a.handleHandshakeMessage(gatt, characteristic.Value)
+	} else if characteristic.UUID == auraPhotoCharUUID {
+		a.handlePhotoMessage(gatt, characteristic.Value)
+	}
+}
+
+// sendHandshakeMessage sends a handshake to a connected device
+func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+
+	// Get the text characteristic
+	textChar := gatt.GetCharacteristic(auraServiceUUID, auraTextCharUUID)
+	if textChar == nil {
+		return fmt.Errorf("text characteristic not found")
+	}
+
+	msg := &proto.HandshakeMessage{
+		DeviceId:        a.deviceUUID,
+		FirstName:       "Android",
+		ProtocolVersion: 1,
+		TxPhotoHash:     a.photoHash,
+		RxPhotoHash:     a.receivedPhotoHashes[gatt.GetRemoteUUID()],
+	}
+
+	data, err := protojson.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal handshake: %w", err)
+	}
+
+	logger.DebugJSON(prefix, "📤 TX Handshake", msg)
+
+	textChar.Value = data
+	gatt.WriteCharacteristic(textChar)
+	return nil
+}
+
+// handleHandshakeMessage processes incoming handshake messages
+func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte) {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+
+	var handshake proto.HandshakeMessage
+	if err := protojson.Unmarshal(data, &handshake); err != nil {
+		logger.Error(prefix, "❌ Failed to parse handshake: %v", err)
+		return
+	}
+
+	logger.DebugJSON(prefix, "📥 RX Handshake", &handshake)
+
+	remoteUUID := gatt.GetRemoteUUID()
+
+	// Store their TX photo hash
+	if handshake.TxPhotoHash != "" {
+		a.deviceIDToPhotoHash[remoteUUID] = handshake.TxPhotoHash
+	}
+
+	// Check if we need to send our photo
+	if handshake.RxPhotoHash != a.photoHash {
+		logger.Debug(prefix, "📸 Remote doesn't have our photo, sending...")
+		go a.sendPhoto(gatt, handshake.RxPhotoHash)
+	} else {
+		logger.Debug(prefix, "⏭️  Remote already has our photo")
+	}
+}
+
+// sendPhoto sends our profile photo to a connected device
+func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string) error {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	remoteUUID := gatt.GetRemoteUUID()
+
+	// Check if they already have our photo
+	if remoteRxPhotoHash == a.photoHash {
+		logger.Debug(prefix, "⏭️  Remote already has our photo, skipping")
+		return nil
+	}
+
+	// Load our cached photo
+	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.deviceUUID)
+	photoData, err := os.ReadFile(cachePath)
+	if err != nil {
+		return fmt.Errorf("failed to load photo: %w", err)
+	}
+
+	// Calculate total CRC
+	totalCRC := phototransfer.CalculateCRC32(photoData)
+
+	// Split into chunks
+	chunks := phototransfer.SplitIntoChunks(photoData, phototransfer.DefaultChunkSize)
+
+	logger.Info(prefix, "📸 Sending photo to %s (%d bytes, %d chunks, CRC: %08X)",
+		remoteUUID[:8], len(photoData), len(chunks), totalCRC)
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+
+	photoChar := gatt.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+	if photoChar == nil {
+		return fmt.Errorf("photo characteristic not found")
+	}
+
+	// Send metadata packet
+	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
+	photoChar.Value = metadata
+	if !gatt.WriteCharacteristic(photoChar) {
+		return fmt.Errorf("failed to send metadata")
+	}
+
+	// Send chunks with delays
+	for i, chunk := range chunks {
+		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
+		photoChar.Value = chunkPacket
+		if !gatt.WriteCharacteristic(photoChar) {
+			return fmt.Errorf("failed to send chunk %d", i)
+		}
+		time.Sleep(10 * time.Millisecond)
+
+		if i == 0 || i == len(chunks)-1 {
+			logger.Debug(prefix, "📤 Sent chunk %d/%d", i+1, len(chunks))
+		}
+	}
+
+	logger.Info(prefix, "✅ Photo send complete to %s", remoteUUID[:8])
+	return nil
+}
+
+// handlePhotoMessage processes incoming photo data
+func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	remoteUUID := gatt.GetRemoteUUID()
+
+	// Try to decode metadata
+	if len(data) >= phototransfer.MetadataSize {
+		meta, remaining, err := phototransfer.DecodeMetadata(data)
+		if err == nil {
+			// Metadata packet received
+			logger.Info(prefix, "📸 Receiving photo from %s (size: %d, CRC: %08X, chunks: %d)",
+				remoteUUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
+
+			a.photoReceiveState.isReceiving = true
+			a.photoReceiveState.expectedSize = meta.TotalSize
+			a.photoReceiveState.expectedCRC = meta.TotalCRC
+			a.photoReceiveState.expectedChunks = meta.TotalChunks
+			a.photoReceiveState.receivedChunks = make(map[uint16][]byte)
+			a.photoReceiveState.senderDeviceID = remoteUUID
+			a.photoReceiveState.buffer = remaining
+
+			if len(remaining) > 0 {
+				a.processPhotoChunks()
+			}
+			return
+		}
+	}
+
+	// Regular chunk data
+	if a.photoReceiveState.isReceiving {
+		a.photoReceiveState.buffer = append(a.photoReceiveState.buffer, data...)
+		a.processPhotoChunks()
+	}
+}
+
+// processPhotoChunks processes buffered photo chunks
+func (a *Android) processPhotoChunks() {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+
+	for {
+		if len(a.photoReceiveState.buffer) < phototransfer.ChunkHeaderSize {
+			break
+		}
+
+		chunk, consumed, err := phototransfer.DecodeChunk(a.photoReceiveState.buffer)
+		if err != nil {
+			break
+		}
+
+		a.photoReceiveState.receivedChunks[chunk.Index] = chunk.Data
+		a.photoReceiveState.buffer = a.photoReceiveState.buffer[consumed:]
+
+		if chunk.Index == 0 || chunk.Index == a.photoReceiveState.expectedChunks-1 {
+			logger.Debug(prefix, "📥 Received chunk %d/%d",
+				len(a.photoReceiveState.receivedChunks), a.photoReceiveState.expectedChunks)
+		}
+
+		// Check if complete
+		if uint16(len(a.photoReceiveState.receivedChunks)) == a.photoReceiveState.expectedChunks {
+			a.reassembleAndSavePhoto()
+			a.photoReceiveState.isReceiving = false
+			break
+		}
+	}
+}
+
+// reassembleAndSavePhoto reassembles chunks and saves the photo
+func (a *Android) reassembleAndSavePhoto() error {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+
+	// Reassemble in order
+	var photoData []byte
+	for i := uint16(0); i < a.photoReceiveState.expectedChunks; i++ {
+		photoData = append(photoData, a.photoReceiveState.receivedChunks[i]...)
+	}
+
+	// Verify CRC
+	calculatedCRC := phototransfer.CalculateCRC32(photoData)
+	if calculatedCRC != a.photoReceiveState.expectedCRC {
+		logger.Error(prefix, "❌ Photo CRC mismatch: expected %08X, got %08X",
+			a.photoReceiveState.expectedCRC, calculatedCRC)
+		return fmt.Errorf("CRC mismatch")
+	}
+
+	// Calculate hash
+	hash := sha256.Sum256(photoData)
+	hashStr := hex.EncodeToString(hash[:])
+
+	// Save with hash as filename
+	cachePath := fmt.Sprintf("data/%s/cache/photos/%s.jpg", a.deviceUUID, hashStr)
+	os.MkdirAll(filepath.Dir(cachePath), 0755)
+	if err := os.WriteFile(cachePath, photoData, 0644); err != nil {
+		return err
+	}
+
+	logger.Info(prefix, "✅ Photo saved from %s (hash: %s, size: %d bytes)",
+		a.photoReceiveState.senderDeviceID[:8], hashStr[:8], len(photoData))
+
+	// Update received photo hash mapping
+	a.receivedPhotoHashes[a.photoReceiveState.senderDeviceID] = hashStr
+
+	return nil
 }

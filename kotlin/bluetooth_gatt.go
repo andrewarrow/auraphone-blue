@@ -250,3 +250,7 @@ func (g *BluetoothGatt) StopListening() {
 		g.stopChan = nil
 	}
 }
+
+func (g *BluetoothGatt) GetRemoteUUID() string {
+	return g.remoteUUID
+}
