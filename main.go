@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/user/auraphone-blue/kotlin"
@@ -19,7 +20,7 @@ func NewFakeIOSDevice() *FakeIOSDevice {
 	d := &FakeIOSDevice{
 		uuid: uuid.New().String(),
 	}
-	d.manager = swift.NewCBCentralManager(d)
+	d.manager = swift.NewCBCentralManager(d, d.uuid)
 	return d
 }
 
@@ -40,7 +41,7 @@ func NewFakeAndroidDevice() *FakeAndroidDevice {
 	d := &FakeAndroidDevice{
 		uuid: uuid.New().String(),
 	}
-	d.manager = kotlin.NewBluetoothManager()
+	d.manager = kotlin.NewBluetoothManager(d.uuid)
 	return d
 }
 
@@ -56,11 +57,9 @@ func main() {
 	createDeviceDirs(androidDevice.uuid)
 
 	iosDevice.manager.ScanForPeripherals(nil, nil)
-	androidDevice.manager.GetBluetoothLeScanner().StartScan(androidDevice)
+	androidDevice.manager.Adapter.GetBluetoothLeScanner().StartScan(androidDevice)
 
-	// Simulate discovery
-	iosDevice.DidDiscoverPeripheral(*iosDevice.manager, swift.CBPeripheral{Name: "Android Test Device", UUID: androidDevice.uuid}, nil, -50)
-	androidDevice.OnScanResult(0, &kotlin.ScanResult{Device: &kotlin.BluetoothDevice{Name: "iOS Test Device", Address: iosDevice.uuid}, Rssi: -55})
+	time.Sleep(5 * time.Second)
 }
 
 func createDeviceDirs(uuid string) {
