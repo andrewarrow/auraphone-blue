@@ -66,7 +66,8 @@ func (s *BluetoothLeScanner) StartScan(callback ScanCallback) {
 			ManufacturerData: make(map[int][]byte),
 			TxPowerLevel:     advData.TxPowerLevel,
 			AdvertiseFlags:   0x06, // General discoverable mode, BR/EDR not supported
-			PhotoHash:        advData.PhotoHash,
+			TxPhotoHash:      advData.TxPhotoHash,
+			RxPhotoHash:      advData.RxPhotoHash,
 		}
 
 		// Parse manufacturer data if present (Android format uses company ID)
@@ -119,5 +120,6 @@ type ScanRecord struct {
 	ManufacturerData map[int][]byte // Company ID -> data
 	TxPowerLevel     *int
 	AdvertiseFlags   int
-	PhotoHash        string // Profile photo hash
+	TxPhotoHash      string // Hash of remote device's photo (TX from their perspective)
+	RxPhotoHash      string // Hash of photo they received from us
 }

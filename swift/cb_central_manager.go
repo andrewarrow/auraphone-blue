@@ -58,8 +58,11 @@ func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map
 			advertisementData["kCBAdvDataTxPowerLevel"] = *advData.TxPowerLevel
 		}
 
-		if advData.PhotoHash != "" {
-			advertisementData["kCBAdvDataPhotoHash"] = advData.PhotoHash
+		if advData.TxPhotoHash != "" {
+			advertisementData["kCBAdvDataTxPhotoHash"] = advData.TxPhotoHash
+		}
+		if advData.RxPhotoHash != "" {
+			advertisementData["kCBAdvDataRxPhotoHash"] = advData.RxPhotoHash
 		}
 
 		advertisementData["kCBAdvDataIsConnectable"] = advData.IsConnectable

@@ -90,7 +90,8 @@ func (ip *iPhone) setupBLE() {
 		ServiceUUIDs:  []string{auraServiceUUID},
 		TxPowerLevel:  &txPowerLevel,
 		IsConnectable: true,
-		PhotoHash:     ip.photoHash,
+		TxPhotoHash:   ip.photoHash, // Hash of OUR photo we can send
+		RxPhotoHash:   "",            // TODO: Set to hash of photos we've received from other devices
 	}
 
 	if err := ip.wire.WriteAdvertisingData(advertisingData); err != nil {
@@ -148,18 +149,18 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 		name = advName
 	}
 
-	photoHash := ""
-	if hash, ok := advertisementData["kCBAdvDataPhotoHash"].(string); ok {
-		photoHash = hash
+	txPhotoHash := ""
+	if hash, ok := advertisementData["kCBAdvDataTxPhotoHash"].(string); ok {
+		txPhotoHash = hash
 	}
 
 	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
 	logger.Debug(prefix, "📱 DISCOVERED device %s (%s)", peripheral.UUID[:8], name)
 	logger.Debug(prefix, "   └─ RSSI: %.0f dBm", rssi)
-	if photoHash != "" {
-		logger.Debug(prefix, "   └─ Photo Hash: %s", photoHash[:8])
+	if txPhotoHash != "" {
+		logger.Debug(prefix, "   └─ TX Photo Hash: %s", txPhotoHash[:8])
 	} else {
-		logger.Debug(prefix, "   └─ Photo Hash: (none)")
+		logger.Debug(prefix, "   └─ TX Photo Hash: (none)")
 	}
 
 	if ip.discoveryCallback != nil {
@@ -168,7 +169,7 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 			Name:      name,
 			RSSI:      rssi,
 			Platform:  "unknown",
-			PhotoHash: photoHash,
+			PhotoHash: txPhotoHash, // Remote device's TX hash (photo they have available)
 		})
 	}
 }
@@ -193,6 +194,16 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	hash := sha256.Sum256(data)
 	photoHash := hex.EncodeToString(hash[:])
 
+	// Cache photo to disk
+	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.deviceUUID)
+	cacheDir := fmt.Sprintf("data/%s/cache", ip.deviceUUID)
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
+	}
+	if err := os.WriteFile(cachePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to cache photo: %w", err)
+	}
+
 	// Update fields
 	ip.photoPath = photoPath
 	ip.photoHash = photoHash
@@ -202,7 +213,7 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	ip.setupBLE()
 
 	logger.Info(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "📸 Updated profile photo (hash: %s)", photoHash[:8])
-	logger.Debug(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "   └─ Broadcasting new hash in advertising data")
+	logger.Debug(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "   └─ Cached to disk and broadcasting TX hash in advertising data")
 
 	return nil
 }

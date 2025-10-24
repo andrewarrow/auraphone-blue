@@ -386,35 +386,37 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	pw.sortAndRefreshDevices()
 }
 
-// loadDevicePhoto tries to find a local photo matching the hash
+// loadDevicePhoto loads a cached photo for a device from disk
 func (pw *PhoneWindow) loadDevicePhoto(deviceID, photoHash string) {
-	// Check if we already have this image cached
+	// Check if we already have this image cached in memory
 	if _, exists := pw.deviceImages[deviceID]; exists {
 		return
 	}
 
-	// Try to find matching photo in testdata
-	for i := 1; i <= 12; i++ {
-		photoPath := fmt.Sprintf("testdata/face%d.jpg", i)
-		data, err := os.ReadFile(photoPath)
-		if err != nil {
-			continue
-		}
+	// Try to load from disk cache
+	cachePath := fmt.Sprintf("data/%s/cache/photos/%s.jpg", pw.phone.GetDeviceUUID(), deviceID)
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		// Photo not in cache yet - it will be received via BLE photo transfer
+		return
+	}
 
-		// Calculate hash
-		hash := sha256.Sum256(data)
-		hashStr := hex.EncodeToString(hash[:])
+	// Verify hash matches
+	hash := sha256.Sum256(data)
+	hashStr := hex.EncodeToString(hash[:])
 
-		if hashStr == photoHash {
-			// Found matching photo!
-			img, _, err := image.Decode(bytes.NewReader(data))
-			if err == nil {
-				pw.deviceImages[deviceID] = img
-				prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
-				logger.Debug(prefix, "📷 Loaded profile photo for device %s (face%d.jpg)", deviceID[:8], i)
-				return
-			}
-		}
+	if hashStr != photoHash {
+		// Cached photo is outdated, delete it
+		os.Remove(cachePath)
+		return
+	}
+
+	// Load image into memory
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err == nil {
+		pw.deviceImages[deviceID] = img
+		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+		logger.Debug(prefix, "📷 Loaded cached photo for device %s from disk", deviceID[:8])
 	}
 }
 

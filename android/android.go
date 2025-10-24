@@ -90,7 +90,8 @@ func (a *Android) setupBLE() {
 		ServiceUUIDs:  []string{auraServiceUUID},
 		TxPowerLevel:  &txPowerLevel,
 		IsConnectable: true,
-		PhotoHash:     a.photoHash,
+		TxPhotoHash:   a.photoHash, // Hash of OUR photo we can send
+		RxPhotoHash:   "",            // TODO: Set to hash of photos we've received from other devices
 	}
 
 	if err := a.wire.WriteAdvertisingData(advertisingData); err != nil {
@@ -145,9 +146,9 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 		name = result.ScanRecord.DeviceName
 	}
 
-	photoHash := ""
-	if result.ScanRecord != nil && result.ScanRecord.PhotoHash != "" {
-		photoHash = result.ScanRecord.PhotoHash
+	txPhotoHash := ""
+	if result.ScanRecord != nil && result.ScanRecord.TxPhotoHash != "" {
+		txPhotoHash = result.ScanRecord.TxPhotoHash
 	}
 
 	rssi := float64(result.Rssi)
@@ -155,10 +156,10 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
 	logger.Debug(prefix, "📱 DISCOVERED device %s (%s)", result.Device.Address[:8], name)
 	logger.Debug(prefix, "   └─ RSSI: %.0f dBm", rssi)
-	if photoHash != "" {
-		logger.Debug(prefix, "   └─ Photo Hash: %s", photoHash[:8])
+	if txPhotoHash != "" {
+		logger.Debug(prefix, "   └─ TX Photo Hash: %s", txPhotoHash[:8])
 	} else {
-		logger.Debug(prefix, "   └─ Photo Hash: (none)")
+		logger.Debug(prefix, "   └─ TX Photo Hash: (none)")
 	}
 
 	if a.discoveryCallback != nil {
@@ -167,7 +168,7 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 			Name:      name,
 			RSSI:      rssi,
 			Platform:  "unknown",
-			PhotoHash: photoHash,
+			PhotoHash: txPhotoHash, // Remote device's TX hash (photo they have available)
 		})
 	}
 }
@@ -184,6 +185,16 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	hash := sha256.Sum256(data)
 	photoHash := hex.EncodeToString(hash[:])
 
+	// Cache photo to disk
+	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.deviceUUID)
+	cacheDir := fmt.Sprintf("data/%s/cache", a.deviceUUID)
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return fmt.Errorf("failed to create cache directory: %w", err)
+	}
+	if err := os.WriteFile(cachePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to cache photo: %w", err)
+	}
+
 	// Update fields
 	a.photoPath = photoPath
 	a.photoHash = photoHash
@@ -193,7 +204,7 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	a.setupBLE()
 
 	logger.Info(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "📸 Updated profile photo (hash: %s)", photoHash[:8])
-	logger.Debug(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "   └─ Broadcasting new hash in advertising data")
+	logger.Debug(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "   └─ Cached to disk and broadcasting TX hash in advertising data")
 
 	return nil
 }
