@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -323,7 +324,47 @@ func (w *Wire) ReadData(filename string) ([]byte, error) {
 	return os.ReadFile(filePath)
 }
 
-// ListInbox lists all files in this device's inbox
+// ReadAndReassemble reads a message, handling fragmented .part files
+// This simulates how real BLE stacks reassemble fragmented packets transparently
+func (w *Wire) ReadAndReassemble(filename string) ([]byte, error) {
+	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
+
+	// Try reading the complete file first (no fragmentation)
+	completeFile := filepath.Join(inboxPath, filename)
+	if data, err := os.ReadFile(completeFile); err == nil {
+		return data, nil
+	}
+
+	// File doesn't exist as single file, look for .part files
+	var fragments [][]byte
+	partIndex := 0
+
+	for {
+		partFile := filepath.Join(inboxPath, fmt.Sprintf("%s.part%d", filename, partIndex))
+		data, err := os.ReadFile(partFile)
+		if err != nil {
+			if partIndex == 0 {
+				// No fragments found either
+				return nil, fmt.Errorf("file not found: %s", filename)
+			}
+			// No more fragments
+			break
+		}
+		fragments = append(fragments, data)
+		partIndex++
+	}
+
+	// Reassemble fragments
+	var complete []byte
+	for _, frag := range fragments {
+		complete = append(complete, frag...)
+	}
+
+	return complete, nil
+}
+
+// ListInbox lists all logical messages in this device's inbox
+// Returns base filenames without .part suffixes (simulates BLE stack behavior)
 func (w *Wire) ListInbox() ([]string, error) {
 	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
 	files, err := os.ReadDir(inboxPath)
@@ -331,10 +372,26 @@ func (w *Wire) ListInbox() ([]string, error) {
 		return nil, err
 	}
 
+	seen := make(map[string]bool)
 	var filenames []string
+
 	for _, file := range files {
-		if !file.IsDir() {
-			filenames = append(filenames, file.Name())
+		if file.IsDir() {
+			continue
+		}
+
+		name := file.Name()
+
+		// Strip .partN suffix if present
+		if strings.Contains(name, ".part") {
+			parts := strings.Split(name, ".part")
+			name = parts[0]
+		}
+
+		// Deduplicate (multiple .part files become one logical message)
+		if !seen[name] {
+			filenames = append(filenames, name)
+			seen[name] = true
 		}
 	}
 
@@ -462,26 +519,42 @@ func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) err
 }
 
 // DeleteInboxFile removes a file from this device's inbox (after processing)
-// and copies it to inbox_history for record keeping
+// and copies the complete reassembled message to inbox_history for record keeping
+// Handles both complete files and fragmented .part files
 func (w *Wire) DeleteInboxFile(filename string) error {
 	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
-	filePath := filepath.Join(inboxPath, filename)
 
-	// Read the file content before deleting
-	data, err := os.ReadFile(filePath)
+	// Read and reassemble (handles .part files transparently)
+	data, err := w.ReadAndReassemble(filename)
 	if err != nil {
 		return fmt.Errorf("failed to read inbox file: %w", err)
 	}
 
-	// Copy to inbox_history
+	// Copy complete message to inbox_history
 	historyPath := filepath.Join(w.basePath, w.localUUID, "inbox_history")
 	historyFilePath := filepath.Join(historyPath, filename)
 	if err := os.WriteFile(historyFilePath, data, 0644); err != nil {
 		return fmt.Errorf("failed to copy to inbox_history: %w", err)
 	}
 
-	// Delete the original file
-	return os.Remove(filePath)
+	// Delete the original file(s)
+	// Try deleting complete file first
+	completeFile := filepath.Join(inboxPath, filename)
+	if err := os.Remove(completeFile); err == nil {
+		return nil // Complete file deleted
+	}
+
+	// Delete all .part files
+	partIndex := 0
+	for {
+		partFile := filepath.Join(inboxPath, fmt.Sprintf("%s.part%d", filename, partIndex))
+		if err := os.Remove(partFile); err != nil {
+			break // No more parts
+		}
+		partIndex++
+	}
+
+	return nil
 }
 
 // DeleteOutboxFile removes a file from this device's outbox

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -115,10 +114,12 @@ func (r *ScenarioRunner) Setup() error {
 // createDevice creates a simulated device based on platform
 func (r *ScenarioRunner) createDevice(config *DeviceConfig) (*SimulatedDevice, error) {
 	uuid := generateDeviceUUID(config.ID)
+	w := wire.NewWire(uuid)
+
 	device := &SimulatedDevice{
 		Config:             config,
 		UUID:               uuid,
-		Wire:               wire.NewWire(uuid),
+		Wire:               w,
 		Cache:              wire.NewDeviceCacheManager(uuid),
 		ConnectedTo:        make(map[string]bool),
 		HandshakesSent:     make(map[string]bool),
@@ -355,10 +356,10 @@ func (r *ScenarioRunner) handleSendHandshake(device *SimulatedDevice, targetID s
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	// Write to target's inbox
-	inboxPath := filepath.Join("data", target.UUID, "inbox", fmt.Sprintf("handshake_%d.json", time.Now().UnixNano()))
-	if err := os.WriteFile(inboxPath, msgJSON, 0644); err != nil {
-		return fmt.Errorf("failed to write handshake: %w", err)
+	// Send via Wire (automatically logs to outbox_history and inbox_history)
+	filename := fmt.Sprintf("handshake_%d.json", time.Now().UnixNano())
+	if err := device.Wire.SendToDevice(target.UUID, msgJSON, filename); err != nil {
+		return fmt.Errorf("failed to send handshake: %w", err)
 	}
 
 	// Mark as sent
@@ -373,21 +374,18 @@ func (r *ScenarioRunner) handleReceiveHandshake(device *SimulatedDevice, targetI
 		return fmt.Errorf("target device %s not found", targetID)
 	}
 
-	// Read handshake from our inbox
-	inboxDir := filepath.Join("data", device.UUID, "inbox")
-	files, err := os.ReadDir(inboxDir)
+	// List inbox (Wire handles .part files transparently)
+	files, err := device.Wire.ListInbox()
 	if err != nil {
-		return fmt.Errorf("failed to read inbox: %w", err)
+		return fmt.Errorf("failed to list inbox: %w", err)
 	}
 
 	// Find handshake message from target
 	var handshakeMsg map[string]interface{}
 	var handshakeFile string
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(inboxDir, file.Name()))
+	for _, filename := range files {
+		// Read and reassemble (handles fragmentation)
+		data, err := device.Wire.ReadAndReassemble(filename)
 		if err != nil {
 			continue
 		}
@@ -399,7 +397,7 @@ func (r *ScenarioRunner) handleReceiveHandshake(device *SimulatedDevice, targetI
 
 		if msg["op"] == "handshake" && msg["sender"] == target.UUID {
 			handshakeMsg = msg
-			handshakeFile = file.Name()
+			handshakeFile = filename
 			break
 		}
 	}
@@ -450,8 +448,8 @@ func (r *ScenarioRunner) handleReceiveHandshake(device *SimulatedDevice, targetI
 		ReceivedAtMs: time.Now().UnixMilli(),
 	}
 
-	// Delete the message
-	os.Remove(filepath.Join(inboxDir, handshakeFile))
+	// Delete the message (copies to inbox_history)
+	device.Wire.DeleteInboxFile(handshakeFile)
 
 	return nil
 }
@@ -504,8 +502,77 @@ func (r *ScenarioRunner) handleSendPhotoMetadata(device *SimulatedDevice, target
 	device.IsSendingPhoto = true
 	device.PhotoSendTarget = targetID
 
-	// TODO: Implement actual photo chunking and transfer
-	// For now, just log the decision
+	// Load our photo
+	photoData, err := device.Cache.LoadLocalUserPhoto()
+	if err != nil {
+		return fmt.Errorf("failed to load local photo: %w", err)
+	}
+	if photoData == nil {
+		return fmt.Errorf("no photo data available")
+	}
+
+	// Chunk and send photo
+	mtu := 185 // Default BLE MTU from simulation config
+	totalChunks := (len(photoData) + mtu - 1) / mtu
+
+	log.Printf("  Photo size: %d bytes", len(photoData))
+	log.Printf("  MTU: %d bytes", mtu)
+	log.Printf("  Total chunks: %d", totalChunks)
+
+	// Send photo metadata first
+	photoMetaMsg := map[string]interface{}{
+		"op":          "photo_metadata",
+		"photo_hash":  ourPhotoHash,
+		"photo_size":  len(photoData),
+		"chunk_count": totalChunks,
+		"mtu":         mtu,
+		"sender":      device.UUID,
+		"timestamp":   time.Now().UnixMilli(),
+	}
+	metaJSON, err := json.Marshal(photoMetaMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal photo metadata: %w", err)
+	}
+
+	// Send metadata via Wire
+	metaFilename := fmt.Sprintf("photo_meta_%d.json", time.Now().UnixNano())
+	if err := device.Wire.SendToDevice(target.UUID, metaJSON, metaFilename); err != nil {
+		return fmt.Errorf("failed to send photo metadata: %w", err)
+	}
+
+	// Send photo chunks
+	for i := 0; i < totalChunks; i++ {
+		start := i * mtu
+		end := start + mtu
+		if end > len(photoData) {
+			end = len(photoData)
+		}
+		chunk := photoData[start:end]
+
+		chunkMsg := map[string]interface{}{
+			"op":          "photo_chunk",
+			"chunk_index": i,
+			"chunk_data":  chunk, // Will be base64 encoded
+			"sender":      device.UUID,
+			"timestamp":   time.Now().UnixMilli(),
+		}
+		chunkJSON, err := json.Marshal(chunkMsg)
+		if err != nil {
+			return fmt.Errorf("failed to marshal chunk %d: %w", i, err)
+		}
+
+		// Send chunk via Wire (logs to history)
+		chunkFilename := fmt.Sprintf("photo_chunk_%06d.json", i)
+		if err := device.Wire.SendToDevice(target.UUID, chunkJSON, chunkFilename); err != nil {
+			return fmt.Errorf("failed to send chunk %d: %w", i, err)
+		}
+
+		if i%50 == 0 || i == totalChunks-1 {
+			log.Printf("  Sent chunk %d/%d (%d bytes)", i+1, totalChunks, len(chunk))
+		}
+	}
+
+	log.Printf("  ✅ Photo transfer complete (%d chunks)", totalChunks)
 
 	return nil
 }
@@ -516,7 +583,7 @@ func (r *ScenarioRunner) handleReceivePhotoMetadata(device *SimulatedDevice, tar
 		return fmt.Errorf("target device %s not found", targetID)
 	}
 
-	log.Printf("[%s] 📥 Receiving photo metadata from %s", device.Config.DeviceName, target.Config.DeviceName)
+	log.Printf("[%s] 📥 Receiving photo from %s", device.Config.DeviceName, target.Config.DeviceName)
 
 	// Check if we're already sending - collision detection would go here
 	if device.IsSendingPhoto {
@@ -526,6 +593,123 @@ func (r *ScenarioRunner) handleReceivePhotoMetadata(device *SimulatedDevice, tar
 
 	device.IsReceivingPhoto = true
 	device.PhotoReceiveSource = targetID
+
+	// Read photo metadata from inbox (Wire handles .part files)
+	files, err := device.Wire.ListInbox()
+	if err != nil {
+		return fmt.Errorf("failed to list inbox: %w", err)
+	}
+
+	var photoMeta map[string]interface{}
+	for _, filename := range files {
+		data, err := device.Wire.ReadAndReassemble(filename)
+		if err != nil {
+			continue
+		}
+
+		var msg map[string]interface{}
+		if err := json.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+
+		if msg["op"] == "photo_metadata" && msg["sender"] == target.UUID {
+			photoMeta = msg
+			device.Wire.DeleteInboxFile(filename) // Copies to history
+			break
+		}
+	}
+
+	if photoMeta == nil {
+		return fmt.Errorf("no photo metadata found from %s", targetID)
+	}
+
+	photoSize := int(photoMeta["photo_size"].(float64))
+	chunkCount := int(photoMeta["chunk_count"].(float64))
+	photoHash := photoMeta["photo_hash"].(string)
+
+	log.Printf("  Photo size: %d bytes", photoSize)
+	log.Printf("  Expected chunks: %d", chunkCount)
+	log.Printf("  Photo hash: %s", truncateHash(photoHash))
+
+	// Collect all chunks
+	chunks := make([][]byte, chunkCount)
+	chunksReceived := 0
+
+	for {
+		files, err := device.Wire.ListInbox()
+		if err != nil {
+			return fmt.Errorf("failed to list inbox: %w", err)
+		}
+
+		for _, filename := range files {
+			data, err := device.Wire.ReadAndReassemble(filename)
+			if err != nil {
+				continue
+			}
+
+			var msg map[string]interface{}
+			if err := json.Unmarshal(data, &msg); err != nil {
+				continue
+			}
+
+			if msg["op"] == "photo_chunk" && msg["sender"] == target.UUID {
+				chunkIndex := int(msg["chunk_index"].(float64))
+
+				// Decode chunk data (base64 from JSON)
+				var chunkData []byte
+				switch v := msg["chunk_data"].(type) {
+				case string:
+					decoded, err := base64.StdEncoding.DecodeString(v)
+					if err != nil {
+						continue
+					}
+					chunkData = decoded
+				default:
+					continue
+				}
+
+				if chunks[chunkIndex] == nil {
+					chunks[chunkIndex] = chunkData
+					chunksReceived++
+
+					if chunksReceived%50 == 0 || chunksReceived == chunkCount {
+						log.Printf("  Received chunk %d/%d (%d bytes)", chunksReceived, chunkCount, len(chunkData))
+					}
+				}
+
+				device.Wire.DeleteInboxFile(filename) // Copies to history
+			}
+		}
+
+		if chunksReceived >= chunkCount {
+			break
+		}
+
+		time.Sleep(10 * time.Millisecond) // Small delay between reads
+	}
+
+	// Reassemble photo
+	var photoData []byte
+	for _, chunk := range chunks {
+		photoData = append(photoData, chunk...)
+	}
+
+	log.Printf("  ✅ Photo received: %d bytes", len(photoData))
+
+	// Verify hash
+	receivedHash := device.Cache.CalculatePhotoHash(photoData)
+	if receivedHash != photoHash {
+		return fmt.Errorf("photo hash mismatch: expected %s, got %s", photoHash, receivedHash)
+	}
+
+	log.Printf("  ✅ Hash verified: %s", truncateHash(receivedHash))
+
+	// Save photo
+	if err := device.Cache.SaveDevicePhoto(targetID, photoData, photoHash); err != nil {
+		return fmt.Errorf("failed to save photo: %w", err)
+	}
+
+	log.Printf("  ✅ Photo saved to cache")
 
 	return nil
 }
