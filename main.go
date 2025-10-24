@@ -159,19 +159,33 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 				return len(pw.discoveredDevices)
 			},
 			func() fyne.CanvasObject {
-				// Template for each device row
-				nameLabel := widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-				nameLabel.TextStyle.Bold = true
-				infoLabel := widget.NewLabel("")
-				infoLabel.TextStyle.Italic = true
+				// Template for each device row matching iOS design
+				// Large bold name using canvas.Text for size control
+				nameText := canvas.NewText("", color.RGBA{R: 0, G: 204, B: 255, A: 255}) // Cyan like iOS
+				nameText.TextSize = 20
+				nameText.TextStyle = fyne.TextStyle{Bold: true}
 
+				// Device info (ID, RSSI, connection) in gray using canvas.Text
+				infoText := canvas.NewText("", color.RGBA{R: 150, G: 150, B: 150, A: 255})
+				infoText.TextSize = 11
+
+				// Profile circle (60x60)
 				profileCircle := canvas.NewCircle(color.RGBA{R: 60, G: 60, B: 60, A: 255})
 				profileCircle.StrokeColor = color.RGBA{R: 120, G: 120, B: 120, A: 255}
 				profileCircle.StrokeWidth = 2
+				profileCircle.Resize(fyne.NewSize(60, 60))
 
-				row := container.NewHBox(
+				// Vertical stack for name and info
+				textStack := container.NewVBox(
+					nameText,
+					infoText,
+				)
+
+				// Horizontal layout: circle + text stack
+				row := container.NewBorder(nil, nil,
 					container.NewPadded(profileCircle),
-					container.NewVBox(nameLabel, infoLabel),
+					nil,
+					textStack,
 				)
 				return row
 			},
@@ -182,16 +196,19 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 				if id < len(pw.discoveredDevices) {
 					device := pw.discoveredDevices[id]
 					row := obj.(*fyne.Container)
-					textContainer := row.Objects[1].(*fyne.Container)
-					nameLabel := textContainer.Objects[0].(*widget.Label)
-					infoLabel := textContainer.Objects[1].(*widget.Label)
 
-					nameLabel.SetText(device.Name)
-					nameLabel.TextStyle.Bold = true
-					nameLabel.Refresh()
+					// Get the text stack from the center of the border container
+					textStack := row.Objects[0].(*fyne.Container)
+					nameText := textStack.Objects[0].(*canvas.Text)
+					infoText := textStack.Objects[1].(*canvas.Text)
 
-					infoLabel.SetText(fmt.Sprintf("Device: %s\nRSSI: %.0f dBm", device.DeviceID[:8], device.RSSI))
-					infoLabel.Refresh()
+					// Set name with cyan color (matching iOS)
+					nameText.Text = device.Name
+					nameText.Refresh()
+
+					// Set device info on multiple lines
+					infoText.Text = fmt.Sprintf("Device: %s\nRSSI: %.0f dBm, Connected: Yes", device.DeviceID[:8], device.RSSI)
+					infoText.Refresh()
 				}
 			},
 		)
