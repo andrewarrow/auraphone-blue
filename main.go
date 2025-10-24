@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -136,6 +137,9 @@ func (d *FakeAndroidDevice) OnCharacteristicRead(gatt *kotlin.BluetoothGatt, dat
 
 func main() {
 	fmt.Println("=== Fake Bluetooth Communication ===\n")
+
+	// Clean up old device directories from previous runs
+	os.RemoveAll("data/")
 
 	iosDevice := NewFakeIOSDevice()
 	androidDevice := NewFakeAndroidDevice()
