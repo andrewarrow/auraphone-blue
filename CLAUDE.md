@@ -32,26 +32,29 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 
 ## Known Limitations & Unrealistic Behaviors
 
-### What's Too Fake:
-1. **Instant Discovery** - Real BLE has advertising intervals (typically 100ms-10s). We discover immediately when directories exist.
+### What's Too Fake (and should be fixed):
+1. **No Service/Characteristic Model** - Real BLE has a hierarchy (Services → Characteristics → Descriptors with UUIDs). We just have a generic "write data" method without proper GATT structure.
 
-2. **No Advertising Data** - Real BLE peripherals broadcast service UUIDs and manufacturer data. We just see a directory.
+2. **No MTU Limits** - Real BLE has 20-512 byte packet limits requiring fragmentation. We write files of any size.
 
-3. **Instant Connection** - Real BLE connections take 30ms-100ms and can fail. We connect synchronously with no failure modes.
+3. **Instant Connection** - Real BLE connections take 30ms-100ms and can fail. We connect synchronously with no failure modes or timing.
 
-4. **No Service/Characteristic Model** - Real BLE has a hierarchy (Services → Characteristics → Descriptors). We just have a generic "write data" method.
+4. **No Advertising Data** - Real BLE peripherals broadcast service UUIDs, device name, manufacturer data in advertising packets. We just see a directory.
 
-5. **Polling for Reads** - Real BLE uses notifications/indications (push model). We poll the inbox every 50ms (pull model).
+5. **Instant Discovery** - Real BLE has advertising intervals (typically 100ms-10s) and scan windows. We discover immediately when directories exist.
 
-6. **No MTU Limits** - Real BLE has 20-512 byte packet limits. We write files of any size.
+6. **No Connection States** - Real BLE has connecting/connected/disconnecting states with timing. We switch instantly.
 
-7. **No Connection States** - Real BLE has connecting/connected/disconnecting states with timing. We switch instantly.
+7. **No RSSI/Signal Strength** - Real BLE has distance-based signal strength (-100 to 0 dBm). We return fixed dummy values.
 
-8. **No RSSI/Signal Strength** - Real BLE has distance-based signal strength. We return fixed dummy values.
+8. **No Radio Interference** - Real BLE has packet loss, retries, collisions. Our filesystem is 100% reliable.
 
-9. **Both Central & Peripheral** - Real iOS typically acts as Central only (pre-iOS 6). We have both roles on same device.
+### What's Acceptable Given the Architecture:
+- **Polling for reads (50ms)** - Real BLE uses notifications/indications, but filesystem polling is reasonable here. Alternatives like filesystem watchers are OS-specific, and Go channels would bypass the wire abstraction.
 
-10. **No Radio Interference** - Real BLE has packet loss, retries, collisions. Our filesystem is 100% reliable.
+- **100% reliable delivery** - Filesystem guarantees delivery. Simulating packet loss would require artificial randomness.
+
+- **Both Central & Peripheral roles** - While real iOS is typically Central-only, having both roles helps demonstrate full communication.
 
 ### What's Realistic:
 ✅ API naming matches real iOS CoreBluetooth and Android BLE
