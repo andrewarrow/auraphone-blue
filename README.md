@@ -24,9 +24,14 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
   - Data transfer via binary files
 
 ### Current Capabilities
+
 ✅ Device discovery (iOS discovers Android, Android discovers iOS)
+
 ✅ Connection establishment (both directions)
+
 ✅ Data transmission (write characteristic)
+
 ✅ Data reception (read characteristic with polling)
+
 ✅ Clean logging with platform prefixes
 
