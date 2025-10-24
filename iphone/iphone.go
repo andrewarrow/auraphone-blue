@@ -16,6 +16,7 @@ import (
 	"github.com/user/auraphone-blue/swift"
 	"github.com/user/auraphone-blue/wire"
 	"google.golang.org/protobuf/encoding/protojson"
+	proto2 "google.golang.org/protobuf/proto"
 )
 
 // photoReceiveState tracks photo reception progress
@@ -115,8 +116,6 @@ func (ip *iPhone) setupBLE() {
 		ServiceUUIDs:  []string{auraServiceUUID},
 		TxPowerLevel:  &txPowerLevel,
 		IsConnectable: true,
-		TxPhotoHash:   ip.photoHash, // Hash of OUR photo we can send
-		RxPhotoHash:   "",            // TODO: Set to hash of photos we've received from other devices
 	}
 
 	if err := ip.wire.WriteAdvertisingData(advertisingData); err != nil {
@@ -348,12 +347,18 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 		RxPhotoHash:     ip.receivedPhotoHashes[peripheral.UUID],
 	}
 
-	data, err := protojson.Marshal(msg)
+	// Marshal to binary protobuf (sent over the wire)
+	data, err := proto2.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal handshake: %w", err)
 	}
 
-	logger.DebugJSON(prefix, "📤 TX Handshake", msg)
+	// Log as JSON with snake_case for debugging
+	marshaler := protojson.MarshalOptions{
+		UseProtoNames: true,
+	}
+	jsonData, _ := marshaler.Marshal(msg)
+	logger.Debug(prefix, "📤 TX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
 	return peripheral.WriteValue(data, textChar)
 }
@@ -362,13 +367,19 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []byte) {
 	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
 
+	// Unmarshal binary protobuf
 	var handshake proto.HandshakeMessage
-	if err := protojson.Unmarshal(data, &handshake); err != nil {
+	if err := proto2.Unmarshal(data, &handshake); err != nil {
 		logger.Error(prefix, "❌ Failed to parse handshake: %v", err)
 		return
 	}
 
-	logger.DebugJSON(prefix, "📥 RX Handshake", &handshake)
+	// Log as JSON with snake_case for debugging
+	marshaler := protojson.MarshalOptions{
+		UseProtoNames: true,
+	}
+	jsonData, _ := marshaler.Marshal(&handshake)
+	logger.Debug(prefix, "📥 RX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
 	// Store their TX photo hash
 	if handshake.TxPhotoHash != "" {

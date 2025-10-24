@@ -16,6 +16,7 @@ import (
 	"github.com/user/auraphone-blue/proto"
 	"github.com/user/auraphone-blue/wire"
 	"google.golang.org/protobuf/encoding/protojson"
+	proto2 "google.golang.org/protobuf/proto"
 )
 
 // photoReceiveState tracks photo reception progress
@@ -115,8 +116,6 @@ func (a *Android) setupBLE() {
 		ServiceUUIDs:  []string{auraServiceUUID},
 		TxPowerLevel:  &txPowerLevel,
 		IsConnectable: true,
-		TxPhotoHash:   a.photoHash, // Hash of OUR photo we can send
-		RxPhotoHash:   "",            // TODO: Set to hash of photos we've received from other devices
 	}
 
 	if err := a.wire.WriteAdvertisingData(advertisingData); err != nil {
@@ -171,21 +170,11 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 		name = result.ScanRecord.DeviceName
 	}
 
-	txPhotoHash := ""
-	if result.ScanRecord != nil && result.ScanRecord.TxPhotoHash != "" {
-		txPhotoHash = result.ScanRecord.TxPhotoHash
-	}
-
 	rssi := float64(result.Rssi)
 
 	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
 	logger.Debug(prefix, "📱 DISCOVERED device %s (%s)", result.Device.Address[:8], name)
 	logger.Debug(prefix, "   └─ RSSI: %.0f dBm", rssi)
-	if txPhotoHash != "" {
-		logger.Debug(prefix, "   └─ TX Photo Hash: %s", txPhotoHash[:8])
-	} else {
-		logger.Debug(prefix, "   └─ TX Photo Hash: (none)")
-	}
 
 	if a.discoveryCallback != nil {
 		a.discoveryCallback(phone.DiscoveredDevice{
@@ -193,7 +182,7 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 			Name:      name,
 			RSSI:      rssi,
 			Platform:  "unknown",
-			PhotoHash: txPhotoHash, // Remote device's TX hash (photo they have available)
+			PhotoHash: "", // Photo hash is now exchanged via protocol buffer handshake, not advertising
 		})
 	}
 
@@ -321,12 +310,18 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 		RxPhotoHash:     a.receivedPhotoHashes[gatt.GetRemoteUUID()],
 	}
 
-	data, err := protojson.Marshal(msg)
+	// Marshal to binary protobuf (sent over the wire)
+	data, err := proto2.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal handshake: %w", err)
 	}
 
-	logger.DebugJSON(prefix, "📤 TX Handshake", msg)
+	// Log as JSON with snake_case for debugging
+	marshaler := protojson.MarshalOptions{
+		UseProtoNames: true,
+	}
+	jsonData, _ := marshaler.Marshal(msg)
+	logger.Debug(prefix, "📤 TX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
 	textChar.Value = data
 	gatt.WriteCharacteristic(textChar)
@@ -337,13 +332,19 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
 
+	// Unmarshal binary protobuf
 	var handshake proto.HandshakeMessage
-	if err := protojson.Unmarshal(data, &handshake); err != nil {
+	if err := proto2.Unmarshal(data, &handshake); err != nil {
 		logger.Error(prefix, "❌ Failed to parse handshake: %v", err)
 		return
 	}
 
-	logger.DebugJSON(prefix, "📥 RX Handshake", &handshake)
+	// Log as JSON with snake_case for debugging
+	marshaler := protojson.MarshalOptions{
+		UseProtoNames: true,
+	}
+	jsonData, _ := marshaler.Marshal(&handshake)
+	logger.Debug(prefix, "📥 RX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
 	remoteUUID := gatt.GetRemoteUUID()
 
