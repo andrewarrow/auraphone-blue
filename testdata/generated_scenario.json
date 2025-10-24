@@ -1,0 +1,89 @@
+{
+  "name": "Scenario from logs",
+  "description": "Auto-generated from iOS and Android logs",
+  "devices": [
+    {
+      "id": "pixel-8-pro",
+      "platform": "unknown",
+      "device_name": "Pixel 8 Pro",
+      "profile": {
+        "first_name": "Pixel"
+      },
+      "advertising": {
+        "service_uuids": null,
+        "interval_ms": 0,
+        "tx_power": 0
+      }
+    },
+    {
+      "id": "iphone-15-pro",
+      "platform": "unknown",
+      "device_name": "iPhone 15 Pro",
+      "profile": {
+        "first_name": "iPhone"
+      },
+      "advertising": {
+        "service_uuids": null,
+        "interval_ms": 0,
+        "tx_power": 0
+      }
+    }
+  ],
+  "timeline": [
+    {
+      "time_ms": 100,
+      "action": "discover",
+      "device": "ios-device",
+      "target": "Pixel 8 Pro"
+    },
+    {
+      "time_ms": 400,
+      "action": "send_handshake",
+      "device": "ios-device"
+    },
+    {
+      "time_ms": 1100,
+      "action": "send_photo_metadata",
+      "device": "ios-device",
+      "target": "Pixel 8 Pro"
+    },
+    {
+      "time_ms": 100,
+      "action": "discover",
+      "device": "android-device",
+      "target": "iPhone 15 Pro"
+    },
+    {
+      "time_ms": 100,
+      "action": "start_advertising",
+      "device": "android-device"
+    }
+  ],
+  "assertions": [
+    {
+      "type": "connected",
+      "device": "ios-device",
+      "comment": "Connected to Pixel 8 Pro"
+    },
+    {
+      "type": "collision_loser",
+      "device": "ios-device",
+      "comment": "Detected in logs"
+    },
+    {
+      "type": "photo_transfer_completed",
+      "device": "ios-device",
+      "comment": "Detected in logs"
+    },
+    {
+      "type": "handshake_received",
+      "device": "android-device",
+      "comment": "Detected in logs"
+    },
+    {
+      "type": "photo_transfer_completed",
+      "device": "android-device",
+      "comment": "Detected in logs"
+    }
+  ]
+}
