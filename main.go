@@ -473,7 +473,7 @@ func (l *Launcher) buildUI() fyne.CanvasObject {
 		logger.SetLevel(logger.ParseLevel(selected))
 		fmt.Printf("Log level set to: %s\n", selected)
 	})
-	logLevelSelect.SetSelected("INFO") // Default level
+	logLevelSelect.SetSelected("DEBUG") // Default level
 
 	// Start iOS button
 	iosBtn := widget.NewButton("Start iOS Device", func() {

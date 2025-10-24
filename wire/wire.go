@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/user/auraphone-blue/logger"
 )
 
 // AdvertisingData represents BLE advertising packet data
@@ -607,6 +608,8 @@ func (w *Wire) WriteAdvertisingData(advData *AdvertisingData) error {
 		return fmt.Errorf("failed to marshal advertising data: %w", err)
 	}
 
+	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform), "📡 TX Advertising Data", advData)
+
 	return os.WriteFile(advPath, data, 0644)
 }
 
@@ -631,6 +634,8 @@ func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) 
 		return nil, fmt.Errorf("failed to unmarshal advertising data: %w", err)
 	}
 
+	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform), fmt.Sprintf("📡 RX Advertising Data (from %s)", deviceUUID[:8]), &advData)
+
 	return &advData, nil
 }
 
@@ -644,6 +649,10 @@ func (w *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, dat
 		Timestamp:   time.Now().UnixNano(),
 		SenderUUID:  w.localUUID,
 	}
+
+	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+		fmt.Sprintf("📤 TX Write Characteristic (to %s, svc=%s, char=%s, %d bytes)",
+			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
 
 	return w.sendCharacteristicMessage(targetUUID, &msg)
 }
@@ -705,6 +714,12 @@ func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
 			// Not a characteristic message, skip
 			continue
 		}
+
+		logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+			fmt.Sprintf("📥 RX %s Characteristic (from %s, svc=%s, char=%s, %d bytes)",
+				msg.Operation, msg.SenderUUID[:8],
+				msg.ServiceUUID[len(msg.ServiceUUID)-4:],
+				msg.CharUUID[len(msg.CharUUID)-4:], len(msg.Data)), &msg)
 
 		messages = append(messages, &msg)
 	}

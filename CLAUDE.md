@@ -1,5 +1,13 @@
 please do not run go build or go run yourself. Just edit the code and tell me when you are done.
 
+make sure never to write logic that cheats. this program is a simulator to simulate real phones
+using real bluetooth. if you cheat and do things like instantly transfer a photo from one phone
+together without actually sending it "down the wire" or "over the air" in bluetooth case, you
+are not helping anyone. The files you have in phone/ iphone/ android/ and wire/ need to work 
+and act like real phones. They cache things to disk. When they start up if that cache is empty
+then they have no photo to display. No cheating and just using the fact that the test photos are in
+testdata/*.jpg and you know the path and could just display the photo.
+
 # Auraphone Blue - Fake Bluetooth Simulator
 
 ## Overview

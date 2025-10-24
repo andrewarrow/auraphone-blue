@@ -1,10 +1,14 @@
 package logger
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // LogLevel represents the severity of a log message
@@ -18,7 +22,7 @@ const (
 )
 
 var (
-	currentLevel LogLevel = INFO
+	currentLevel LogLevel = DEBUG
 	mu           sync.RWMutex
 )
 
@@ -95,4 +99,38 @@ func Warn(prefix, format string, args ...interface{}) {
 // Error logs an error message
 func Error(prefix, format string, args ...interface{}) {
 	log(ERROR, prefix, format, args...)
+}
+
+// ToJSON converts any value to a pretty-printed JSON string for logging
+func ToJSON(v interface{}) string {
+	// Check if it's a protobuf message
+	if msg, ok := v.(proto.Message); ok {
+		// Use protojson for protobuf messages (handles field names correctly)
+		marshaler := protojson.MarshalOptions{
+			Multiline:       true,
+			Indent:          "  ",
+			EmitUnpopulated: false, // Only show fields with values
+		}
+		jsonBytes, err := marshaler.Marshal(msg)
+		if err != nil {
+			return fmt.Sprintf("<error: %v>", err)
+		}
+		return string(jsonBytes)
+	}
+
+	// For regular structs, use standard JSON
+	jsonBytes, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("<error: %v>", err)
+	}
+	return string(jsonBytes)
+}
+
+// DebugJSON logs a debug message with a JSON representation
+func DebugJSON(prefix, label string, v interface{}) {
+	if GetLevel() > DEBUG {
+		return
+	}
+	jsonStr := ToJSON(v)
+	log(DEBUG, prefix, "%s:\n%s", label, jsonStr)
 }
