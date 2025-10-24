@@ -26,7 +26,7 @@ type Wire struct {
 func NewWire(deviceUUID string) *Wire {
 	return &Wire{
 		localUUID: deviceUUID,
-		basePath:  ".",
+		basePath:  "data/",
 	}
 }
 
