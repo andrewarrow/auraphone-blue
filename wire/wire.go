@@ -72,17 +72,25 @@ func (w *Wire) SetBasePath(path string) {
 	w.basePath = path
 }
 
-// InitializeDevice creates the inbox and outbox directories for this device
+// InitializeDevice creates the inbox, outbox, and history directories for this device
 func (w *Wire) InitializeDevice() error {
 	devicePath := filepath.Join(w.basePath, w.localUUID)
 	inboxPath := filepath.Join(devicePath, "inbox")
 	outboxPath := filepath.Join(devicePath, "outbox")
+	inboxHistoryPath := filepath.Join(devicePath, "inbox_history")
+	outboxHistoryPath := filepath.Join(devicePath, "outbox_history")
 
 	if err := os.MkdirAll(inboxPath, 0755); err != nil {
 		return fmt.Errorf("failed to create inbox: %w", err)
 	}
 	if err := os.MkdirAll(outboxPath, 0755); err != nil {
 		return fmt.Errorf("failed to create outbox: %w", err)
+	}
+	if err := os.MkdirAll(inboxHistoryPath, 0755); err != nil {
+		return fmt.Errorf("failed to create inbox_history: %w", err)
+	}
+	if err := os.MkdirAll(outboxHistoryPath, 0755); err != nil {
+		return fmt.Errorf("failed to create outbox_history: %w", err)
 	}
 
 	return nil
@@ -192,18 +200,47 @@ func (w *Wire) ListOutbox() ([]string, error) {
 }
 
 // SendToDevice writes data to the target device's inbox
+// and copies it to this device's outbox_history for record keeping
 func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) error {
 	targetInboxPath := filepath.Join(w.basePath, targetUUID, "inbox")
 	filePath := filepath.Join(targetInboxPath, filename)
 
-	return os.WriteFile(filePath, data, 0644)
+	// Write to target's inbox
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return err
+	}
+
+	// Copy to our outbox_history
+	historyPath := filepath.Join(w.basePath, w.localUUID, "outbox_history")
+	historyFilePath := filepath.Join(historyPath, filename)
+	if err := os.WriteFile(historyFilePath, data, 0644); err != nil {
+		// Don't fail the send if history write fails, just log it
+		fmt.Printf("Warning: failed to copy to outbox_history: %v\n", err)
+	}
+
+	return nil
 }
 
 // DeleteInboxFile removes a file from this device's inbox (after processing)
+// and copies it to inbox_history for record keeping
 func (w *Wire) DeleteInboxFile(filename string) error {
 	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
 	filePath := filepath.Join(inboxPath, filename)
 
+	// Read the file content before deleting
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read inbox file: %w", err)
+	}
+
+	// Copy to inbox_history
+	historyPath := filepath.Join(w.basePath, w.localUUID, "inbox_history")
+	historyFilePath := filepath.Join(historyPath, filename)
+	if err := os.WriteFile(historyFilePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to copy to inbox_history: %w", err)
+	}
+
+	// Delete the original file
 	return os.Remove(filePath)
 }
 
