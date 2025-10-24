@@ -9,6 +9,8 @@ import (
 type CBCentralManagerDelegate interface {
 	DidUpdateState(central CBCentralManager)
 	DidDiscoverPeripheral(central CBCentralManager, peripheral CBPeripheral, advertisementData map[string]interface{}, rssi float64)
+	DidConnectPeripheral(central CBCentralManager, peripheral CBPeripheral)
+	DidFailToConnectPeripheral(central CBCentralManager, peripheral CBPeripheral, err error)
 }
 
 type CBCentralManager struct {
@@ -44,4 +46,15 @@ func (c *CBCentralManager) StopScan() {
 		close(c.stopChan)
 		c.stopChan = nil
 	}
+}
+
+func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]interface{}) {
+	fmt.Printf("Connecting to peripheral %s...\n", peripheral.UUID)
+
+	// Set up the peripheral's wire connection
+	peripheral.wire = c.wire
+	peripheral.remoteUUID = peripheral.UUID
+
+	// Simulate successful connection
+	c.Delegate.DidConnectPeripheral(*c, *peripheral)
 }

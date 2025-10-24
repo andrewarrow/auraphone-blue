@@ -53,12 +53,15 @@ func (s *BluetoothLeScanner) StartScan(callback ScanCallback) {
 	fmt.Println("Starting scan...")
 
 	s.stopChan = s.wire.StartDiscovery(func(deviceUUID string) {
+		device := &BluetoothDevice{
+			Name:    "iOS Test Device",
+			Address: deviceUUID,
+		}
+		device.SetWire(s.wire)
+
 		s.callback.OnScanResult(0, &ScanResult{
-			Device: &BluetoothDevice{
-				Name:    "iOS Test Device",
-				Address: deviceUUID,
-			},
-			Rssi: -55,
+			Device: device,
+			Rssi:   -55,
 		})
 	})
 }
