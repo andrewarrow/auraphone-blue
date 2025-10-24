@@ -3,8 +3,11 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -70,6 +73,27 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 
 	// Start BLE operations
 	pw.phone.Start()
+
+	// Start periodic UI refresh ticker
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			if pw.needsRefresh && pw.currentTab == "home" && pw.deviceListWidget != nil {
+				pw.devicesMutex.Lock()
+				pw.needsRefresh = false
+				pw.devicesMutex.Unlock()
+
+				// Use fyne.Do to ensure thread-safe UI updates
+				fyne.Do(func() {
+					if pw.deviceListWidget != nil {
+						pw.deviceListWidget.Refresh()
+					}
+				})
+			}
+		}
+	}()
 
 	return pw
 }
@@ -215,14 +239,8 @@ func (pw *PhoneWindow) sortAndRefreshDevices() {
 		return pw.discoveredDevices[i].RSSI > pw.discoveredDevices[j].RSSI
 	})
 
-	// Mark that we need a refresh
+	// Mark that we need a refresh (ticker will pick this up)
 	pw.needsRefresh = true
-
-	// If on home tab and widget exists, trigger refresh
-	if pw.currentTab == "home" && pw.deviceListWidget != nil {
-		// Refresh the list widget - this is safe to call from any goroutine
-		pw.deviceListWidget.Refresh()
-	}
 }
 
 // cleanup cleans up resources when window is closed
@@ -309,9 +327,40 @@ func (l *Launcher) Run() {
 	l.window.ShowAndRun()
 }
 
+// cleanupOldDevices removes all device directories from previous runs
+func cleanupOldDevices() error {
+	dataPath := "data"
+
+	// Check if data directory exists
+	if _, err := os.Stat(dataPath); os.IsNotExist(err) {
+		return nil // Nothing to clean
+	}
+
+	// Remove all contents
+	entries, err := os.ReadDir(dataPath)
+	if err != nil {
+		return fmt.Errorf("failed to read data directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		path := filepath.Join(dataPath, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			fmt.Printf("Warning: failed to remove %s: %v\n", path, err)
+		}
+	}
+
+	fmt.Printf("Cleaned up %d old device directories\n", len(entries))
+	return nil
+}
+
 func main() {
 	fmt.Println("=== Auraphone Blue - Launcher ===")
 	fmt.Println("Starting launcher menu...")
+
+	// Clean up old device directories from previous runs
+	if err := cleanupOldDevices(); err != nil {
+		fmt.Printf("Warning: failed to cleanup old devices: %v\n", err)
+	}
 
 	launcher := NewLauncher()
 	launcher.Run()
