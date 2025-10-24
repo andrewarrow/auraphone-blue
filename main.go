@@ -248,7 +248,8 @@ func main() {
 	androidDevice.manager.Adapter.GetBluetoothLeScanner().StartScan(androidDevice)
 
 	// Wait for devices to discover each other, connect, and exchange data
-	time.Sleep(8 * time.Second)
+	// Discovery (1s) + Connection (instant) + Service Discovery + Message Exchange (1-2s)
+	time.Sleep(4 * time.Second)
 
 	fmt.Println("\n=== Done ===")
 }
