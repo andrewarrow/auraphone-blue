@@ -2,25 +2,109 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"time"
 
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/widget"
 	"github.com/google/uuid"
 	"github.com/user/auraphone-blue/kotlin"
 	"github.com/user/auraphone-blue/swift"
+	"github.com/user/auraphone-blue/tests"
 	"github.com/user/auraphone-blue/wire"
 )
+
+type PhoneGUI struct {
+	statusLabel *widget.Label
+	photoImage  *canvas.Image
+	logText     *widget.Label
+	deviceName  string
+}
+
+func NewPhoneGUI(deviceName string) *PhoneGUI {
+	return &PhoneGUI{
+		statusLabel: widget.NewLabel("Idle"),
+		photoImage:  canvas.NewImageFromFile(""),
+		logText:     widget.NewLabel(""),
+		deviceName:  deviceName,
+	}
+}
+
+func (pg *PhoneGUI) UpdateStatus(status string) {
+	pg.statusLabel.SetText(status)
+}
+
+func (pg *PhoneGUI) UpdatePhoto(photoPath string) {
+	if photoPath != "" {
+		pg.photoImage = canvas.NewImageFromFile(photoPath)
+		pg.photoImage.FillMode = canvas.ImageFillContain
+		pg.photoImage.Refresh()
+	}
+}
+
+func (pg *PhoneGUI) AddLog(message string) {
+	current := pg.logText.Text
+	if current != "" {
+		current += "\n"
+	}
+	pg.logText.SetText(current + message)
+}
+
+func (pg *PhoneGUI) Build() *fyne.Container {
+	// Phone header
+	header := widget.NewLabelWithStyle(pg.deviceName, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+
+	// Status display
+	statusBox := container.NewVBox(
+		widget.NewLabel("Status:"),
+		pg.statusLabel,
+	)
+
+	// Photo display area (300x300)
+	photoRect := canvas.NewRectangle(color.RGBA{R: 240, G: 240, B: 240, A: 255})
+	photoRect.SetMinSize(fyne.NewSize(300, 300))
+
+	photoContainer := container.NewMax(photoRect, pg.photoImage)
+
+	// Event log (scrollable)
+	logScroll := container.NewVScroll(pg.logText)
+	logScroll.SetMinSize(fyne.NewSize(300, 200))
+
+	// Main phone container
+	phoneBox := container.NewVBox(
+		header,
+		widget.NewSeparator(),
+		statusBox,
+		widget.NewLabel("Photo:"),
+		photoContainer,
+		widget.NewLabel("Events:"),
+		logScroll,
+	)
+
+	// Add border
+	bordered := container.NewPadded(phoneBox)
+
+	return bordered
+}
 
 type FakeIOSDevice struct {
 	manager        *swift.CBCentralManager
 	uuid           string
 	peripheral     *swift.CBPeripheral
 	discoveredOnce bool
+	gui            *PhoneGUI
+	photoPath      string
 }
 
-func NewFakeIOSDevice() *FakeIOSDevice {
+func NewFakeIOSDevice(gui *PhoneGUI) *FakeIOSDevice {
 	d := &FakeIOSDevice{
 		uuid: uuid.New().String(),
+		gui:  gui,
 	}
 	d.manager = swift.NewCBCentralManager(d, d.uuid)
 	return d
@@ -34,6 +118,9 @@ func (d *FakeIOSDevice) DidDiscoverPeripheral(central swift.CBCentralManager, pe
 	// Connect to the first discovered peripheral (for listening mode)
 	if !d.discoveredOnce {
 		d.discoveredOnce = true
+		msg := fmt.Sprintf("Discovered: %s", peripheral.Name)
+		d.gui.AddLog(msg)
+		d.gui.UpdateStatus("Discovered")
 		fmt.Printf("[iOS] Discovered Android device: %s\n", peripheral.Name)
 		if advertisementData != nil {
 			if name, ok := advertisementData["kCBAdvDataLocalName"].(string); ok {
@@ -49,12 +136,16 @@ func (d *FakeIOSDevice) DidDiscoverPeripheral(central swift.CBCentralManager, pe
 				fmt.Printf("[iOS]   - Connectable: %v\n", isConnectable)
 			}
 		}
+		d.gui.AddLog("Connecting...")
+		d.gui.UpdateStatus("Connecting")
 		fmt.Printf("[iOS] Connecting to Android device...\n")
 		d.manager.Connect(&peripheral, nil)
 	}
 }
 
 func (d *FakeIOSDevice) DidConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral) {
+	d.gui.AddLog("Connected!")
+	d.gui.UpdateStatus("Connected")
 	fmt.Printf("[iOS] Connected to Android device\n")
 	d.peripheral = &peripheral
 	d.peripheral.Delegate = d
@@ -72,12 +163,32 @@ func (d *FakeIOSDevice) DidFailToConnectPeripheral(central swift.CBCentralManage
 
 func (d *FakeIOSDevice) DidDiscoverServices(peripheral *swift.CBPeripheral, services []*swift.CBService, err error) {
 	if err != nil {
+		d.gui.AddLog("Service discovery failed")
 		fmt.Printf("[iOS] ❌ Service discovery failed: %v\n", err)
 		return
 	}
+	d.gui.AddLog(fmt.Sprintf("Found %d services", len(services)))
 	fmt.Printf("[iOS] Discovered %d services\n", len(services))
 	for _, service := range services {
 		fmt.Printf("[iOS]   - Service %s with %d characteristics\n", service.UUID, len(service.Characteristics))
+	}
+
+	// If we have a photo, send it after handshake
+	if d.photoPath != "" {
+		time.Sleep(1 * time.Second)
+		const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+		photoChar := d.peripheral.GetCharacteristic("E621E1F8-C36C-495A-93FC-0C247A3E6E5F", auraPhotoCharUUID)
+		if photoChar != nil {
+			photoData, err := os.ReadFile(d.photoPath)
+			if err == nil {
+				d.gui.AddLog("Sending photo...")
+				d.gui.UpdateStatus("Sending Photo")
+				d.peripheral.WriteValue(photoData, photoChar)
+				d.gui.AddLog("Photo sent!")
+				d.gui.UpdateStatus("Photo Sent")
+				fmt.Printf("[iOS] 📤 SENT: Photo (%d bytes)\n", len(photoData))
+			}
+		}
 	}
 }
 
@@ -93,15 +204,33 @@ func (d *FakeIOSDevice) DidWriteValueForCharacteristic(peripheral *swift.CBPerip
 
 func (d *FakeIOSDevice) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral, characteristic *swift.CBCharacteristic, err error) {
 	if err != nil {
+		d.gui.AddLog("Read failed")
 		fmt.Printf("[iOS] ❌ Read failed: %v\n", err)
 	} else {
-		fmt.Printf("[iOS] 📩 RECEIVED on char %s: \"%s\"\n", characteristic.UUID, string(characteristic.Value))
+		// Check if this is a photo characteristic (contains binary data)
+		const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+		if characteristic.UUID == auraPhotoCharUUID {
+			d.gui.AddLog("Receiving photo...")
+			d.gui.UpdateStatus("Receiving Photo")
+			// Save photo and display it
+			photoPath := "data/received_photo.png"
+			if err := os.WriteFile(photoPath, characteristic.Value, 0644); err == nil {
+				d.gui.UpdatePhoto(photoPath)
+				d.gui.AddLog("Photo received!")
+				d.gui.UpdateStatus("Photo Received")
+			}
+		} else {
+			msg := fmt.Sprintf("Received: %s", string(characteristic.Value))
+			d.gui.AddLog(msg)
+			fmt.Printf("[iOS] 📩 RECEIVED on char %s: \"%s\"\n", characteristic.UUID, string(characteristic.Value))
+		}
 
 		// Send response back
 		time.Sleep(500 * time.Millisecond)
 		responseChar := d.peripheral.GetCharacteristic("1800", "2A00")
 		if responseChar != nil {
 			d.peripheral.WriteValue([]byte("hello from iOS"), responseChar)
+			d.gui.AddLog("Sent: hello from iOS")
 			fmt.Printf("[iOS] 📤 SENT: \"hello from iOS\"\n")
 		}
 	}
@@ -113,13 +242,23 @@ type FakeAndroidDevice struct {
 	gatt            *kotlin.BluetoothGatt
 	discoveredOnce  bool
 	connectedDevice *kotlin.BluetoothDevice
+	gui             *PhoneGUI
+	photoPath       string
 }
 
-func NewFakeAndroidDevice() *FakeAndroidDevice {
+func NewFakeAndroidDevice(gui *PhoneGUI, photoPath string) *FakeAndroidDevice {
 	d := &FakeAndroidDevice{
-		uuid: uuid.New().String(),
+		uuid:      uuid.New().String(),
+		gui:       gui,
+		photoPath: photoPath,
 	}
 	d.manager = kotlin.NewBluetoothManager(d.uuid)
+
+	// If device has a photo, display it
+	if photoPath != "" {
+		gui.UpdatePhoto(photoPath)
+	}
+
 	return d
 }
 
@@ -128,6 +267,9 @@ func (d *FakeAndroidDevice) OnScanResult(callbackType int, result *kotlin.ScanRe
 	if !d.discoveredOnce {
 		d.discoveredOnce = true
 		d.connectedDevice = result.Device
+		msg := fmt.Sprintf("Discovered: %s", result.Device.Name)
+		d.gui.AddLog(msg)
+		d.gui.UpdateStatus("Discovered")
 		fmt.Printf("[Android] Discovered iOS device: %s\n", result.Device.Name)
 		if result.ScanRecord != nil {
 			if result.ScanRecord.DeviceName != "" {
@@ -143,6 +285,8 @@ func (d *FakeAndroidDevice) OnScanResult(callbackType int, result *kotlin.ScanRe
 				fmt.Printf("[Android]   - Manufacturer Data: %v\n", result.ScanRecord.ManufacturerData)
 			}
 		}
+		d.gui.AddLog("Connecting...")
+		d.gui.UpdateStatus("Connecting")
 		fmt.Printf("[Android] Connecting to iOS device...\n")
 
 		// Connect to GATT
@@ -152,6 +296,8 @@ func (d *FakeAndroidDevice) OnScanResult(callbackType int, result *kotlin.ScanRe
 
 func (d *FakeAndroidDevice) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int, newState int) {
 	if newState == 2 { // STATE_CONNECTED
+		d.gui.AddLog("Connected!")
+		d.gui.UpdateStatus("Connected")
 		fmt.Printf("[Android] Connected to iOS device\n")
 
 		// Discover services first
@@ -160,6 +306,8 @@ func (d *FakeAndroidDevice) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, 
 		// Start listening for incoming data
 		gatt.StartListening()
 	} else if newState == 0 { // STATE_DISCONNECTED
+		d.gui.AddLog("Disconnected")
+		d.gui.UpdateStatus("Disconnected")
 		fmt.Printf("[Android] Disconnected from iOS device\n")
 	}
 }
@@ -167,20 +315,15 @@ func (d *FakeAndroidDevice) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, 
 func (d *FakeAndroidDevice) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 	if status == 0 {
 		services := gatt.GetServices()
+		d.gui.AddLog(fmt.Sprintf("Found %d services", len(services)))
+		d.gui.AddLog("Waiting for photo...")
+		d.gui.UpdateStatus("Waiting for Photo")
 		fmt.Printf("[Android] Discovered %d services\n", len(services))
 		for _, service := range services {
 			fmt.Printf("[Android]   - Service %s with %d characteristics\n", service.UUID, len(service.Characteristics))
 		}
-
-		// Send "hi" message using the first writable characteristic
-		time.Sleep(1 * time.Second)
-		char := gatt.GetCharacteristic("1800", "2A00")
-		if char != nil {
-			char.Value = []byte("hi from Android")
-			gatt.WriteCharacteristic(char)
-			fmt.Printf("[Android] 📤 SENT: \"hi from Android\"\n")
-		}
 	} else {
+		d.gui.AddLog("Service discovery failed")
 		fmt.Printf("[Android] ❌ Service discovery failed with status %d\n", status)
 	}
 }
@@ -194,8 +337,26 @@ func (d *FakeAndroidDevice) OnCharacteristicWrite(gatt *kotlin.BluetoothGatt, ch
 
 func (d *FakeAndroidDevice) OnCharacteristicRead(gatt *kotlin.BluetoothGatt, characteristic *kotlin.BluetoothGattCharacteristic, status int) {
 	if status == 0 {
-		fmt.Printf("[Android] 📩 RECEIVED on char %s: \"%s\"\n", characteristic.UUID, string(characteristic.Value))
+		// Check if this is a photo characteristic
+		const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+		if characteristic.UUID == auraPhotoCharUUID {
+			d.gui.AddLog("Receiving photo...")
+			d.gui.UpdateStatus("Receiving Photo")
+			// Save photo and display it
+			photoPath := "data/bob_received_photo.png"
+			if err := os.WriteFile(photoPath, characteristic.Value, 0644); err == nil {
+				d.gui.UpdatePhoto(photoPath)
+				d.gui.AddLog("Photo received!")
+				d.gui.UpdateStatus("Photo Received")
+				fmt.Printf("[Android] 📩 RECEIVED: Photo (%d bytes)\n", len(characteristic.Value))
+			}
+		} else {
+			msg := fmt.Sprintf("Received: %s", string(characteristic.Value))
+			d.gui.AddLog(msg)
+			fmt.Printf("[Android] 📩 RECEIVED on char %s: \"%s\"\n", characteristic.UUID, string(characteristic.Value))
+		}
 	} else {
+		d.gui.AddLog("Read failed")
 		fmt.Printf("[Android] ❌ Read failed with status %d\n", status)
 	}
 }
@@ -205,13 +366,43 @@ func (d *FakeAndroidDevice) OnCharacteristicChanged(gatt *kotlin.BluetoothGatt, 
 }
 
 func main() {
-	fmt.Println("=== Fake Bluetooth Communication ===\n")
+	// Load the photo handshake scenario
+	scenario, err := tests.LoadScenario("scenarios/photo_handshake.json")
+	if err != nil {
+		fmt.Printf("Failed to load scenario: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("=== Running Scenario: %s ===\n", scenario.Name)
+	fmt.Printf("%s\n\n", scenario.Description)
 
 	// Clean up old device directories from previous runs
 	os.RemoveAll("data/")
 
-	iosDevice := NewFakeIOSDevice()
-	androidDevice := NewFakeAndroidDevice()
+	// Create Fyne app
+	myApp := app.New()
+	myWindow := myApp.NewWindow("Auraphone Blue - Photo Handshake Simulator")
+
+	// Get device configs from scenario
+	aliceConfig := scenario.GetDeviceByID("ios-alice")
+	bobConfig := scenario.GetDeviceByID("android-bob")
+
+	// Create phone GUIs
+	aliceGUI := NewPhoneGUI(aliceConfig.DeviceName + "\n(Alice)")
+	bobGUI := NewPhoneGUI(bobConfig.DeviceName + "\n(Bob)")
+
+	// Create fake devices with GUIs
+	// Alice (iOS) has the photo, Bob (Android) doesn't
+	iosDevice := NewFakeIOSDevice(aliceGUI)
+	androidDevice := NewFakeAndroidDevice(bobGUI, "")
+
+	// Alice should display her photo from the start
+	if aliceConfig.Profile.PhotoPath != "" {
+		aliceGUI.UpdatePhoto(aliceConfig.Profile.PhotoPath)
+	}
+
+	// Store photo path for iOS device to send later
+	iosDevice.photoPath = aliceConfig.Profile.PhotoPath
 
 	// Initialize device directories using the wire package
 	iosWire := wire.NewWire(iosDevice.uuid)
@@ -225,13 +416,11 @@ func main() {
 	}
 
 	// Create GATT tables for both devices
-	// Aura service UUID from the real implementation
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
 	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 
-	// iOS device GATT table (Aura QR Osmosis Service)
-	iosGATT := &wire.GATTTable{
+	gattTable := &wire.GATTTable{
 		Services: []wire.GATTService{
 			{
 				UUID: auraServiceUUID,
@@ -248,41 +437,11 @@ func main() {
 				},
 			},
 			{
-				UUID: "1800", // Generic Access Service
+				UUID: "1800",
 				Type: "primary",
 				Characteristics: []wire.GATTCharacteristic{
 					{
-						UUID:       "2A00", // Device Name characteristic
-						Properties: []string{"read", "write"},
-					},
-				},
-			},
-		},
-	}
-
-	// Android device GATT table (Aura QR Osmosis Service)
-	androidGATT := &wire.GATTTable{
-		Services: []wire.GATTService{
-			{
-				UUID: auraServiceUUID,
-				Type: "primary",
-				Characteristics: []wire.GATTCharacteristic{
-					{
-						UUID:       auraTextCharUUID,
-						Properties: []string{"read", "write", "notify"},
-					},
-					{
-						UUID:       auraPhotoCharUUID,
-						Properties: []string{"write", "notify"},
-					},
-				},
-			},
-			{
-				UUID: "1800", // Generic Access Service
-				Type: "primary",
-				Characteristics: []wire.GATTCharacteristic{
-					{
-						UUID:       "2A00", // Device Name characteristic
+						UUID:       "2A00",
 						Properties: []string{"read", "write", "notify"},
 					},
 				},
@@ -290,35 +449,28 @@ func main() {
 		},
 	}
 
-	// Write GATT tables to filesystem
-	if err := iosWire.WriteGATTTable(iosGATT); err != nil {
+	if err := iosWire.WriteGATTTable(gattTable); err != nil {
 		panic(err)
 	}
-	if err := androidWire.WriteGATTTable(androidGATT); err != nil {
+	if err := androidWire.WriteGATTTable(gattTable); err != nil {
 		panic(err)
 	}
 
-	// Create advertising data for both devices
-	// iOS advertising data (matching real iOS behavior)
-	txPowerLevelIOS := 0 // dBm
+	// Create advertising data
+	txPowerLevel := 0
 	iosAdvertising := &wire.AdvertisingData{
-		DeviceName:    "iPhone Test Device",
+		DeviceName:    aliceConfig.DeviceName,
 		ServiceUUIDs:  []string{auraServiceUUID},
-		TxPowerLevel:  &txPowerLevelIOS,
+		TxPowerLevel:  &txPowerLevel,
+		IsConnectable: true,
+	}
+	androidAdvertising := &wire.AdvertisingData{
+		DeviceName:    bobConfig.DeviceName,
+		ServiceUUIDs:  []string{auraServiceUUID},
+		TxPowerLevel:  &txPowerLevel,
 		IsConnectable: true,
 	}
 
-	// Android advertising data (matching real Android behavior)
-	txPowerLevelAndroid := 0 // dBm
-	androidAdvertising := &wire.AdvertisingData{
-		DeviceName:       "Samsung Galaxy Test",
-		ServiceUUIDs:     []string{auraServiceUUID},
-		ManufacturerData: []byte{0x01, 0x02, 0x03, 0x04}, // Example manufacturer data
-		TxPowerLevel:     &txPowerLevelAndroid,
-		IsConnectable:    true,
-	}
-
-	// Write advertising data to filesystem
 	if err := iosWire.WriteAdvertisingData(iosAdvertising); err != nil {
 		panic(err)
 	}
@@ -326,17 +478,41 @@ func main() {
 		panic(err)
 	}
 
-	fmt.Println("✓ Initialized device GATT tables and advertising data\n")
+	aliceGUI.AddLog("Ready to discover...")
+	aliceGUI.UpdateStatus("Scanning")
+	bobGUI.AddLog("Ready to discover...")
+	bobGUI.UpdateStatus("Advertising")
 
-	// iOS starts listening for peripherals
-	iosDevice.manager.ScanForPeripherals(nil, nil)
+	// Build GUI layout
+	phonesContainer := container.New(
+		layout.NewHBoxLayout(),
+		aliceGUI.Build(),
+		widget.NewSeparator(),
+		bobGUI.Build(),
+	)
 
-	// Android starts scanning for devices
-	androidDevice.manager.Adapter.GetBluetoothLeScanner().StartScan(androidDevice)
+	scenarioInfo := widget.NewLabel(fmt.Sprintf("Scenario: %s\n%s", scenario.Name, scenario.Description))
+	scenarioInfo.Wrapping = fyne.TextWrapWord
 
-	// Wait for devices to discover each other, connect, and exchange data
-	// Discovery (1s) + Connection (instant) + Service Discovery + Message Exchange (1-2s)
-	time.Sleep(4 * time.Second)
+	mainContainer := container.NewBorder(
+		container.NewVBox(scenarioInfo, widget.NewSeparator()),
+		nil, nil, nil,
+		phonesContainer,
+	)
 
-	fmt.Println("\n=== Done ===")
+	myWindow.SetContent(mainContainer)
+	myWindow.Resize(fyne.NewSize(800, 700))
+
+	// Start BLE simulation in background
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+
+		// iOS starts listening for peripherals
+		iosDevice.manager.ScanForPeripherals(nil, nil)
+
+		// Android starts scanning for devices
+		androidDevice.manager.Adapter.GetBluetoothLeScanner().StartScan(androidDevice)
+	}()
+
+	myWindow.ShowAndRun()
 }
