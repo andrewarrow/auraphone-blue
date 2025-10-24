@@ -41,7 +41,8 @@ type PhoneWindow struct {
 	needsRefresh      bool
 	selectedPhoto     string                 // Currently selected profile photo
 	profileImage      *canvas.Image          // Profile tab image
-	deviceImages      map[string]image.Image // Device ID -> profile image cache
+	deviceImages      map[string]image.Image // Photo hash -> profile image cache
+	devicePhotoHashes map[string]string      // Device ID -> photo hash mapping
 }
 
 // NewPhoneWindow creates a new phone window
@@ -58,6 +59,7 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 		needsRefresh:      false,
 		selectedPhoto:     selectedPhoto,
 		deviceImages:      make(map[string]image.Image),
+		devicePhotoHashes: make(map[string]string),
 	}
 
 	// Create platform-specific phone
@@ -282,9 +284,12 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 					// Update profile image if available
 					if profileStack != nil && len(profileStack.Objects) >= 2 {
 						profileImage := profileStack.Objects[1].(*canvas.Image)
-						if img, exists := pw.deviceImages[device.DeviceID]; exists {
-							profileImage.Image = img
-							profileImage.Refresh()
+						// Look up device's photo hash, then find image by hash
+						if photoHash, hasHash := pw.devicePhotoHashes[device.DeviceID]; hasHash {
+							if img, hasImage := pw.deviceImages[photoHash]; hasImage {
+								profileImage.Image = img
+								profileImage.Refresh()
+							}
 						}
 					}
 				}
@@ -372,9 +377,10 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	// Add or update device in map (deduplicates by ID)
 	pw.devicesMap[device.DeviceID] = device
 
-	// If device has a photo hash, try to find matching local image
+	// If device has a photo hash, update the mapping and try to load photo
 	if device.PhotoHash != "" {
-		pw.loadDevicePhoto(device.DeviceID, device.PhotoHash)
+		pw.devicePhotoHashes[device.DeviceID] = device.PhotoHash
+		pw.loadDevicePhoto(device.PhotoHash)
 	}
 
 	// Rebuild sorted list from map
@@ -386,37 +392,39 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	pw.sortAndRefreshDevices()
 }
 
-// loadDevicePhoto loads a cached photo for a device from disk
-func (pw *PhoneWindow) loadDevicePhoto(deviceID, photoHash string) {
+// loadDevicePhoto loads a cached photo by hash from disk
+func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
 	// Check if we already have this image cached in memory
-	if _, exists := pw.deviceImages[deviceID]; exists {
+	if _, exists := pw.deviceImages[photoHash]; exists {
 		return
 	}
 
-	// Try to load from disk cache
-	cachePath := fmt.Sprintf("data/%s/cache/photos/%s.jpg", pw.phone.GetDeviceUUID(), deviceID)
+	// Try to load from disk cache using photo hash as filename
+	cachePath := fmt.Sprintf("data/%s/cache/photos/%s.jpg", pw.phone.GetDeviceUUID(), photoHash)
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		// Photo not in cache yet - it will be received via BLE photo transfer
 		return
 	}
 
-	// Verify hash matches
+	// Verify hash matches (content-addressed storage check)
 	hash := sha256.Sum256(data)
 	hashStr := hex.EncodeToString(hash[:])
 
 	if hashStr != photoHash {
-		// Cached photo is outdated, delete it
+		// Cached photo is corrupted, delete it
 		os.Remove(cachePath)
+		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+		logger.Warn(prefix, "⚠️  Cached photo %s has wrong hash, deleted", photoHash[:8])
 		return
 	}
 
 	// Load image into memory
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err == nil {
-		pw.deviceImages[deviceID] = img
+		pw.deviceImages[photoHash] = img
 		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
-		logger.Debug(prefix, "📷 Loaded cached photo for device %s from disk", deviceID[:8])
+		logger.Debug(prefix, "📷 Loaded cached photo %s from disk", photoHash[:8])
 	}
 }
 
