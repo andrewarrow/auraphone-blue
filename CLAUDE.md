@@ -34,25 +34,26 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 
 ## Known Limitations & Unrealistic Behaviors
 
-### What's Too Fake (and should be fixed):
-1. **No MTU Limits** - Real BLE has 20-512 byte packet limits requiring fragmentation. We write files of any size.
+### What's Now Realistic (✅ Fixed):
+1. **✅ MTU Limits** - BLE has 23-512 byte packet limits (default: 185 bytes). Data is automatically fragmented into MTU-sized chunks.
 
-2. **Instant Connection** - Real BLE connections take 30ms-100ms and can fail. We connect synchronously with no failure modes or timing.
+2. **✅ Connection Timing** - Connections take 30-100ms with realistic ~1.6% failure rate. Connection states (disconnected/connecting/connected/disconnecting) match real BLE.
 
-3. **Instant Discovery** - Real BLE has advertising intervals (typically 100ms-10s) and scan windows. We discover immediately when directories exist.
+3. **✅ Discovery Delays** - Advertising intervals (100ms default) with discovery delays (100ms-1s). Devices are discovered gradually, not instantly.
 
-5. **No Connection States** - Real BLE has connecting/connected/disconnecting states with timing. We switch instantly.
+4. **✅ RSSI/Signal Strength** - Distance-based RSSI (-100 to -20 dBm) with realistic 10dBm variance simulating radio interference.
 
-6. **No RSSI/Signal Strength** - Real BLE has distance-based signal strength (-100 to 0 dBm). We return fixed dummy values.
+5. **✅ Packet Loss & Retries** - ~1.5% packet loss rate with automatic retries (up to 3 attempts). Overall success rate: ~98.4%.
 
-7. **No Radio Interference** - Real BLE has packet loss, retries, collisions. Our filesystem is 100% reliable.
+6. **✅ Device Roles & Negotiation** - Both iOS and Android support dual-role (Central+Peripheral). Smart role negotiation prevents connection conflicts:
+   - **iOS → any device**: Always acts as Central (initiates connection)
+   - **Android → iOS**: Acts as Peripheral (waits for iOS to connect)
+   - **Android → Android**: Lexicographic device name comparison - device with LARGER name acts as Central
 
-### What's Acceptable Given the Architecture:
+### Intentional Simplifications:
 - **Polling for reads (50ms)** - Real BLE uses notifications/indications, but filesystem polling is reasonable here. Alternatives like filesystem watchers are OS-specific, and Go channels would bypass the wire abstraction.
 
-- **100% reliable delivery** - Filesystem guarantees delivery. Simulating packet loss would require artificial randomness.
-
-- **Both Central & Peripheral roles** - While real iOS is typically Central-only, having both roles helps demonstrate full communication.
+- **Simplified collision detection** - Real BLE has sophisticated channel hopping and collision avoidance. We simulate this at the application layer.
 
 ### What's Realistic:
 ✅ API naming matches real iOS CoreBluetooth and Android BLE
@@ -60,13 +61,18 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 ✅ Async operations (discovery runs in background goroutines)
 ✅ UUID-based device identification
 ✅ Binary data payloads
-✅ Connection-oriented communication
+✅ Connection-oriented communication with realistic timing
 ✅ **Proper GATT hierarchy** - Services, Characteristics, and Descriptors with UUIDs
 ✅ **Service discovery** - Devices read gatt.json to discover remote GATT tables
 ✅ **Characteristic-based operations** - Read/write/notify operations reference specific characteristics
 ✅ **Property validation** - Characteristics have properties (read, write, notify, indicate)
 ✅ **Advertising data** - Devices broadcast service UUIDs, device name, manufacturer data, TX power level in `advertising.json`
 ✅ **Advertising packet parsing** - iOS and Android parse advertising data matching platform APIs (kCBAdvData* and ScanRecord)
+✅ **Device roles & negotiation** - Both iOS and Android are dual-role with smart role arbitration
+✅ **Connection states** - disconnected → connecting → connected → disconnecting with realistic timing
+✅ **MTU negotiation** - Packet size limits with automatic fragmentation
+✅ **Packet loss & retries** - ~98.4% overall success rate with realistic radio interference
+✅ **RSSI variance** - Distance-based signal strength with realistic fluctuations
 
 ## Design Principles
 - **Use real platform API names** - CBCentralManager, BluetoothGatt, etc.
@@ -152,13 +158,78 @@ Characteristic operations are sent as JSON message files in inbox/outbox:
   - `gatt.WriteCharacteristic(characteristic)` sends characteristic.Value
   - `gatt.GetCharacteristic(serviceUUID, charUUID)` lookup helper
 
-## Future Improvements Needed
+## Role Negotiation
+
+Both iOS and Android devices support dual-role BLE (can act as Central or Peripheral). To prevent connection conflicts when two devices discover each other simultaneously, the system uses smart role arbitration:
+
+```go
+// iOS device always initiates connections
+iosWire := wire.NewWireWithPlatform(uuid, wire.PlatformIOS, "iPhone 15", nil)
+
+// Android devices use device name comparison for Android-to-Android
+android1 := wire.NewWireWithPlatform(uuid1, wire.PlatformAndroid, "Pixel 8", nil)
+android2 := wire.NewWireWithPlatform(uuid2, wire.PlatformAndroid, "Samsung S23", nil)
+
+// "Pixel 8" > "Samsung S23" lexicographically, so Pixel acts as Central
+shouldConnect := android1.ShouldActAsCentral(android2) // true
+```
+
+**Rules:**
+1. **iOS → any**: iOS always acts as Central (initiates connection)
+2. **Android → iOS**: Android acts as Peripheral (waits for iOS)
+3. **Android → Android**: Device with lexicographically larger name acts as Central
+   - Example: "Pixel 8" > "Galaxy S23" → Pixel connects to Galaxy
+   - Prevents simultaneous connection attempts
+
+## BLE Simulation Configuration
+
+The simulator provides realistic BLE behavior with ~98.4% success rate:
+
+### Default Parameters (wire.DefaultSimulationConfig())
+```go
+MinMTU: 23 bytes                    // BLE 4.0 minimum
+MaxMTU: 512 bytes                   // BLE 5.0+ maximum
+DefaultMTU: 185 bytes               // Common negotiated value
+
+MinConnectionDelay: 30ms            // Fast connection
+MaxConnectionDelay: 100ms           // Typical max
+ConnectionFailureRate: 1.6%         // Realistic failure rate
+
+AdvertisingInterval: 100ms          // Apple recommended
+MinDiscoveryDelay: 100ms            // First advertising packet
+MaxDiscoveryDelay: 1000ms           // Discovery window
+
+BaseRSSI: -50 dBm                   // Close range (~1m)
+RSSIVariance: 10 dBm                // Radio interference
+
+PacketLossRate: 1.5%                // Per-packet loss
+MaxRetries: 3                       // Automatic retries
+RetryDelay: 50ms                    // Between retries
+
+Overall Success Rate: ~98.4%        // After all retries
+```
+
+### Perfect Mode for Testing (wire.PerfectSimulationConfig())
+- Zero delays, zero failures, deterministic behavior
+- Use for unit tests and reproducible scenarios
+
+### Custom Configuration
+```go
+config := wire.DefaultSimulationConfig()
+config.PacketLossRate = 0.05  // Increase to 5% for poor conditions
+config.Distance = 5.0         // Set distance for RSSI calculation
+config.Deterministic = true   // Reproducible for scenarios
+config.Seed = 12345          // Fixed random seed
+```
+
+## Future Improvements
 - [x] Add service/characteristic UUID structure
 - [x] Add advertising data (service UUIDs, device name, manufacturer data)
-- [ ] Implement advertising intervals (currently instant)
-- [ ] Add connection timing delays
-- [ ] Support MTU negotiation and packet fragmentation
-- [ ] Add notifications/indications instead of polling
-- [ ] Simulate connection failures and retries
-- [ ] Add peripheral mode (advertising/serving)
-- [ ] Model RSSI based on "distance" between devices
+- [x] Implement advertising intervals
+- [x] Add connection timing delays
+- [x] Support MTU negotiation and packet fragmentation
+- [x] Simulate connection failures and retries
+- [x] Add device role enforcement (iOS dual, Android peripheral-only)
+- [x] Model RSSI based on distance
+- [ ] Add notifications/indications instead of polling (intentionally simplified)
+- [ ] Add peripheral mode for iOS (currently in swift/ but not fully integrated)
