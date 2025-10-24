@@ -26,6 +26,7 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 
 ### Current Capabilities
 ✅ Device discovery (iOS discovers Android, Android discovers iOS)
+✅ **Advertising data** - Devices broadcast service UUIDs, device name, manufacturer data, TX power
 ✅ Connection establishment (both directions)
 ✅ Data transmission (write characteristic)
 ✅ Data reception (read characteristic with polling)
@@ -38,9 +39,7 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 
 2. **Instant Connection** - Real BLE connections take 30ms-100ms and can fail. We connect synchronously with no failure modes or timing.
 
-3. **No Advertising Data** - Real BLE peripherals broadcast service UUIDs, device name, manufacturer data in advertising packets. We just see a directory.
-
-4. **Instant Discovery** - Real BLE has advertising intervals (typically 100ms-10s) and scan windows. We discover immediately when directories exist.
+3. **Instant Discovery** - Real BLE has advertising intervals (typically 100ms-10s) and scan windows. We discover immediately when directories exist.
 
 5. **No Connection States** - Real BLE has connecting/connected/disconnecting states with timing. We switch instantly.
 
@@ -66,6 +65,8 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 ✅ **Service discovery** - Devices read gatt.json to discover remote GATT tables
 ✅ **Characteristic-based operations** - Read/write/notify operations reference specific characteristics
 ✅ **Property validation** - Characteristics have properties (read, write, notify, indicate)
+✅ **Advertising data** - Devices broadcast service UUIDs, device name, manufacturer data, TX power level in `advertising.json`
+✅ **Advertising packet parsing** - iOS and Android parse advertising data matching platform APIs (kCBAdvData* and ScanRecord)
 
 ## Design Principles
 - **Use real platform API names** - CBCentralManager, BluetoothGatt, etc.
@@ -81,18 +82,52 @@ Each device has a `gatt.json` file in its root directory that defines its GATT d
 {
   "services": [
     {
-      "uuid": "1800",
+      "uuid": "E621E1F8-C36C-495A-93FC-0C247A3E6E5F",
       "type": "primary",
       "characteristics": [
         {
-          "uuid": "2A00",
+          "uuid": "E621E1F8-C36C-495A-93FC-0C247A3E6E5D",
           "properties": ["read", "write", "notify"]
+        },
+        {
+          "uuid": "E621E1F8-C36C-495A-93FC-0C247A3E6E5E",
+          "properties": ["write", "notify"]
         }
       ]
     }
   ]
 }
 ```
+
+### Advertising Data Structure (✅ Implemented)
+Each device has an `advertising.json` file that defines what it broadcasts during discovery:
+```json
+{
+  "device_name": "iPhone Test Device",
+  "service_uuids": [
+    "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+  ],
+  "manufacturer_data": "AQIDBA==",
+  "tx_power_level": 0,
+  "is_connectable": true
+}
+```
+
+**iOS Discovery Format:**
+- Maps to CoreBluetooth's `advertisementData` dictionary with keys:
+  - `kCBAdvDataLocalName` - device name
+  - `kCBAdvDataServiceUUIDs` - array of service UUIDs
+  - `kCBAdvDataManufacturerData` - raw bytes
+  - `kCBAdvDataTxPowerLevel` - transmit power in dBm
+  - `kCBAdvDataIsConnectable` - bool
+
+**Android Discovery Format:**
+- Mapped to `ScanRecord` object with fields:
+  - `DeviceName` - device name string
+  - `ServiceUUIDs` - array of service UUIDs
+  - `ManufacturerData` - map of company ID to data bytes
+  - `TxPowerLevel` - transmit power in dBm
+  - `AdvertiseFlags` - advertising flags (0x06 = general discoverable)
 
 ### Wire Protocol (✅ Implemented)
 Characteristic operations are sent as JSON message files in inbox/outbox:
@@ -119,7 +154,8 @@ Characteristic operations are sent as JSON message files in inbox/outbox:
 
 ## Future Improvements Needed
 - [x] Add service/characteristic UUID structure
-- [ ] Implement proper advertising with intervals
+- [x] Add advertising data (service UUIDs, device name, manufacturer data)
+- [ ] Implement advertising intervals (currently instant)
 - [ ] Add connection timing delays
 - [ ] Support MTU negotiation and packet fragmentation
 - [ ] Add notifications/indications instead of polling
