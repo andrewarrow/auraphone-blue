@@ -135,8 +135,6 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 		name = advName
 	}
 
-	fmt.Printf("[%s iOS] Discovered: %s (RSSI: %.0f dBm)\n", ip.deviceUUID[:8], name, rssi)
-
 	if ip.discoveryCallback != nil {
 		ip.discoveryCallback(phone.DiscoveredDevice{
 			DeviceID: peripheral.UUID,

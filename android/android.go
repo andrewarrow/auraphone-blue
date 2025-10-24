@@ -133,7 +133,6 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 	}
 
 	rssi := float64(result.Rssi)
-	fmt.Printf("[%s Android] Discovered: %s (RSSI: %.0f dBm)\n", a.deviceUUID[:8], name, rssi)
 
 	if a.discoveryCallback != nil {
 		a.discoveryCallback(phone.DiscoveredDevice{

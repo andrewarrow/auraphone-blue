@@ -21,10 +21,14 @@ type PhoneWindow struct {
 	window            fyne.Window
 	currentTab        string
 	app               fyne.App
-	discoveredDevices []phone.DiscoveredDevice
+	devicesMap        map[string]phone.DiscoveredDevice // Device ID -> Device
+	discoveredDevices []phone.DiscoveredDevice          // Sorted list for UI
 	devicesMutex      sync.RWMutex
 	deviceListWidget  *widget.List
 	phone             phone.Phone
+	contentArea       *fyne.Container
+	updateContentFunc func(string)
+	uiUpdateChan      chan func()
 }
 
 // NewPhoneWindow creates a new phone window
@@ -32,7 +36,9 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 	pw := &PhoneWindow{
 		currentTab:        "home",
 		app:               app,
+		devicesMap:        make(map[string]phone.DiscoveredDevice),
 		discoveredDevices: []phone.DiscoveredDevice{},
+		uiUpdateChan:      make(chan func(), 10), // Buffered channel for UI updates
 	}
 
 	// Create platform-specific phone
@@ -65,6 +71,9 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 	// Start BLE operations
 	pw.phone.Start()
 
+	// Start UI update goroutine that runs on main thread
+	go pw.processUIUpdates()
+
 	return pw
 }
 
@@ -78,24 +87,24 @@ func (pw *PhoneWindow) buildUI() fyne.CanvasObject {
 	)
 
 	// Tab content area
-	contentArea := container.NewMax()
+	pw.contentArea = container.NewMax()
 
 	// Update content based on current tab
-	updateContent := func(tabName string) {
+	pw.updateContentFunc = func(tabName string) {
 		pw.currentTab = tabName
-		contentArea.Objects = []fyne.CanvasObject{pw.getTabContent(tabName)}
-		contentArea.Refresh()
+		pw.contentArea.Objects = []fyne.CanvasObject{pw.getTabContent(tabName)}
+		pw.contentArea.Refresh()
 	}
 
 	// Initial content
-	updateContent("home")
+	pw.updateContentFunc("home")
 
 	// Bottom navigation bar with 5 tabs
-	homeBtn := widget.NewButton("Home", func() { updateContent("home") })
-	searchBtn := widget.NewButton("Search", func() { updateContent("search") })
-	addBtn := widget.NewButton("Add", func() { updateContent("add") })
-	playBtn := widget.NewButton("Play", func() { updateContent("play") })
-	profileBtn := widget.NewButton("Profile", func() { updateContent("profile") })
+	homeBtn := widget.NewButton("Home", func() { pw.updateContentFunc("home") })
+	searchBtn := widget.NewButton("Search", func() { pw.updateContentFunc("search") })
+	addBtn := widget.NewButton("Add", func() { pw.updateContentFunc("add") })
+	playBtn := widget.NewButton("Play", func() { pw.updateContentFunc("play") })
+	profileBtn := widget.NewButton("Profile", func() { pw.updateContentFunc("profile") })
 
 	tabBar := container.NewGridWithColumns(5,
 		homeBtn,
@@ -110,7 +119,7 @@ func (pw *PhoneWindow) buildUI() fyne.CanvasObject {
 		header,
 		tabBar,
 		nil, nil,
-		contentArea,
+		pw.contentArea,
 	)
 }
 
@@ -166,13 +175,8 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 			},
 		)
 
-		if len(pw.discoveredDevices) == 0 {
-			// Show empty state
-			emptyLabel := widget.NewLabel("Scanning for devices...")
-			emptyLabel.Alignment = fyne.TextAlignCenter
-			return container.NewMax(bg, container.NewCenter(emptyLabel))
-		}
-
+		// Always return the list widget, even if empty
+		// The list will handle its own empty state
 		return container.NewMax(bg, pw.deviceListWidget)
 	}
 
@@ -196,18 +200,15 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	pw.devicesMutex.Lock()
 	defer pw.devicesMutex.Unlock()
 
-	// Check if device already exists
-	for i, dev := range pw.discoveredDevices {
-		if dev.DeviceID == device.DeviceID {
-			// Update existing device
-			pw.discoveredDevices[i].RSSI = device.RSSI
-			pw.sortAndRefreshDevices()
-			return
-		}
+	// Add or update device in map (deduplicates by ID)
+	pw.devicesMap[device.DeviceID] = device
+
+	// Rebuild sorted list from map
+	pw.discoveredDevices = make([]phone.DiscoveredDevice, 0, len(pw.devicesMap))
+	for _, dev := range pw.devicesMap {
+		pw.discoveredDevices = append(pw.discoveredDevices, dev)
 	}
 
-	// Add new device
-	pw.discoveredDevices = append(pw.discoveredDevices, device)
 	pw.sortAndRefreshDevices()
 }
 
@@ -217,8 +218,26 @@ func (pw *PhoneWindow) sortAndRefreshDevices() {
 		return pw.discoveredDevices[i].RSSI > pw.discoveredDevices[j].RSSI
 	})
 
-	if pw.deviceListWidget != nil && pw.currentTab == "home" {
-		pw.deviceListWidget.Refresh()
+	// If on home tab, queue a UI update (non-blocking)
+	if pw.currentTab == "home" && pw.contentArea != nil {
+		// Queue the UI update to be processed on the main thread
+		select {
+		case pw.uiUpdateChan <- func() {
+			pw.contentArea.Objects = []fyne.CanvasObject{pw.getTabContent("home")}
+			pw.contentArea.Refresh()
+		}:
+			// Queued successfully
+		default:
+			// Channel full, skip this update
+		}
+	}
+}
+
+// processUIUpdates runs in a goroutine and processes UI updates from the channel
+func (pw *PhoneWindow) processUIUpdates() {
+	for updateFunc := range pw.uiUpdateChan {
+		// Execute the UI update function
+		updateFunc()
 	}
 }
 
@@ -226,6 +245,7 @@ func (pw *PhoneWindow) sortAndRefreshDevices() {
 func (pw *PhoneWindow) cleanup() {
 	fmt.Printf("Closing %s phone (UUID: %s)\n", pw.phone.GetPlatform(), pw.phone.GetDeviceUUID()[:8])
 	pw.phone.Stop()
+	close(pw.uiUpdateChan)
 }
 
 // Launcher creates the main menu window
