@@ -22,6 +22,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/user/auraphone-blue/android"
 	"github.com/user/auraphone-blue/iphone"
+	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
 )
 
@@ -229,33 +230,63 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 					device := pw.discoveredDevices[id]
 					row := obj.(*fyne.Container)
 
-					// Get the text stack from the center of the border container
-					textStack := row.Objects[0].(*fyne.Container)
-					nameText := textStack.Objects[0].(*canvas.Text)
-					deviceIDText := textStack.Objects[1].(*canvas.Text)
-					rssiText := textStack.Objects[2].(*canvas.Text)
+					// Border container structure: [center, top, bottom, left, right]
+					// Center = textStack, Left = profileStack
+					var textStack *fyne.Container
+					var profileStack *fyne.Container
 
-					// Get the profile stack from the left of the border container
-					leftPadding := row.Objects[2].(*fyne.Container) // Left side
-					profileStack := leftPadding.Objects[0].(*fyne.Container)
-					profileImage := profileStack.Objects[1].(*canvas.Image)
-
-					// Update profile image if available
-					if img, exists := pw.deviceImages[device.DeviceID]; exists {
-						profileImage.Image = img
-						profileImage.Refresh()
+					// Find the text stack and profile stack
+					for _, child := range row.Objects {
+						if child == nil {
+							continue
+						}
+						if container, ok := child.(*fyne.Container); ok {
+							// Check if this is the padded profile container (has circle/image)
+							if len(container.Objects) > 0 {
+								if innerContainer, ok := container.Objects[0].(*fyne.Container); ok {
+									// Check if it's a Max container with circle and image
+									if len(innerContainer.Objects) == 2 {
+										if _, isCircle := innerContainer.Objects[0].(*canvas.Circle); isCircle {
+											profileStack = innerContainer
+											continue
+										}
+									}
+								}
+								// Check if this is the text stack (has text objects)
+								if len(container.Objects) >= 3 {
+									if _, isText := container.Objects[0].(*canvas.Text); isText {
+										textStack = container
+									}
+								}
+							}
+						}
 					}
 
-					// Set name with cyan color (matching iOS)
-					nameText.Text = device.Name
-					nameText.Refresh()
+					if textStack != nil && len(textStack.Objects) >= 3 {
+						nameText := textStack.Objects[0].(*canvas.Text)
+						deviceIDText := textStack.Objects[1].(*canvas.Text)
+						rssiText := textStack.Objects[2].(*canvas.Text)
 
-					// Set device info on separate lines
-					deviceIDText.Text = fmt.Sprintf("Device: %s", device.DeviceID[:8])
-					deviceIDText.Refresh()
+						// Set name with cyan color (matching iOS)
+						nameText.Text = device.Name
+						nameText.Refresh()
 
-					rssiText.Text = fmt.Sprintf("RSSI: %.0f dBm, Connected: Yes", device.RSSI)
-					rssiText.Refresh()
+						// Set device info on separate lines
+						deviceIDText.Text = fmt.Sprintf("Device: %s", device.DeviceID[:8])
+						deviceIDText.Refresh()
+
+						rssiText.Text = fmt.Sprintf("RSSI: %.0f dBm, Connected: Yes", device.RSSI)
+						rssiText.Refresh()
+					}
+
+					// Update profile image if available
+					if profileStack != nil && len(profileStack.Objects) >= 2 {
+						profileImage := profileStack.Objects[1].(*canvas.Image)
+						if img, exists := pw.deviceImages[device.DeviceID]; exists {
+							profileImage.Image = img
+							profileImage.Refresh()
+						}
+					}
 				}
 			},
 		)
@@ -379,8 +410,8 @@ func (pw *PhoneWindow) loadDevicePhoto(deviceID, photoHash string) {
 			img, _, err := image.Decode(bytes.NewReader(data))
 			if err == nil {
 				pw.deviceImages[deviceID] = img
-				fmt.Printf("[%s] Loaded profile photo for device %s (face%d.jpg)\n",
-					pw.phone.GetDeviceUUID()[:8], deviceID[:8], i)
+				prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+				logger.Debug(prefix, "📷 Loaded profile photo for device %s (face%d.jpg)", deviceID[:8], i)
 				return
 			}
 		}
@@ -436,6 +467,14 @@ func (l *Launcher) buildUI() fyne.CanvasObject {
 	subtitle := widget.NewLabel("Fake Bluetooth Simulator")
 	subtitle.Alignment = fyne.TextAlignCenter
 
+	// Log level selector
+	logLevelLabel := widget.NewLabel("Log Level:")
+	logLevelSelect := widget.NewSelect([]string{"ERROR", "WARN", "INFO", "DEBUG"}, func(selected string) {
+		logger.SetLevel(logger.ParseLevel(selected))
+		fmt.Printf("Log level set to: %s\n", selected)
+	})
+	logLevelSelect.SetSelected("INFO") // Default level
+
 	// Start iOS button
 	iosBtn := widget.NewButton("Start iOS Device", func() {
 		phoneWindow := NewPhoneWindow(l.app, "iOS")
@@ -465,6 +504,8 @@ func (l *Launcher) buildUI() fyne.CanvasObject {
 		title,
 		subtitle,
 		widget.NewSeparator(),
+		widget.NewLabel(""),
+		container.NewHBox(logLevelLabel, logLevelSelect),
 		widget.NewLabel(""),
 		iosBtn,
 		androidBtn,

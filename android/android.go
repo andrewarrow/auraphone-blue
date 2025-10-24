@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/user/auraphone-blue/kotlin"
+	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
 	"github.com/user/auraphone-blue/wire"
 )
@@ -97,7 +98,7 @@ func (a *Android) setupBLE() {
 		return
 	}
 
-	fmt.Printf("[%s Android] Setup complete - advertising as: %s\n", a.deviceUUID[:8], a.deviceName)
+	logger.Info(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "Setup complete - advertising as: %s", a.deviceName)
 }
 
 // Start begins BLE advertising and scanning
@@ -106,7 +107,7 @@ func (a *Android) Start() {
 		time.Sleep(500 * time.Millisecond)
 		scanner := a.manager.Adapter.GetBluetoothLeScanner()
 		scanner.StartScan(a)
-		fmt.Printf("[%s Android] Started scanning for devices\n", a.deviceUUID[:8])
+		logger.Info(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "Started scanning for devices")
 	}()
 }
 
@@ -151,6 +152,15 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 
 	rssi := float64(result.Rssi)
 
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	logger.Debug(prefix, "📱 DISCOVERED device %s (%s)", result.Device.Address[:8], name)
+	logger.Debug(prefix, "   └─ RSSI: %.0f dBm", rssi)
+	if photoHash != "" {
+		logger.Debug(prefix, "   └─ Photo Hash: %s", photoHash[:8])
+	} else {
+		logger.Debug(prefix, "   └─ Photo Hash: (none)")
+	}
+
 	if a.discoveryCallback != nil {
 		a.discoveryCallback(phone.DiscoveredDevice{
 			DeviceID:  result.Device.Address,
@@ -182,10 +192,8 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	// Update advertising data to broadcast new hash
 	a.setupBLE()
 
-	fmt.Printf("[%s Android] Updated profile photo (hash: %s)\n", a.deviceUUID[:8], photoHash[:8])
-
-	// TODO: Send photo to all connected devices
-	// For now, devices will request it when they see the hash change
+	logger.Info(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "📸 Updated profile photo (hash: %s)", photoHash[:8])
+	logger.Debug(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "   └─ Broadcasting new hash in advertising data")
 
 	return nil
 }

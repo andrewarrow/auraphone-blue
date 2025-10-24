@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
 	"github.com/user/auraphone-blue/swift"
 	"github.com/user/auraphone-blue/wire"
@@ -97,7 +98,7 @@ func (ip *iPhone) setupBLE() {
 		return
 	}
 
-	fmt.Printf("[%s iOS] Setup complete - advertising as: %s\n", ip.deviceUUID[:8], ip.deviceName)
+	logger.Info(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "Setup complete - advertising as: %s", ip.deviceName)
 }
 
 // Start begins BLE advertising and scanning
@@ -105,7 +106,7 @@ func (ip *iPhone) Start() {
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		ip.manager.ScanForPeripherals(nil, nil)
-		fmt.Printf("[%s iOS] Started scanning for peripherals\n", ip.deviceUUID[:8])
+		logger.Info(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "Started scanning for peripherals")
 	}()
 }
 
@@ -152,6 +153,15 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 		photoHash = hash
 	}
 
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	logger.Debug(prefix, "📱 DISCOVERED device %s (%s)", peripheral.UUID[:8], name)
+	logger.Debug(prefix, "   └─ RSSI: %.0f dBm", rssi)
+	if photoHash != "" {
+		logger.Debug(prefix, "   └─ Photo Hash: %s", photoHash[:8])
+	} else {
+		logger.Debug(prefix, "   └─ Photo Hash: (none)")
+	}
+
 	if ip.discoveryCallback != nil {
 		ip.discoveryCallback(phone.DiscoveredDevice{
 			DeviceID:  peripheral.UUID,
@@ -191,10 +201,8 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	// Update advertising data to broadcast new hash
 	ip.setupBLE()
 
-	fmt.Printf("[%s iOS] Updated profile photo (hash: %s)\n", ip.deviceUUID[:8], photoHash[:8])
-
-	// TODO: Send photo to all connected devices
-	// For now, devices will request it when they see the hash change
+	logger.Info(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "📸 Updated profile photo (hash: %s)", photoHash[:8])
+	logger.Debug(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "   └─ Broadcasting new hash in advertising data")
 
 	return nil
 }
