@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package auraphone;
+
+option go_package = "github.com/andrewarrow/auraphone-blue/proto";
+
+// Handshake message exchanged between devices over BLE
+message HandshakeMessage {
+  string device_id = 1;
+  string first_name = 2;
+  int32 protocol_version = 3;
+  string last_name = 4;
+  string phone_number = 5;
+  string tagline = 6;
+  string insta = 7;
+  string rx_photo_hash = 8;  // Hash of photo we RECEIVED from remote device
+  string tx_photo_hash = 9;  // Hash of OUR photo available to send
+  string linkedin = 10;
+  string youtube = 11;
+  string tiktok = 12;
+  string gmail = 13;
+  string imessage = 14;
+  string whatsapp = 15;
+  string signal = 16;
+  string telegram = 17;
+}
+
+// Acknowledgment of photo transfer completion
+message PhotoCompletionAck {
+  string device_id = 1;
+  fixed32 transfer_crc = 2;  // CRC-32 of complete photo data
+  bool success = 3;
+}
