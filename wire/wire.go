@@ -19,8 +19,6 @@ type AdvertisingData struct {
 	ManufacturerData []byte   `json:"manufacturer_data,omitempty"`
 	TxPowerLevel     *int     `json:"tx_power_level,omitempty"`
 	IsConnectable    bool     `json:"is_connectable"`
-	RxPhotoHash      string   `json:"rx_photo_hash,omitempty"` // Hash of photo we RECEIVED from remote device
-	TxPhotoHash      string   `json:"tx_photo_hash,omitempty"` // Hash of OUR photo available to send
 }
 
 // DeviceInfo represents a discovered device on the wire
