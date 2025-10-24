@@ -703,7 +703,7 @@ func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
 
 	var messages []*CharacteristicMessage
 	for _, filename := range files {
-		data, err := w.ReadData(filename)
+		data, err := w.ReadAndReassemble(filename)
 		if err != nil {
 			continue
 		}
