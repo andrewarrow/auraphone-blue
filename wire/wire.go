@@ -10,6 +10,15 @@ import (
 	"github.com/google/uuid"
 )
 
+// AdvertisingData represents BLE advertising packet data
+type AdvertisingData struct {
+	DeviceName       string   `json:"device_name,omitempty"`
+	ServiceUUIDs     []string `json:"service_uuids,omitempty"`
+	ManufacturerData []byte   `json:"manufacturer_data,omitempty"`
+	TxPowerLevel     *int     `json:"tx_power_level,omitempty"`
+	IsConnectable    bool     `json:"is_connectable"`
+}
+
 // DeviceInfo represents a discovered device on the wire
 type DeviceInfo struct {
 	UUID string
@@ -281,6 +290,43 @@ func (w *Wire) ReadGATTTable(deviceUUID string) (*GATTTable, error) {
 	}
 
 	return &table, nil
+}
+
+// WriteAdvertisingData writes the advertising data to this device's advertising.json file
+func (w *Wire) WriteAdvertisingData(advData *AdvertisingData) error {
+	devicePath := filepath.Join(w.basePath, w.localUUID)
+	advPath := filepath.Join(devicePath, "advertising.json")
+
+	data, err := json.MarshalIndent(advData, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal advertising data: %w", err)
+	}
+
+	return os.WriteFile(advPath, data, 0644)
+}
+
+// ReadAdvertisingData reads the advertising data from a device's advertising.json file
+func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) {
+	devicePath := filepath.Join(w.basePath, deviceUUID)
+	advPath := filepath.Join(devicePath, "advertising.json")
+
+	data, err := os.ReadFile(advPath)
+	if err != nil {
+		// If advertising.json doesn't exist, return default advertising data
+		if os.IsNotExist(err) {
+			return &AdvertisingData{
+				IsConnectable: true,
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to read advertising data: %w", err)
+	}
+
+	var advData AdvertisingData
+	if err := json.Unmarshal(data, &advData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal advertising data: %w", err)
+	}
+
+	return &advData, nil
 }
 
 // WriteCharacteristic sends a characteristic operation message to target device

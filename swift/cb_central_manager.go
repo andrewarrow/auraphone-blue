@@ -30,10 +30,46 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string) *CBCent
 
 func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map[string]interface{}) {
 	c.stopChan = c.wire.StartDiscovery(func(deviceUUID string) {
+		// Read advertising data from the discovered device
+		advData, err := c.wire.ReadAdvertisingData(deviceUUID)
+		if err != nil {
+			// Fall back to empty advertising data if not available
+			advData = &wire.AdvertisingData{
+				IsConnectable: true,
+			}
+		}
+
+		// Build advertisement data map matching iOS CoreBluetooth format
+		advertisementData := make(map[string]interface{})
+
+		if advData.DeviceName != "" {
+			advertisementData["kCBAdvDataLocalName"] = advData.DeviceName
+		}
+
+		if len(advData.ServiceUUIDs) > 0 {
+			advertisementData["kCBAdvDataServiceUUIDs"] = advData.ServiceUUIDs
+		}
+
+		if advData.ManufacturerData != nil && len(advData.ManufacturerData) > 0 {
+			advertisementData["kCBAdvDataManufacturerData"] = advData.ManufacturerData
+		}
+
+		if advData.TxPowerLevel != nil {
+			advertisementData["kCBAdvDataTxPowerLevel"] = *advData.TxPowerLevel
+		}
+
+		advertisementData["kCBAdvDataIsConnectable"] = advData.IsConnectable
+
+		// Use device name from advertising data if available, otherwise use placeholder
+		deviceName := advData.DeviceName
+		if deviceName == "" {
+			deviceName = "Unknown Device"
+		}
+
 		c.Delegate.DidDiscoverPeripheral(*c, CBPeripheral{
-			Name: "Android Test Device",
+			Name: deviceName,
 			UUID: deviceUUID,
-		}, nil, -50)
+		}, advertisementData, -50)
 	})
 }
 

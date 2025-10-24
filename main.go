@@ -34,7 +34,22 @@ func (d *FakeIOSDevice) DidDiscoverPeripheral(central swift.CBCentralManager, pe
 	// Connect to the first discovered peripheral (for listening mode)
 	if !d.discoveredOnce {
 		d.discoveredOnce = true
-		fmt.Printf("[iOS] Discovered Android device, connecting...\n")
+		fmt.Printf("[iOS] Discovered Android device: %s\n", peripheral.Name)
+		if advertisementData != nil {
+			if name, ok := advertisementData["kCBAdvDataLocalName"].(string); ok {
+				fmt.Printf("[iOS]   - Device Name: %s\n", name)
+			}
+			if services, ok := advertisementData["kCBAdvDataServiceUUIDs"].([]string); ok && len(services) > 0 {
+				fmt.Printf("[iOS]   - Service UUIDs: %v\n", services)
+			}
+			if txPower, ok := advertisementData["kCBAdvDataTxPowerLevel"].(int); ok {
+				fmt.Printf("[iOS]   - TX Power: %d dBm\n", txPower)
+			}
+			if isConnectable, ok := advertisementData["kCBAdvDataIsConnectable"].(bool); ok {
+				fmt.Printf("[iOS]   - Connectable: %v\n", isConnectable)
+			}
+		}
+		fmt.Printf("[iOS] Connecting to Android device...\n")
 		d.manager.Connect(&peripheral, nil)
 	}
 }
@@ -113,7 +128,22 @@ func (d *FakeAndroidDevice) OnScanResult(callbackType int, result *kotlin.ScanRe
 	if !d.discoveredOnce {
 		d.discoveredOnce = true
 		d.connectedDevice = result.Device
-		fmt.Printf("[Android] Discovered iOS device, connecting...\n")
+		fmt.Printf("[Android] Discovered iOS device: %s\n", result.Device.Name)
+		if result.ScanRecord != nil {
+			if result.ScanRecord.DeviceName != "" {
+				fmt.Printf("[Android]   - Device Name: %s\n", result.ScanRecord.DeviceName)
+			}
+			if len(result.ScanRecord.ServiceUUIDs) > 0 {
+				fmt.Printf("[Android]   - Service UUIDs: %v\n", result.ScanRecord.ServiceUUIDs)
+			}
+			if result.ScanRecord.TxPowerLevel != nil {
+				fmt.Printf("[Android]   - TX Power: %d dBm\n", *result.ScanRecord.TxPowerLevel)
+			}
+			if len(result.ScanRecord.ManufacturerData) > 0 {
+				fmt.Printf("[Android]   - Manufacturer Data: %v\n", result.ScanRecord.ManufacturerData)
+			}
+		}
+		fmt.Printf("[Android] Connecting to iOS device...\n")
 
 		// Connect to GATT
 		d.gatt = result.Device.ConnectGatt(nil, false, d)
@@ -195,9 +225,28 @@ func main() {
 	}
 
 	// Create GATT tables for both devices
-	// iOS device GATT table (Generic Access Service)
+	// Aura service UUID from the real implementation
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+
+	// iOS device GATT table (Aura QR Osmosis Service)
 	iosGATT := &wire.GATTTable{
 		Services: []wire.GATTService{
+			{
+				UUID: auraServiceUUID,
+				Type: "primary",
+				Characteristics: []wire.GATTCharacteristic{
+					{
+						UUID:       auraTextCharUUID,
+						Properties: []string{"read", "write", "notify"},
+					},
+					{
+						UUID:       auraPhotoCharUUID,
+						Properties: []string{"write", "notify"},
+					},
+				},
+			},
 			{
 				UUID: "1800", // Generic Access Service
 				Type: "primary",
@@ -206,18 +255,28 @@ func main() {
 						UUID:       "2A00", // Device Name characteristic
 						Properties: []string{"read", "write"},
 					},
-					{
-						UUID:       "2A01", // Appearance characteristic
-						Properties: []string{"read"},
-					},
 				},
 			},
 		},
 	}
 
-	// Android device GATT table (Generic Access Service)
+	// Android device GATT table (Aura QR Osmosis Service)
 	androidGATT := &wire.GATTTable{
 		Services: []wire.GATTService{
+			{
+				UUID: auraServiceUUID,
+				Type: "primary",
+				Characteristics: []wire.GATTCharacteristic{
+					{
+						UUID:       auraTextCharUUID,
+						Properties: []string{"read", "write", "notify"},
+					},
+					{
+						UUID:       auraPhotoCharUUID,
+						Properties: []string{"write", "notify"},
+					},
+				},
+			},
 			{
 				UUID: "1800", // Generic Access Service
 				Type: "primary",
@@ -239,7 +298,35 @@ func main() {
 		panic(err)
 	}
 
-	fmt.Println("✓ Initialized device GATT tables\n")
+	// Create advertising data for both devices
+	// iOS advertising data (matching real iOS behavior)
+	txPowerLevelIOS := 0 // dBm
+	iosAdvertising := &wire.AdvertisingData{
+		DeviceName:    "iPhone Test Device",
+		ServiceUUIDs:  []string{auraServiceUUID},
+		TxPowerLevel:  &txPowerLevelIOS,
+		IsConnectable: true,
+	}
+
+	// Android advertising data (matching real Android behavior)
+	txPowerLevelAndroid := 0 // dBm
+	androidAdvertising := &wire.AdvertisingData{
+		DeviceName:       "Samsung Galaxy Test",
+		ServiceUUIDs:     []string{auraServiceUUID},
+		ManufacturerData: []byte{0x01, 0x02, 0x03, 0x04}, // Example manufacturer data
+		TxPowerLevel:     &txPowerLevelAndroid,
+		IsConnectable:    true,
+	}
+
+	// Write advertising data to filesystem
+	if err := iosWire.WriteAdvertisingData(iosAdvertising); err != nil {
+		panic(err)
+	}
+	if err := androidWire.WriteAdvertisingData(androidAdvertising); err != nil {
+		panic(err)
+	}
+
+	fmt.Println("✓ Initialized device GATT tables and advertising data\n")
 
 	// iOS starts listening for peripherals
 	iosDevice.manager.ScanForPeripherals(nil, nil)

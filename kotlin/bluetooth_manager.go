@@ -50,15 +50,46 @@ func (s *BluetoothLeScanner) StartScan(callback ScanCallback) {
 	s.callback = callback
 
 	s.stopChan = s.wire.StartDiscovery(func(deviceUUID string) {
+		// Read advertising data from the discovered device
+		advData, err := s.wire.ReadAdvertisingData(deviceUUID)
+		if err != nil {
+			// Fall back to empty advertising data if not available
+			advData = &wire.AdvertisingData{
+				IsConnectable: true,
+			}
+		}
+
+		// Build ScanRecord from advertising data
+		scanRecord := &ScanRecord{
+			DeviceName:       advData.DeviceName,
+			ServiceUUIDs:     advData.ServiceUUIDs,
+			ManufacturerData: make(map[int][]byte),
+			TxPowerLevel:     advData.TxPowerLevel,
+			AdvertiseFlags:   0x06, // General discoverable mode, BR/EDR not supported
+		}
+
+		// Parse manufacturer data if present (Android format uses company ID)
+		if len(advData.ManufacturerData) > 0 {
+			// For simplicity, use company ID 0xFFFF (reserved) for our fake data
+			scanRecord.ManufacturerData[0xFFFF] = advData.ManufacturerData
+		}
+
+		// Use device name from advertising data if available
+		deviceName := advData.DeviceName
+		if deviceName == "" {
+			deviceName = "Unknown Device"
+		}
+
 		device := &BluetoothDevice{
-			Name:    "iOS Test Device",
+			Name:    deviceName,
 			Address: deviceUUID,
 		}
 		device.SetWire(s.wire)
 
 		s.callback.OnScanResult(0, &ScanResult{
-			Device: device,
-			Rssi:   -55,
+			Device:     device,
+			Rssi:       -55,
+			ScanRecord: scanRecord,
 		})
 	})
 }
@@ -77,5 +108,14 @@ type ScanCallback interface {
 type ScanResult struct {
 	Device     *BluetoothDevice
 	Rssi       int
-	ScanRecord []byte
+	ScanRecord *ScanRecord
+}
+
+// ScanRecord represents the advertising data from a BLE scan
+type ScanRecord struct {
+	DeviceName       string
+	ServiceUUIDs     []string
+	ManufacturerData map[int][]byte // Company ID -> data
+	TxPowerLevel     *int
+	AdvertiseFlags   int
 }
