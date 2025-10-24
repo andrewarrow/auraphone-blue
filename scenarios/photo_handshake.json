@@ -1,0 +1,156 @@
+{
+  "name": "Photo Handshake - One Device Sends Photo",
+  "description": "Alice has a photo, Bob doesn't. After handshake, Alice should send her photo to Bob. Bob has nothing to send.",
+  "devices": [
+    {
+      "id": "ios-alice",
+      "platform": "ios",
+      "device_name": "iPhone 15 Pro",
+      "profile": {
+        "first_name": "Alice",
+        "last_name": "Smith",
+        "photo_path": "testdata/alice_photo.png"
+      },
+      "advertising": {
+        "service_uuids": ["E621E1F8-C36C-495A-93FC-0C247A3E6E5F"],
+        "interval_ms": 100,
+        "tx_power": 0
+      }
+    },
+    {
+      "id": "android-bob",
+      "platform": "android",
+      "device_name": "Pixel 8 Pro",
+      "profile": {
+        "first_name": "Bob",
+        "last_name": "Johnson"
+      },
+      "advertising": {
+        "service_uuids": ["E621E1F8-C36C-495A-93FC-0C247A3E6E5F"],
+        "interval_ms": 100,
+        "tx_power": 0
+      }
+    }
+  ],
+  "timeline": [
+    {
+      "time_ms": 0,
+      "action": "start_advertising",
+      "device": "android-bob",
+      "comment": "Android starts advertising"
+    },
+    {
+      "time_ms": 50,
+      "action": "start_advertising",
+      "device": "ios-alice",
+      "comment": "iOS starts advertising"
+    },
+    {
+      "time_ms": 100,
+      "action": "start_scanning",
+      "device": "ios-alice",
+      "comment": "iOS scans for devices"
+    },
+    {
+      "time_ms": 200,
+      "action": "discover",
+      "device": "ios-alice",
+      "target": "android-bob",
+      "comment": "iOS discovers Android"
+    },
+    {
+      "time_ms": 250,
+      "action": "connect",
+      "device": "ios-alice",
+      "target": "android-bob",
+      "comment": "iOS connects to Android"
+    },
+    {
+      "time_ms": 300,
+      "action": "discover_services",
+      "device": "ios-alice",
+      "comment": "iOS discovers GATT services"
+    },
+    {
+      "time_ms": 350,
+      "action": "send_handshake",
+      "device": "ios-alice",
+      "target": "android-bob",
+      "comment": "iOS sends handshake with TX photo hash (has photo)"
+    },
+    {
+      "time_ms": 400,
+      "action": "receive_handshake",
+      "device": "android-bob",
+      "target": "ios-alice",
+      "comment": "Android receives handshake - sees Alice has a photo"
+    },
+    {
+      "time_ms": 450,
+      "action": "send_handshake",
+      "device": "android-bob",
+      "target": "ios-alice",
+      "comment": "Android sends handshake with no TX photo hash"
+    },
+    {
+      "time_ms": 500,
+      "action": "receive_handshake",
+      "device": "ios-alice",
+      "target": "android-bob",
+      "comment": "iOS receives handshake - sees Bob has no photo"
+    },
+    {
+      "time_ms": 600,
+      "action": "send_photo_metadata",
+      "device": "ios-alice",
+      "target": "android-bob",
+      "comment": "iOS decides to send photo (Bob's RX hash empty, Alice's TX hash present)"
+    },
+    {
+      "time_ms": 620,
+      "action": "send_photo_metadata",
+      "device": "android-bob",
+      "target": "ios-alice",
+      "comment": "Android decides NOT to send (has no photo)"
+    },
+    {
+      "time_ms": 650,
+      "action": "receive_photo",
+      "device": "android-bob",
+      "target": "ios-alice",
+      "comment": "Android receives photo metadata from Alice and prepares to receive"
+    }
+  ],
+  "assertions": [
+    {
+      "type": "connected",
+      "device": "ios-alice",
+      "to": "android-bob",
+      "comment": "iOS connected to Android"
+    },
+    {
+      "type": "handshake_received",
+      "device": "ios-alice",
+      "from": "android-bob",
+      "comment": "iOS received Bob's handshake"
+    },
+    {
+      "type": "handshake_received",
+      "device": "android-bob",
+      "from": "ios-alice",
+      "comment": "Android received Alice's handshake"
+    },
+    {
+      "type": "photo_send_initiated",
+      "device": "ios-alice",
+      "to": "android-bob",
+      "comment": "Alice should initiate photo send (has photo, Bob doesn't have it)"
+    },
+    {
+      "type": "photo_send_skipped",
+      "device": "android-bob",
+      "to": "ios-alice",
+      "comment": "Bob should NOT send photo (has no photo)"
+    }
+  ]
+}

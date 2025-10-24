@@ -43,10 +43,12 @@ type SimulatedDevice struct {
 	HandshakesReceived map[string]*HandshakeData // deviceID -> handshake data
 
 	// Photo transfer state
-	IsSendingPhoto     bool
-	IsReceivingPhoto   bool
-	PhotoSendTarget    string
-	PhotoReceiveSource string
+	IsSendingPhoto       bool
+	IsReceivingPhoto     bool
+	PhotoSendTarget      string        // deviceID we're sending to
+	PhotoReceiveSource   string        // deviceID we're receiving from
+	PhotoSendInitiated   map[string]bool // deviceID -> initiated (for assertions)
+	PhotoSendSkipped     map[string]bool // deviceID -> skipped (for assertions)
 
 	// Collision detection
 	CollisionDetected  bool
@@ -121,6 +123,8 @@ func (r *ScenarioRunner) createDevice(config *DeviceConfig) (*SimulatedDevice, e
 		ConnectedTo:        make(map[string]bool),
 		HandshakesSent:     make(map[string]bool),
 		HandshakesReceived: make(map[string]*HandshakeData),
+		PhotoSendInitiated: make(map[string]bool),
+		PhotoSendSkipped:   make(map[string]bool),
 	}
 
 	// Initialize device directory
@@ -228,6 +232,10 @@ func (r *ScenarioRunner) executeEvent(event *TimelineEvent) error {
 		return r.handleSendHandshake(device, event.Target)
 	case ActionReceiveHandshake:
 		return r.handleReceiveHandshake(device, event.Target)
+	case ActionSendPhotoMetadata:
+		return r.handleSendPhotoMetadata(device, event.Target)
+	case ActionReceivePhoto:
+		return r.handleReceivePhotoMetadata(device, event.Target)
 	case ActionUpdateProfile:
 		return r.handleUpdateProfile(device, event.Data)
 	default:
@@ -448,6 +456,80 @@ func (r *ScenarioRunner) handleReceiveHandshake(device *SimulatedDevice, targetI
 	return nil
 }
 
+func (r *ScenarioRunner) handleSendPhotoMetadata(device *SimulatedDevice, targetID string) error {
+	target := r.devices[targetID]
+	if target == nil {
+		return fmt.Errorf("target device %s not found", targetID)
+	}
+
+	// Get the handshake we received from target
+	targetHandshake := device.HandshakesReceived[targetID]
+	if targetHandshake == nil {
+		return fmt.Errorf("no handshake received from %s yet", targetID)
+	}
+
+	// Check if we should send photo
+	shouldSend, err := device.Cache.ShouldSendPhotoToDevice(targetHandshake.RxPhotoHash)
+	if err != nil {
+		return fmt.Errorf("failed to check should send: %w", err)
+	}
+
+	if !shouldSend {
+		log.Printf("[%s] ⏭️  Skipping photo send to %s (they already have our photo)",
+			device.Config.DeviceName, target.Config.DeviceName)
+		device.PhotoSendSkipped[targetID] = true
+		return nil
+	}
+
+	// Get our photo hash
+	ourPhotoHash, err := device.Cache.GetLocalUserPhotoHash()
+	if err != nil {
+		return fmt.Errorf("failed to get local photo hash: %w", err)
+	}
+
+	if ourPhotoHash == "" {
+		log.Printf("[%s] ⏭️  Skipping photo send to %s (we have no photo)",
+			device.Config.DeviceName, target.Config.DeviceName)
+		device.PhotoSendSkipped[targetID] = true
+		return nil
+	}
+
+	log.Printf("[%s] 📤 Initiating photo send to %s", device.Config.DeviceName, target.Config.DeviceName)
+	log.Printf("  Our TX hash: %s", truncateHash(ourPhotoHash))
+	log.Printf("  Their RX hash: %s", truncateHash(targetHandshake.RxPhotoHash))
+	log.Printf("  Decision: SEND (hashes differ or they have no photo)")
+
+	// Mark as initiated
+	device.PhotoSendInitiated[targetID] = true
+	device.IsSendingPhoto = true
+	device.PhotoSendTarget = targetID
+
+	// TODO: Implement actual photo chunking and transfer
+	// For now, just log the decision
+
+	return nil
+}
+
+func (r *ScenarioRunner) handleReceivePhotoMetadata(device *SimulatedDevice, targetID string) error {
+	target := r.devices[targetID]
+	if target == nil {
+		return fmt.Errorf("target device %s not found", targetID)
+	}
+
+	log.Printf("[%s] 📥 Receiving photo metadata from %s", device.Config.DeviceName, target.Config.DeviceName)
+
+	// Check if we're already sending - collision detection would go here
+	if device.IsSendingPhoto {
+		log.Printf("[%s] ⚠️  Collision detected: receiving while sending", device.Config.DeviceName)
+		// TODO: Implement collision detection logic
+	}
+
+	device.IsReceivingPhoto = true
+	device.PhotoReceiveSource = targetID
+
+	return nil
+}
+
 func (r *ScenarioRunner) handleUpdateProfile(device *SimulatedDevice, data map[string]interface{}) error {
 	log.Printf("[%s] Updating profile: %v", device.Config.DeviceName, data)
 	// Update device profile
@@ -480,6 +562,10 @@ func (r *ScenarioRunner) checkAssertion(assertion *Assertion) AssertionResult {
 		return r.checkConnectedAssertion(assertion)
 	case AssertionHandshakeReceived:
 		return r.checkHandshakeReceivedAssertion(assertion)
+	case AssertionPhotoSendInitiated:
+		return r.checkPhotoSendInitiatedAssertion(assertion)
+	case AssertionPhotoSendSkipped:
+		return r.checkPhotoSendSkippedAssertion(assertion)
 	default:
 		return AssertionResult{
 			Assertion: assertion,
@@ -554,6 +640,81 @@ func (r *ScenarioRunner) checkHandshakeReceivedAssertion(assertion *Assertion) A
 		Assertion: assertion,
 		Passed:    false,
 		Message:   fmt.Sprintf("%s did not receive handshake from %s", assertion.Device, assertion.From),
+	}
+}
+
+func (r *ScenarioRunner) checkPhotoSendInitiatedAssertion(assertion *Assertion) AssertionResult {
+	device := r.devices[assertion.Device]
+	if device == nil {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    false,
+			Message:   fmt.Sprintf("Device %s not found", assertion.Device),
+		}
+	}
+
+	if assertion.To == "" {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    false,
+			Message:   "Missing 'to' field in assertion",
+		}
+	}
+
+	if device.PhotoSendInitiated[assertion.To] {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    true,
+			Message:   fmt.Sprintf("%s initiated photo send to %s", assertion.Device, assertion.To),
+		}
+	}
+
+	return AssertionResult{
+		Assertion: assertion,
+		Passed:    false,
+		Message:   fmt.Sprintf("%s did not initiate photo send to %s", assertion.Device, assertion.To),
+	}
+}
+
+func (r *ScenarioRunner) checkPhotoSendSkippedAssertion(assertion *Assertion) AssertionResult {
+	device := r.devices[assertion.Device]
+	if device == nil {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    false,
+			Message:   fmt.Sprintf("Device %s not found", assertion.Device),
+		}
+	}
+
+	if assertion.To == "" {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    false,
+			Message:   "Missing 'to' field in assertion",
+		}
+	}
+
+	if device.PhotoSendSkipped[assertion.To] {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    true,
+			Message:   fmt.Sprintf("%s skipped photo send to %s (not needed)", assertion.Device, assertion.To),
+		}
+	}
+
+	// If we initiated a send, that's the opposite of skipping
+	if device.PhotoSendInitiated[assertion.To] {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    false,
+			Message:   fmt.Sprintf("%s did NOT skip photo send to %s (send was initiated)", assertion.Device, assertion.To),
+		}
+	}
+
+	return AssertionResult{
+		Assertion: assertion,
+		Passed:    false,
+		Message:   fmt.Sprintf("%s status unclear for photo send to %s", assertion.Device, assertion.To),
 	}
 }
 

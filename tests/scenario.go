@@ -87,19 +87,21 @@ type Assertion struct {
 
 // Assertion types
 const (
-	AssertionConnected           = "connected"
-	AssertionDisconnected        = "disconnected"
-	AssertionHandshakeReceived   = "handshake_received"
-	AssertionPhotoTransferStarted = "photo_transfer_started"
+	AssertionConnected              = "connected"
+	AssertionDisconnected           = "disconnected"
+	AssertionHandshakeReceived      = "handshake_received"
+	AssertionPhotoSendInitiated     = "photo_send_initiated"
+	AssertionPhotoSendSkipped       = "photo_send_skipped"
+	AssertionPhotoTransferStarted   = "photo_transfer_started"
 	AssertionPhotoTransferCompleted = "photo_transfer_completed"
-	AssertionPhotoTransferFailed = "photo_transfer_failed"
-	AssertionCollisionDetected   = "collision_detected"
-	AssertionCollisionWinner     = "collision_winner"
-	AssertionCollisionLoser      = "collision_loser"
-	AssertionStaleHandshake      = "stale_handshake"
-	AssertionReconnected         = "reconnected"
-	AssertionChunkRetry          = "chunk_retry"
-	AssertionTransferAborted     = "transfer_aborted"
+	AssertionPhotoTransferFailed    = "photo_transfer_failed"
+	AssertionCollisionDetected      = "collision_detected"
+	AssertionCollisionWinner        = "collision_winner"
+	AssertionCollisionLoser         = "collision_loser"
+	AssertionStaleHandshake         = "stale_handshake"
+	AssertionReconnected            = "reconnected"
+	AssertionChunkRetry             = "chunk_retry"
+	AssertionTransferAborted        = "transfer_aborted"
 )
 
 // LoadScenario loads a scenario from a JSON file
