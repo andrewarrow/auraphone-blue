@@ -3,48 +3,56 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"sort"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
-	"github.com/google/uuid"
-	"github.com/user/auraphone-blue/wire"
+	"github.com/user/auraphone-blue/android"
+	"github.com/user/auraphone-blue/iphone"
+	"github.com/user/auraphone-blue/phone"
 )
 
 // PhoneWindow represents a single phone instance with its own window
 type PhoneWindow struct {
-	window      fyne.Window
-	deviceUUID  string
-	deviceName  string
-	platform    string
-	wire        *wire.Wire
-	currentTab  string
-	app         fyne.App
+	window            fyne.Window
+	currentTab        string
+	app               fyne.App
+	discoveredDevices []phone.DiscoveredDevice
+	devicesMutex      sync.RWMutex
+	deviceListWidget  *widget.List
+	phone             phone.Phone
 }
 
 // NewPhoneWindow creates a new phone window
-func NewPhoneWindow(app fyne.App, platform string) *PhoneWindow {
-	deviceUUID := uuid.New().String()
-	deviceName := fmt.Sprintf("%s Device", platform)
-
+func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 	pw := &PhoneWindow{
-		deviceUUID: deviceUUID,
-		deviceName: deviceName,
-		platform:   platform,
-		currentTab: "home",
-		app:        app,
+		currentTab:        "home",
+		app:               app,
+		discoveredDevices: []phone.DiscoveredDevice{},
 	}
 
-	// Initialize wire for this device
-	pw.wire = wire.NewWire(deviceUUID)
-	if err := pw.wire.InitializeDevice(); err != nil {
-		fmt.Printf("Failed to initialize device: %v\n", err)
+	// Create platform-specific phone
+	if platformType == "iOS" {
+		pw.phone = iphone.NewIPhone()
+	} else {
+		pw.phone = android.NewAndroid()
+	}
+
+	if pw.phone == nil {
+		fmt.Printf("Failed to create phone\n")
 		return nil
 	}
 
+	// Set discovery callback
+	pw.phone.SetDiscoveryCallback(pw.onDeviceDiscovered)
+
 	// Create window
+	deviceUUID := pw.phone.GetDeviceUUID()
+	deviceName := pw.phone.GetDeviceName()
 	pw.window = app.NewWindow(fmt.Sprintf("Auraphone - %s (%s)", deviceName, deviceUUID[:8]))
 	pw.window.SetContent(pw.buildUI())
 	pw.window.Resize(fyne.NewSize(375, 667)) // iPhone-like dimensions
@@ -54,6 +62,9 @@ func NewPhoneWindow(app fyne.App, platform string) *PhoneWindow {
 		pw.cleanup()
 	})
 
+	// Start BLE operations
+	pw.phone.Start()
+
 	return pw
 }
 
@@ -61,8 +72,8 @@ func NewPhoneWindow(app fyne.App, platform string) *PhoneWindow {
 func (pw *PhoneWindow) buildUI() fyne.CanvasObject {
 	// Header with device info
 	header := container.NewVBox(
-		widget.NewLabelWithStyle(pw.deviceName, fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel(fmt.Sprintf("UUID: %s", pw.deviceUUID[:8])),
+		widget.NewLabelWithStyle(pw.phone.GetDeviceName(), fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(fmt.Sprintf("UUID: %s", pw.phone.GetDeviceUUID()[:8])),
 		widget.NewSeparator(),
 	)
 
@@ -105,10 +116,67 @@ func (pw *PhoneWindow) buildUI() fyne.CanvasObject {
 
 // getTabContent returns the content for a specific tab
 func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
-	// Create empty view with tab name
-	bgColor := color.RGBA{R: 245, G: 245, B: 245, A: 255}
+	// Create dark background
+	bgColor := color.RGBA{R: 18, G: 18, B: 18, A: 255}
 	bg := canvas.NewRectangle(bgColor)
 
+	if tabName == "home" {
+		// Create device list for Home tab
+		pw.deviceListWidget = widget.NewList(
+			func() int {
+				pw.devicesMutex.RLock()
+				defer pw.devicesMutex.RUnlock()
+				return len(pw.discoveredDevices)
+			},
+			func() fyne.CanvasObject {
+				// Template for each device row
+				nameLabel := widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+				nameLabel.TextStyle.Bold = true
+				infoLabel := widget.NewLabel("")
+				infoLabel.TextStyle.Italic = true
+
+				profileCircle := canvas.NewCircle(color.RGBA{R: 60, G: 60, B: 60, A: 255})
+				profileCircle.StrokeColor = color.RGBA{R: 120, G: 120, B: 120, A: 255}
+				profileCircle.StrokeWidth = 2
+
+				row := container.NewHBox(
+					container.NewPadded(profileCircle),
+					container.NewVBox(nameLabel, infoLabel),
+				)
+				return row
+			},
+			func(id widget.ListItemID, obj fyne.CanvasObject) {
+				pw.devicesMutex.RLock()
+				defer pw.devicesMutex.RUnlock()
+
+				if id < len(pw.discoveredDevices) {
+					device := pw.discoveredDevices[id]
+					row := obj.(*fyne.Container)
+					textContainer := row.Objects[1].(*fyne.Container)
+					nameLabel := textContainer.Objects[0].(*widget.Label)
+					infoLabel := textContainer.Objects[1].(*widget.Label)
+
+					nameLabel.SetText(device.Name)
+					nameLabel.TextStyle.Bold = true
+					nameLabel.Refresh()
+
+					infoLabel.SetText(fmt.Sprintf("Device: %s\nRSSI: %.0f dBm", device.DeviceID[:8], device.RSSI))
+					infoLabel.Refresh()
+				}
+			},
+		)
+
+		if len(pw.discoveredDevices) == 0 {
+			// Show empty state
+			emptyLabel := widget.NewLabel("Scanning for devices...")
+			emptyLabel.Alignment = fyne.TextAlignCenter
+			return container.NewMax(bg, container.NewCenter(emptyLabel))
+		}
+
+		return container.NewMax(bg, pw.deviceListWidget)
+	}
+
+	// Other tabs show placeholder
 	label := widget.NewLabelWithStyle(
 		fmt.Sprintf("%s View\n(Coming Soon)", tabName),
 		fyne.TextAlignCenter,
@@ -123,10 +191,41 @@ func (pw *PhoneWindow) Show() {
 	pw.window.Show()
 }
 
+// onDeviceDiscovered is called when a device is discovered via BLE
+func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
+	pw.devicesMutex.Lock()
+	defer pw.devicesMutex.Unlock()
+
+	// Check if device already exists
+	for i, dev := range pw.discoveredDevices {
+		if dev.DeviceID == device.DeviceID {
+			// Update existing device
+			pw.discoveredDevices[i].RSSI = device.RSSI
+			pw.sortAndRefreshDevices()
+			return
+		}
+	}
+
+	// Add new device
+	pw.discoveredDevices = append(pw.discoveredDevices, device)
+	pw.sortAndRefreshDevices()
+}
+
+// sortAndRefreshDevices sorts devices by RSSI and refreshes the UI
+func (pw *PhoneWindow) sortAndRefreshDevices() {
+	sort.Slice(pw.discoveredDevices, func(i, j int) bool {
+		return pw.discoveredDevices[i].RSSI > pw.discoveredDevices[j].RSSI
+	})
+
+	if pw.deviceListWidget != nil && pw.currentTab == "home" {
+		pw.deviceListWidget.Refresh()
+	}
+}
+
 // cleanup cleans up resources when window is closed
 func (pw *PhoneWindow) cleanup() {
-	fmt.Printf("Closing %s phone (UUID: %s)\n", pw.platform, pw.deviceUUID[:8])
-	// TODO: Add BLE cleanup when we add BLE functionality
+	fmt.Printf("Closing %s phone (UUID: %s)\n", pw.phone.GetPlatform(), pw.phone.GetDeviceUUID()[:8])
+	pw.phone.Stop()
 }
 
 // Launcher creates the main menu window
@@ -164,19 +263,19 @@ func (l *Launcher) buildUI() fyne.CanvasObject {
 
 	// Start iOS button
 	iosBtn := widget.NewButton("Start iOS Device", func() {
-		phone := NewPhoneWindow(l.app, "iOS")
-		if phone != nil {
-			phone.Show()
-			fmt.Printf("Started iOS device (UUID: %s)\n", phone.deviceUUID[:8])
+		phoneWindow := NewPhoneWindow(l.app, "iOS")
+		if phoneWindow != nil {
+			phoneWindow.Show()
+			fmt.Printf("Started iOS device (UUID: %s)\n", phoneWindow.phone.GetDeviceUUID()[:8])
 		}
 	})
 
 	// Start Android button
 	androidBtn := widget.NewButton("Start Android Device", func() {
-		phone := NewPhoneWindow(l.app, "Android")
-		if phone != nil {
-			phone.Show()
-			fmt.Printf("Started Android device (UUID: %s)\n", phone.deviceUUID[:8])
+		phoneWindow := NewPhoneWindow(l.app, "Android")
+		if phoneWindow != nil {
+			phoneWindow.Show()
+			fmt.Printf("Started Android device (UUID: %s)\n", phoneWindow.phone.GetDeviceUUID()[:8])
 		}
 	})
 
