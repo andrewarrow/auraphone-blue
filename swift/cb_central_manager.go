@@ -1,9 +1,7 @@
-
 package swift
 
 import (
 	"fmt"
-	"os"
 )
 
 type CBCentralManagerDelegate interface {

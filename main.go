@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -25,13 +24,11 @@ func NewFakeIOSDevice() *FakeIOSDevice {
 }
 
 func (d *FakeIOSDevice) DidUpdateState(central swift.CBCentralManager) {
-	fmt.Printf("iOS device %s state updated to %s
-", d.uuid, central.State)
+	fmt.Printf("iOS device %s state updated to %s", d.uuid, central.State)
 }
 
 func (d *FakeIOSDevice) DidDiscoverPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, advertisementData map[string]interface{}, rssi float64) {
-	fmt.Printf("iOS device %s discovered Android device %s
-", d.uuid, peripheral.Name)
+	fmt.Printf("iOS device %s discovered Android device %s", d.uuid, peripheral.Name)
 }
 
 type FakeAndroidDevice struct {
@@ -48,8 +45,7 @@ func NewFakeAndroidDevice() *FakeAndroidDevice {
 }
 
 func (d *FakeAndroidDevice) OnScanResult(callbackType int, result *kotlin.ScanResult) {
-	fmt.Printf("Android device %s discovered iOS device %s
-", d.uuid, result.Device.Name)
+	fmt.Printf("Android device %s discovered iOS device %s", d.uuid, result.Device.Name)
 }
 
 func main() {

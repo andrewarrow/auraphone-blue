@@ -1,9 +1,7 @@
-
 package kotlin
 
 import (
 	"fmt"
-	"os"
 )
 
 type BluetoothManager struct {
@@ -48,7 +46,7 @@ type ScanCallback interface {
 }
 
 type ScanResult struct {
-	Device   *BluetoothDevice
-	Rssi     int
+	Device     *BluetoothDevice
+	Rssi       int
 	ScanRecord []byte
 }
