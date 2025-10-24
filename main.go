@@ -28,7 +28,7 @@ type PhoneWindow struct {
 	phone             phone.Phone
 	contentArea       *fyne.Container
 	updateContentFunc func(string)
-	uiUpdateChan      chan func()
+	needsRefresh      bool
 }
 
 // NewPhoneWindow creates a new phone window
@@ -38,7 +38,7 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 		app:               app,
 		devicesMap:        make(map[string]phone.DiscoveredDevice),
 		discoveredDevices: []phone.DiscoveredDevice{},
-		uiUpdateChan:      make(chan func(), 10), // Buffered channel for UI updates
+		needsRefresh:      false,
 	}
 
 	// Create platform-specific phone
@@ -70,9 +70,6 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 
 	// Start BLE operations
 	pw.phone.Start()
-
-	// Start UI update goroutine that runs on main thread
-	go pw.processUIUpdates()
 
 	return pw
 }
@@ -218,26 +215,13 @@ func (pw *PhoneWindow) sortAndRefreshDevices() {
 		return pw.discoveredDevices[i].RSSI > pw.discoveredDevices[j].RSSI
 	})
 
-	// If on home tab, queue a UI update (non-blocking)
-	if pw.currentTab == "home" && pw.contentArea != nil {
-		// Queue the UI update to be processed on the main thread
-		select {
-		case pw.uiUpdateChan <- func() {
-			pw.contentArea.Objects = []fyne.CanvasObject{pw.getTabContent("home")}
-			pw.contentArea.Refresh()
-		}:
-			// Queued successfully
-		default:
-			// Channel full, skip this update
-		}
-	}
-}
+	// Mark that we need a refresh
+	pw.needsRefresh = true
 
-// processUIUpdates runs in a goroutine and processes UI updates from the channel
-func (pw *PhoneWindow) processUIUpdates() {
-	for updateFunc := range pw.uiUpdateChan {
-		// Execute the UI update function
-		updateFunc()
+	// If on home tab and widget exists, trigger refresh
+	if pw.currentTab == "home" && pw.deviceListWidget != nil {
+		// Refresh the list widget - this is safe to call from any goroutine
+		pw.deviceListWidget.Refresh()
 	}
 }
 
@@ -245,7 +229,6 @@ func (pw *PhoneWindow) processUIUpdates() {
 func (pw *PhoneWindow) cleanup() {
 	fmt.Printf("Closing %s phone (UUID: %s)\n", pw.phone.GetPlatform(), pw.phone.GetDeviceUUID()[:8])
 	pw.phone.Stop()
-	close(pw.uiUpdateChan)
 }
 
 // Launcher creates the main menu window
