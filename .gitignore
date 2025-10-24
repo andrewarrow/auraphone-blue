@@ -2,4 +2,6 @@ auraphone-blue
 data
 cmd/log2scenario/log2scenario
 cmd/replay/replay
+cmd/demo-roles/demo-roles
+cmd/test-simulation/test-simulation
 go.sum
