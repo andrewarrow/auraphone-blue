@@ -165,9 +165,12 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 				nameText.TextSize = 20
 				nameText.TextStyle = fyne.TextStyle{Bold: true}
 
-				// Device info (ID, RSSI, connection) in gray using canvas.Text
-				infoText := canvas.NewText("", color.RGBA{R: 150, G: 150, B: 150, A: 255})
-				infoText.TextSize = 11
+				// Device info lines in gray - separate text elements for each line
+				deviceIDText := canvas.NewText("", color.RGBA{R: 150, G: 150, B: 150, A: 255})
+				deviceIDText.TextSize = 11
+
+				rssiText := canvas.NewText("", color.RGBA{R: 150, G: 150, B: 150, A: 255})
+				rssiText.TextSize = 11
 
 				// Profile circle (60x60)
 				profileCircle := canvas.NewCircle(color.RGBA{R: 60, G: 60, B: 60, A: 255})
@@ -175,10 +178,11 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 				profileCircle.StrokeWidth = 2
 				profileCircle.Resize(fyne.NewSize(60, 60))
 
-				// Vertical stack for name and info
+				// Vertical stack for name and info lines
 				textStack := container.NewVBox(
 					nameText,
-					infoText,
+					deviceIDText,
+					rssiText,
 				)
 
 				// Horizontal layout: circle + text stack
@@ -200,15 +204,19 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 					// Get the text stack from the center of the border container
 					textStack := row.Objects[0].(*fyne.Container)
 					nameText := textStack.Objects[0].(*canvas.Text)
-					infoText := textStack.Objects[1].(*canvas.Text)
+					deviceIDText := textStack.Objects[1].(*canvas.Text)
+					rssiText := textStack.Objects[2].(*canvas.Text)
 
 					// Set name with cyan color (matching iOS)
 					nameText.Text = device.Name
 					nameText.Refresh()
 
-					// Set device info on multiple lines
-					infoText.Text = fmt.Sprintf("Device: %s\nRSSI: %.0f dBm, Connected: Yes", device.DeviceID[:8], device.RSSI)
-					infoText.Refresh()
+					// Set device info on separate lines
+					deviceIDText.Text = fmt.Sprintf("Device: %s", device.DeviceID[:8])
+					deviceIDText.Refresh()
+
+					rssiText.Text = fmt.Sprintf("RSSI: %.0f dBm, Connected: Yes", device.RSSI)
+					rssiText.Refresh()
 				}
 			},
 		)

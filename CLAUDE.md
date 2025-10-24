@@ -1,3 +1,5 @@
+please do not run go build or go run yourself. Just edit the code and tell me when you are done.
+
 # Auraphone Blue - Fake Bluetooth Simulator
 
 ## Overview
