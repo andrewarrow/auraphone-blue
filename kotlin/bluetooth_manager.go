@@ -2,10 +2,8 @@ package kotlin
 
 import (
 	"fmt"
-	"os"
-	"time"
 
-	"github.com/google/uuid"
+	"github.com/user/auraphone-blue/wire"
 )
 
 type BluetoothManager struct {
@@ -39,35 +37,37 @@ func (a *BluetoothAdapter) GetBluetoothLeScanner() *BluetoothLeScanner {
 type BluetoothLeScanner struct {
 	callback ScanCallback
 	uuid     string
+	wire     *wire.Wire
+	stopChan chan struct{}
 }
 
 func NewBluetoothLeScanner(uuid string) *BluetoothLeScanner {
-	return &BluetoothLeScanner{uuid: uuid}
+	return &BluetoothLeScanner{
+		uuid: uuid,
+		wire: wire.NewWire(uuid),
+	}
 }
 
 func (s *BluetoothLeScanner) StartScan(callback ScanCallback) {
 	s.callback = callback
 	fmt.Println("Starting scan...")
-	go func() {
-		for {
-			files, err := os.ReadDir(".")
-			if err != nil {
-				continue
-			}
 
-			for _, file := range files {
-				if file.IsDir() {
-					deviceName := file.Name()
-					if _, err := uuid.Parse(deviceName); err == nil {
-						if deviceName != s.uuid {
-							s.callback.OnScanResult(0, &ScanResult{Device: &BluetoothDevice{Name: "iOS Test Device", Address: deviceName}, Rssi: -55})
-						}
-					}
-				}
-			}
-			time.Sleep(1 * time.Second)
-		}
-	}()
+	s.stopChan = s.wire.StartDiscovery(func(deviceUUID string) {
+		s.callback.OnScanResult(0, &ScanResult{
+			Device: &BluetoothDevice{
+				Name:    "iOS Test Device",
+				Address: deviceUUID,
+			},
+			Rssi: -55,
+		})
+	})
+}
+
+func (s *BluetoothLeScanner) StopScan() {
+	if s.stopChan != nil {
+		close(s.stopChan)
+		s.stopChan = nil
+	}
 }
 
 type ScanCallback interface {

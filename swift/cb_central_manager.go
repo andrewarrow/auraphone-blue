@@ -2,10 +2,8 @@ package swift
 
 import (
 	"fmt"
-	"os"
-	"time"
 
-	"github.com/google/uuid"
+	"github.com/user/auraphone-blue/wire"
 )
 
 type CBCentralManagerDelegate interface {
@@ -17,6 +15,8 @@ type CBCentralManager struct {
 	Delegate CBCentralManagerDelegate
 	State    string
 	uuid     string
+	wire     *wire.Wire
+	stopChan chan struct{}
 }
 
 func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string) *CBCentralManager {
@@ -24,29 +24,24 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string) *CBCent
 		Delegate: delegate,
 		State:    "poweredOn",
 		uuid:     uuid,
+		wire:     wire.NewWire(uuid),
 	}
 }
 
 func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map[string]interface{}) {
 	fmt.Println("Scanning for peripherals...")
-	go func() {
-		for {
-			files, err := os.ReadDir(".")
-			if err != nil {
-				continue
-			}
 
-			for _, file := range files {
-				if file.IsDir() {
-					deviceName := file.Name()
-					if _, err := uuid.Parse(deviceName); err == nil {
-						if deviceName != c.uuid {
-							c.Delegate.DidDiscoverPeripheral(*c, CBPeripheral{Name: "Android Test Device", UUID: deviceName}, nil, -50)
-						}
-					}
-				}
-			}
-			time.Sleep(1 * time.Second)
-		}
-	}()
+	c.stopChan = c.wire.StartDiscovery(func(deviceUUID string) {
+		c.Delegate.DidDiscoverPeripheral(*c, CBPeripheral{
+			Name: "Android Test Device",
+			UUID: deviceUUID,
+		}, nil, -50)
+	})
+}
+
+func (c *CBCentralManager) StopScan() {
+	if c.stopChan != nil {
+		close(c.stopChan)
+		c.stopChan = nil
+	}
 }

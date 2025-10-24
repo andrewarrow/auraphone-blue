@@ -2,13 +2,12 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/user/auraphone-blue/kotlin"
 	"github.com/user/auraphone-blue/swift"
+	"github.com/user/auraphone-blue/wire"
 )
 
 type FakeIOSDevice struct {
@@ -53,20 +52,19 @@ func main() {
 	iosDevice := NewFakeIOSDevice()
 	androidDevice := NewFakeAndroidDevice()
 
-	createDeviceDirs(iosDevice.uuid)
-	createDeviceDirs(androidDevice.uuid)
+	// Initialize device directories using the wire package
+	iosWire := wire.NewWire(iosDevice.uuid)
+	androidWire := wire.NewWire(androidDevice.uuid)
+
+	if err := iosWire.InitializeDevice(); err != nil {
+		panic(err)
+	}
+	if err := androidWire.InitializeDevice(); err != nil {
+		panic(err)
+	}
 
 	iosDevice.manager.ScanForPeripherals(nil, nil)
 	androidDevice.manager.Adapter.GetBluetoothLeScanner().StartScan(androidDevice)
 
 	time.Sleep(5 * time.Second)
-}
-
-func createDeviceDirs(uuid string) {
-	basePath := filepath.Join(".", uuid)
-	inboxPath := filepath.Join(basePath, "inbox")
-	outboxPath := filepath.Join(basePath, "outbox")
-
-	os.MkdirAll(inboxPath, 0755)
-	os.MkdirAll(outboxPath, 0755)
 }
