@@ -244,14 +244,14 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 		pw.profileImage.File = pw.selectedPhoto
 		pw.profileImage.Refresh()
 
-		// Create a large circular profile image container
+		// Set a fixed size for the profile image
+		pw.profileImage.SetMinSize(fyne.NewSize(200, 200))
+
+		// Create a large profile image container
 		profileContainer := container.NewVBox(
 			widget.NewLabel(""), // Spacer
-			container.NewCenter(
-				container.NewPadded(
-					pw.profileImage,
-				),
-			),
+			container.NewCenter(pw.profileImage),
+			widget.NewLabel(""), // Spacer
 		)
 
 		// Create photo selector dropdown
