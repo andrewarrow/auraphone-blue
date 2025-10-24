@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,16 +33,23 @@ type PhoneWindow struct {
 	contentArea       *fyne.Container
 	updateContentFunc func(string)
 	needsRefresh      bool
+	selectedPhoto     string // Currently selected profile photo
+	profileImage      *canvas.Image
 }
 
 // NewPhoneWindow creates a new phone window
 func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
+	// Select random initial photo from face1.jpg to face12.jpg
+	photoNum := rand.Intn(12) + 1 // Random number from 1 to 12
+	selectedPhoto := fmt.Sprintf("testdata/face%d.jpg", photoNum)
+
 	pw := &PhoneWindow{
 		currentTab:        "home",
 		app:               app,
 		devicesMap:        make(map[string]phone.DiscoveredDevice),
 		discoveredDevices: []phone.DiscoveredDevice{},
 		needsRefresh:      false,
+		selectedPhoto:     selectedPhoto,
 	}
 
 	// Create platform-specific phone
@@ -224,6 +232,54 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 		// Always return the list widget, even if empty
 		// The list will handle its own empty state
 		return container.NewMax(bg, pw.deviceListWidget)
+	}
+
+	// Profile tab
+	if tabName == "profile" {
+		// Load and display the selected profile image
+		if pw.profileImage == nil {
+			pw.profileImage = canvas.NewImageFromFile(pw.selectedPhoto)
+			pw.profileImage.FillMode = canvas.ImageFillContain
+		}
+		pw.profileImage.File = pw.selectedPhoto
+		pw.profileImage.Refresh()
+
+		// Create a large circular profile image container
+		profileContainer := container.NewVBox(
+			widget.NewLabel(""), // Spacer
+			container.NewCenter(
+				container.NewPadded(
+					pw.profileImage,
+				),
+			),
+		)
+
+		// Create photo selector dropdown
+		photoOptions := make([]string, 12)
+		for i := 0; i < 12; i++ {
+			photoOptions[i] = fmt.Sprintf("face%d.jpg", i+1)
+		}
+
+		photoSelect := widget.NewSelect(photoOptions, func(selected string) {
+			// Update the selected photo
+			pw.selectedPhoto = "testdata/" + selected
+			pw.profileImage.File = pw.selectedPhoto
+			pw.profileImage.Refresh()
+		})
+
+		// Set initial value in the selector
+		currentPhoto := filepath.Base(pw.selectedPhoto)
+		photoSelect.SetSelected(currentPhoto)
+
+		// Layout
+		profileContent := container.NewVBox(
+			profileContainer,
+			widget.NewLabel(""),
+			widget.NewLabelWithStyle("Select Profile Photo", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+			container.NewPadded(photoSelect),
+		)
+
+		return container.NewMax(bg, profileContent)
 	}
 
 	// Other tabs show placeholder
