@@ -1,14 +1,20 @@
 package tests
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
 	"github.com/user/auraphone-blue/kotlin"
+	auraphone "github.com/user/auraphone-blue/proto"
 	"github.com/user/auraphone-blue/swift"
 	"github.com/user/auraphone-blue/wire"
+	"google.golang.org/protobuf/proto"
 )
 
 // ScenarioRunner executes a test scenario
@@ -25,8 +31,37 @@ type SimulatedDevice struct {
 	Config    *DeviceConfig
 	UUID      string
 	Wire      *wire.Wire
+	Cache     *wire.DeviceCacheManager
 	IOSMgr    *swift.CBCentralManager
 	AndroidMgr *kotlin.BluetoothManager
+
+	// Connection tracking
+	ConnectedTo map[string]bool // deviceID -> connected
+
+	// Handshake tracking
+	HandshakesSent     map[string]bool // deviceID -> sent
+	HandshakesReceived map[string]*HandshakeData // deviceID -> handshake data
+
+	// Photo transfer state
+	IsSendingPhoto     bool
+	IsReceivingPhoto   bool
+	PhotoSendTarget    string
+	PhotoReceiveSource string
+
+	// Collision detection
+	CollisionDetected  bool
+	CollisionWinner    bool
+	AbortedSendTo      string
+}
+
+// HandshakeData stores parsed handshake information
+type HandshakeData struct {
+	DeviceID       string
+	FirstName      string
+	LastName       string
+	TxPhotoHash    string
+	RxPhotoHash    string
+	ReceivedAtMs   int64
 }
 
 // EventLogEntry records an event that occurred during the scenario
@@ -77,14 +112,24 @@ func (r *ScenarioRunner) Setup() error {
 
 // createDevice creates a simulated device based on platform
 func (r *ScenarioRunner) createDevice(config *DeviceConfig) (*SimulatedDevice, error) {
+	uuid := generateDeviceUUID(config.ID)
 	device := &SimulatedDevice{
-		Config: config,
-		UUID:   generateDeviceUUID(config.ID),
-		Wire:   wire.NewWire(generateDeviceUUID(config.ID)),
+		Config:             config,
+		UUID:               uuid,
+		Wire:               wire.NewWire(uuid),
+		Cache:              wire.NewDeviceCacheManager(uuid),
+		ConnectedTo:        make(map[string]bool),
+		HandshakesSent:     make(map[string]bool),
+		HandshakesReceived: make(map[string]*HandshakeData),
 	}
 
 	// Initialize device directory
 	if err := device.Wire.InitializeDevice(); err != nil {
+		return nil, err
+	}
+
+	// Initialize cache
+	if err := device.Cache.InitializeCache(); err != nil {
 		return nil, err
 	}
 
@@ -98,6 +143,18 @@ func (r *ScenarioRunner) createDevice(config *DeviceConfig) (*SimulatedDevice, e
 	advData := createAdvertisingDataForDevice(config)
 	if err := device.Wire.WriteAdvertisingData(advData); err != nil {
 		return nil, err
+	}
+
+	// Initialize local photo if provided
+	if config.Profile.PhotoPath != "" {
+		photoData, err := os.ReadFile(config.Profile.PhotoPath)
+		if err != nil {
+			log.Printf("Warning: Failed to load photo for %s: %v", config.ID, err)
+		} else {
+			if _, err := device.Cache.SaveLocalUserPhoto(photoData); err != nil {
+				log.Printf("Warning: Failed to save local photo for %s: %v", config.ID, err)
+			}
+		}
 	}
 
 	// Initialize platform-specific manager
@@ -165,8 +222,12 @@ func (r *ScenarioRunner) executeEvent(event *TimelineEvent) error {
 		return r.handleConnect(device, event.Target)
 	case ActionDisconnect:
 		return r.handleDisconnect(device, event.Target)
+	case ActionDiscoverServices:
+		return r.handleDiscoverServices(device)
 	case ActionSendHandshake:
-		return r.handleSendHandshake(device)
+		return r.handleSendHandshake(device, event.Target)
+	case ActionReceiveHandshake:
+		return r.handleReceiveHandshake(device, event.Target)
 	case ActionUpdateProfile:
 		return r.handleUpdateProfile(device, event.Data)
 	default:
@@ -210,6 +271,11 @@ func (r *ScenarioRunner) handleConnect(device *SimulatedDevice, targetID string)
 		return fmt.Errorf("target device %s not found", targetID)
 	}
 	log.Printf("[%s] Connecting to: %s", device.Config.DeviceName, target.Config.DeviceName)
+
+	// Mark as connected
+	device.ConnectedTo[targetID] = true
+	target.ConnectedTo[device.Config.ID] = true
+
 	return nil
 }
 
@@ -222,8 +288,163 @@ func (r *ScenarioRunner) handleDisconnect(device *SimulatedDevice, targetID stri
 	return nil
 }
 
-func (r *ScenarioRunner) handleSendHandshake(device *SimulatedDevice) error {
-	log.Printf("[%s] Sending handshake", device.Config.DeviceName)
+func (r *ScenarioRunner) handleDiscoverServices(device *SimulatedDevice) error {
+	log.Printf("[%s] Discovering services", device.Config.DeviceName)
+	// In real implementation, this would read remote GATT table
+	// For now, just log it
+	return nil
+}
+
+func (r *ScenarioRunner) handleSendHandshake(device *SimulatedDevice, targetID string) error {
+	target := r.devices[targetID]
+	if target == nil {
+		return fmt.Errorf("target device %s not found", targetID)
+	}
+
+	// Get our photo hash (tx)
+	txPhotoHash, err := device.Cache.GetLocalUserPhotoHash()
+	if err != nil {
+		return fmt.Errorf("failed to get local photo hash: %w", err)
+	}
+
+	// Get their photo hash that we have cached (rx)
+	rxPhotoHash, err := device.Cache.GetDevicePhotoHash(targetID)
+	if err != nil {
+		return fmt.Errorf("failed to get device photo hash: %w", err)
+	}
+
+	log.Printf("[%s] Sending handshake to %s", device.Config.DeviceName, target.Config.DeviceName)
+	log.Printf("  TX photo hash (ours): %s", truncateHash(txPhotoHash))
+	log.Printf("  RX photo hash (theirs, cached): %s", truncateHash(rxPhotoHash))
+
+	// Create protobuf handshake message
+	handshake := &auraphone.HandshakeMessage{
+		DeviceId:        device.Config.ID,
+		FirstName:       device.Config.Profile.FirstName,
+		LastName:        device.Config.Profile.LastName,
+		ProtocolVersion: 1,
+		TxPhotoHash:     txPhotoHash,
+		RxPhotoHash:     rxPhotoHash,
+	}
+
+	// Serialize to protobuf
+	handshakeBytes, err := proto.Marshal(handshake)
+	if err != nil {
+		return fmt.Errorf("failed to marshal handshake: %w", err)
+	}
+
+	// Write to target's inbox as a "handshake" message
+	// Note: Store protobuf bytes as base64 for JSON compatibility
+	msg := map[string]interface{}{
+		"op":        "handshake",
+		"data":      handshakeBytes, // Will be base64 encoded by JSON
+		"sender":    device.UUID,
+		"timestamp": time.Now().UnixMilli(),
+	}
+
+	msgJSON, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	// Write to target's inbox
+	inboxPath := filepath.Join("data", target.UUID, "inbox", fmt.Sprintf("handshake_%d.json", time.Now().UnixNano()))
+	if err := os.WriteFile(inboxPath, msgJSON, 0644); err != nil {
+		return fmt.Errorf("failed to write handshake: %w", err)
+	}
+
+	// Mark as sent
+	device.HandshakesSent[targetID] = true
+
+	return nil
+}
+
+func (r *ScenarioRunner) handleReceiveHandshake(device *SimulatedDevice, targetID string) error {
+	target := r.devices[targetID]
+	if target == nil {
+		return fmt.Errorf("target device %s not found", targetID)
+	}
+
+	// Read handshake from our inbox
+	inboxDir := filepath.Join("data", device.UUID, "inbox")
+	files, err := os.ReadDir(inboxDir)
+	if err != nil {
+		return fmt.Errorf("failed to read inbox: %w", err)
+	}
+
+	// Find handshake message from target
+	var handshakeMsg map[string]interface{}
+	var handshakeFile string
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(inboxDir, file.Name()))
+		if err != nil {
+			continue
+		}
+
+		var msg map[string]interface{}
+		if err := json.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+
+		if msg["op"] == "handshake" && msg["sender"] == target.UUID {
+			handshakeMsg = msg
+			handshakeFile = file.Name()
+			break
+		}
+	}
+
+	if handshakeMsg == nil {
+		return fmt.Errorf("no handshake message found from %s", targetID)
+	}
+
+	// Parse protobuf handshake - JSON unmarshals []byte as base64 string
+	var handshakeBytes []byte
+	switch v := handshakeMsg["data"].(type) {
+	case string:
+		// JSON marshaled []byte as base64
+		decoded, err := base64.StdEncoding.DecodeString(v)
+		if err != nil {
+			return fmt.Errorf("failed to decode base64 handshake data: %w", err)
+		}
+		handshakeBytes = decoded
+	case []interface{}:
+		// Array of numbers
+		handshakeBytes = make([]byte, len(v))
+		for i, val := range v {
+			if num, ok := val.(float64); ok {
+				handshakeBytes[i] = byte(num)
+			}
+		}
+	default:
+		return fmt.Errorf("invalid handshake data format: %T", v)
+	}
+
+	var handshake auraphone.HandshakeMessage
+	if err := proto.Unmarshal(handshakeBytes, &handshake); err != nil {
+		return fmt.Errorf("failed to unmarshal handshake: %w", err)
+	}
+
+	log.Printf("[%s] Received handshake from %s", device.Config.DeviceName, target.Config.DeviceName)
+	log.Printf("  Their first name: %s %s", handshake.FirstName, handshake.LastName)
+	log.Printf("  Their TX photo hash: %s", truncateHash(handshake.TxPhotoHash))
+	log.Printf("  Their RX photo hash (ours, they have): %s", truncateHash(handshake.RxPhotoHash))
+
+	// Store handshake data
+	device.HandshakesReceived[targetID] = &HandshakeData{
+		DeviceID:     handshake.DeviceId,
+		FirstName:    handshake.FirstName,
+		LastName:     handshake.LastName,
+		TxPhotoHash:  handshake.TxPhotoHash,
+		RxPhotoHash:  handshake.RxPhotoHash,
+		ReceivedAtMs: time.Now().UnixMilli(),
+	}
+
+	// Delete the message
+	os.Remove(filepath.Join(inboxDir, handshakeFile))
+
 	return nil
 }
 
@@ -254,12 +475,85 @@ func (r *ScenarioRunner) CheckAssertions() []AssertionResult {
 
 // checkAssertion validates a single assertion
 func (r *ScenarioRunner) checkAssertion(assertion *Assertion) AssertionResult {
-	// TODO: Implement assertion checking logic
-	// This would inspect the event log and device state to verify assertions
+	switch assertion.Type {
+	case AssertionConnected:
+		return r.checkConnectedAssertion(assertion)
+	case AssertionHandshakeReceived:
+		return r.checkHandshakeReceivedAssertion(assertion)
+	default:
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    true,
+			Message:   "Not yet implemented",
+		}
+	}
+}
+
+func (r *ScenarioRunner) checkConnectedAssertion(assertion *Assertion) AssertionResult {
+	device := r.devices[assertion.Device]
+	if device == nil {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    false,
+			Message:   fmt.Sprintf("Device %s not found", assertion.Device),
+		}
+	}
+
+	if assertion.To == "" {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    false,
+			Message:   "Missing 'to' field in assertion",
+		}
+	}
+
+	if device.ConnectedTo[assertion.To] {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    true,
+			Message:   fmt.Sprintf("%s connected to %s", assertion.Device, assertion.To),
+		}
+	}
+
 	return AssertionResult{
 		Assertion: assertion,
-		Passed:    true,
-		Message:   "Not yet implemented",
+		Passed:    false,
+		Message:   fmt.Sprintf("%s not connected to %s", assertion.Device, assertion.To),
+	}
+}
+
+func (r *ScenarioRunner) checkHandshakeReceivedAssertion(assertion *Assertion) AssertionResult {
+	device := r.devices[assertion.Device]
+	if device == nil {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    false,
+			Message:   fmt.Sprintf("Device %s not found", assertion.Device),
+		}
+	}
+
+	if assertion.From == "" {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    false,
+			Message:   "Missing 'from' field in assertion",
+		}
+	}
+
+	handshake := device.HandshakesReceived[assertion.From]
+	if handshake != nil {
+		return AssertionResult{
+			Assertion: assertion,
+			Passed:    true,
+			Message:   fmt.Sprintf("%s received handshake from %s (%s %s)",
+				assertion.Device, assertion.From, handshake.FirstName, handshake.LastName),
+		}
+	}
+
+	return AssertionResult{
+		Assertion: assertion,
+		Passed:    false,
+		Message:   fmt.Sprintf("%s did not receive handshake from %s", assertion.Device, assertion.From),
 	}
 }
 
@@ -352,4 +646,15 @@ func createAdvertisingDataForDevice(config *DeviceConfig) *wire.AdvertisingData 
 	}
 
 	return advData
+}
+
+// truncateHash returns first 8 chars of hash for logging, or "none" if empty
+func truncateHash(hash string) string {
+	if hash == "" {
+		return "none"
+	}
+	if len(hash) > 8 {
+		return hash[:8] + "..."
+	}
+	return hash
 }
