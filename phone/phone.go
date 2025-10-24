@@ -2,10 +2,12 @@ package phone
 
 // DiscoveredDevice represents a device discovered via BLE
 type DiscoveredDevice struct {
-	DeviceID string
-	Name     string
-	RSSI     float64
-	Platform string
+	DeviceID  string
+	Name      string
+	RSSI      float64
+	Platform  string
+	PhotoHash string // SHA256 hash of profile photo
+	PhotoData []byte // JPEG photo data
 }
 
 // DeviceDiscoveryCallback is called when a new device is discovered
@@ -30,4 +32,10 @@ type Phone interface {
 
 	// GetPlatform returns the platform type ("iOS" or "Android")
 	GetPlatform() string
+
+	// SetProfilePhoto sets the profile photo and broadcasts the hash
+	SetProfilePhoto(photoPath string) error
+
+	// GetProfilePhotoHash returns the hash of the current profile photo
+	GetProfilePhotoHash() string
 }

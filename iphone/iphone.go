@@ -1,7 +1,10 @@
 package iphone
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +20,9 @@ type iPhone struct {
 	wire              *wire.Wire
 	manager           *swift.CBCentralManager
 	discoveryCallback phone.DeviceDiscoveryCallback
+	photoPath         string
+	photoHash         string
+	photoData         []byte
 }
 
 // NewIPhone creates a new iPhone instance
@@ -49,6 +55,7 @@ func NewIPhone() *iPhone {
 func (ip *iPhone) setupBLE() {
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 
 	// Create GATT table
 	gattTable := &wire.GATTTable{
@@ -59,6 +66,10 @@ func (ip *iPhone) setupBLE() {
 				Characteristics: []wire.GATTCharacteristic{
 					{
 						UUID:       auraTextCharUUID,
+						Properties: []string{"read", "write", "notify"},
+					},
+					{
+						UUID:       auraPhotoCharUUID,
 						Properties: []string{"read", "write", "notify"},
 					},
 				},
@@ -78,6 +89,7 @@ func (ip *iPhone) setupBLE() {
 		ServiceUUIDs:  []string{auraServiceUUID},
 		TxPowerLevel:  &txPowerLevel,
 		IsConnectable: true,
+		PhotoHash:     ip.photoHash,
 	}
 
 	if err := ip.wire.WriteAdvertisingData(advertisingData); err != nil {
@@ -135,12 +147,18 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 		name = advName
 	}
 
+	photoHash := ""
+	if hash, ok := advertisementData["kCBAdvDataPhotoHash"].(string); ok {
+		photoHash = hash
+	}
+
 	if ip.discoveryCallback != nil {
 		ip.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID: peripheral.UUID,
-			Name:     name,
-			RSSI:     rssi,
-			Platform: "unknown",
+			DeviceID:  peripheral.UUID,
+			Name:      name,
+			RSSI:      rssi,
+			Platform:  "unknown",
+			PhotoHash: photoHash,
 		})
 	}
 }
@@ -151,4 +169,37 @@ func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, periphera
 
 func (ip *iPhone) DidFailToConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, err error) {
 	// Connection failure handling for future
+}
+
+// SetProfilePhoto sets the profile photo and broadcasts the hash
+func (ip *iPhone) SetProfilePhoto(photoPath string) error {
+	// Read photo file
+	data, err := os.ReadFile(photoPath)
+	if err != nil {
+		return fmt.Errorf("failed to read photo: %w", err)
+	}
+
+	// Calculate hash
+	hash := sha256.Sum256(data)
+	photoHash := hex.EncodeToString(hash[:])
+
+	// Update fields
+	ip.photoPath = photoPath
+	ip.photoHash = photoHash
+	ip.photoData = data
+
+	// Update advertising data to broadcast new hash
+	ip.setupBLE()
+
+	fmt.Printf("[%s iOS] Updated profile photo (hash: %s)\n", ip.deviceUUID[:8], photoHash[:8])
+
+	// TODO: Send photo to all connected devices
+	// For now, devices will request it when they see the hash change
+
+	return nil
+}
+
+// GetProfilePhotoHash returns the hash of the current profile photo
+func (ip *iPhone) GetProfilePhotoHash() string {
+	return ip.photoHash
 }

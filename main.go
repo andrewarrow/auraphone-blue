@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"image"
 	"image/color"
+	_ "image/jpeg"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -33,8 +38,9 @@ type PhoneWindow struct {
 	contentArea       *fyne.Container
 	updateContentFunc func(string)
 	needsRefresh      bool
-	selectedPhoto     string // Currently selected profile photo
-	profileImage      *canvas.Image
+	selectedPhoto     string                 // Currently selected profile photo
+	profileImage      *canvas.Image          // Profile tab image
+	deviceImages      map[string]image.Image // Device ID -> profile image cache
 }
 
 // NewPhoneWindow creates a new phone window
@@ -50,6 +56,7 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 		discoveredDevices: []phone.DiscoveredDevice{},
 		needsRefresh:      false,
 		selectedPhoto:     selectedPhoto,
+		deviceImages:      make(map[string]image.Image),
 	}
 
 	// Create platform-specific phone
@@ -78,6 +85,11 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 	pw.window.SetOnClosed(func() {
 		pw.cleanup()
 	})
+
+	// Set initial profile photo
+	if err := pw.phone.SetProfilePhoto(pw.selectedPhoto); err != nil {
+		fmt.Printf("Failed to set initial profile photo: %v\n", err)
+	}
 
 	// Start BLE operations
 	pw.phone.Start()
@@ -180,11 +192,19 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 				rssiText := canvas.NewText("", color.RGBA{R: 150, G: 150, B: 150, A: 255})
 				rssiText.TextSize = 11
 
-				// Profile circle (60x60)
+				// Profile image (will be updated with actual photo or circle)
+				profileImage := canvas.NewImageFromImage(nil)
+				profileImage.FillMode = canvas.ImageFillContain
+				profileImage.SetMinSize(fyne.NewSize(60, 60))
+
+				// Profile circle fallback (60x60)
 				profileCircle := canvas.NewCircle(color.RGBA{R: 60, G: 60, B: 60, A: 255})
 				profileCircle.StrokeColor = color.RGBA{R: 120, G: 120, B: 120, A: 255}
 				profileCircle.StrokeWidth = 2
 				profileCircle.Resize(fyne.NewSize(60, 60))
+
+				// Stack image on top of circle (image will hide circle when loaded)
+				profileStack := container.NewMax(profileCircle, profileImage)
 
 				// Vertical stack for name and info lines
 				textStack := container.NewVBox(
@@ -193,9 +213,9 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 					rssiText,
 				)
 
-				// Horizontal layout: circle + text stack
+				// Horizontal layout: profile stack + text stack
 				row := container.NewBorder(nil, nil,
-					container.NewPadded(profileCircle),
+					container.NewPadded(profileStack),
 					nil,
 					textStack,
 				)
@@ -214,6 +234,17 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 					nameText := textStack.Objects[0].(*canvas.Text)
 					deviceIDText := textStack.Objects[1].(*canvas.Text)
 					rssiText := textStack.Objects[2].(*canvas.Text)
+
+					// Get the profile stack from the left of the border container
+					leftPadding := row.Objects[2].(*fyne.Container) // Left side
+					profileStack := leftPadding.Objects[0].(*fyne.Container)
+					profileImage := profileStack.Objects[1].(*canvas.Image)
+
+					// Update profile image if available
+					if img, exists := pw.deviceImages[device.DeviceID]; exists {
+						profileImage.Image = img
+						profileImage.Refresh()
+					}
 
 					// Set name with cyan color (matching iOS)
 					nameText.Text = device.Name
@@ -265,6 +296,11 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 			pw.selectedPhoto = "testdata/" + selected
 			pw.profileImage.File = pw.selectedPhoto
 			pw.profileImage.Refresh()
+
+			// Notify other phones of the photo change
+			if err := pw.phone.SetProfilePhoto(pw.selectedPhoto); err != nil {
+				fmt.Printf("Failed to update profile photo: %v\n", err)
+			}
 		})
 
 		// Set initial value in the selector
@@ -305,6 +341,11 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	// Add or update device in map (deduplicates by ID)
 	pw.devicesMap[device.DeviceID] = device
 
+	// If device has a photo hash, try to find matching local image
+	if device.PhotoHash != "" {
+		pw.loadDevicePhoto(device.DeviceID, device.PhotoHash)
+	}
+
 	// Rebuild sorted list from map
 	pw.discoveredDevices = make([]phone.DiscoveredDevice, 0, len(pw.devicesMap))
 	for _, dev := range pw.devicesMap {
@@ -312,6 +353,38 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	}
 
 	pw.sortAndRefreshDevices()
+}
+
+// loadDevicePhoto tries to find a local photo matching the hash
+func (pw *PhoneWindow) loadDevicePhoto(deviceID, photoHash string) {
+	// Check if we already have this image cached
+	if _, exists := pw.deviceImages[deviceID]; exists {
+		return
+	}
+
+	// Try to find matching photo in testdata
+	for i := 1; i <= 12; i++ {
+		photoPath := fmt.Sprintf("testdata/face%d.jpg", i)
+		data, err := os.ReadFile(photoPath)
+		if err != nil {
+			continue
+		}
+
+		// Calculate hash
+		hash := sha256.Sum256(data)
+		hashStr := hex.EncodeToString(hash[:])
+
+		if hashStr == photoHash {
+			// Found matching photo!
+			img, _, err := image.Decode(bytes.NewReader(data))
+			if err == nil {
+				pw.deviceImages[deviceID] = img
+				fmt.Printf("[%s] Loaded profile photo for device %s (face%d.jpg)\n",
+					pw.phone.GetDeviceUUID()[:8], deviceID[:8], i)
+				return
+			}
+		}
+	}
 }
 
 // sortAndRefreshDevices sorts devices by RSSI and refreshes the UI

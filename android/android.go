@@ -1,7 +1,10 @@
 package android
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +20,9 @@ type Android struct {
 	wire              *wire.Wire
 	manager           *kotlin.BluetoothManager
 	discoveryCallback phone.DeviceDiscoveryCallback
+	photoPath         string
+	photoHash         string
+	photoData         []byte
 }
 
 // NewAndroid creates a new Android instance
@@ -49,6 +55,7 @@ func NewAndroid() *Android {
 func (a *Android) setupBLE() {
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 
 	// Create GATT table
 	gattTable := &wire.GATTTable{
@@ -59,6 +66,10 @@ func (a *Android) setupBLE() {
 				Characteristics: []wire.GATTCharacteristic{
 					{
 						UUID:       auraTextCharUUID,
+						Properties: []string{"read", "write", "notify"},
+					},
+					{
+						UUID:       auraPhotoCharUUID,
 						Properties: []string{"read", "write", "notify"},
 					},
 				},
@@ -78,6 +89,7 @@ func (a *Android) setupBLE() {
 		ServiceUUIDs:  []string{auraServiceUUID},
 		TxPowerLevel:  &txPowerLevel,
 		IsConnectable: true,
+		PhotoHash:     a.photoHash,
 	}
 
 	if err := a.wire.WriteAdvertisingData(advertisingData); err != nil {
@@ -132,14 +144,53 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 		name = result.ScanRecord.DeviceName
 	}
 
+	photoHash := ""
+	if result.ScanRecord != nil && result.ScanRecord.PhotoHash != "" {
+		photoHash = result.ScanRecord.PhotoHash
+	}
+
 	rssi := float64(result.Rssi)
 
 	if a.discoveryCallback != nil {
 		a.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID: result.Device.Address,
-			Name:     name,
-			RSSI:     rssi,
-			Platform: "unknown",
+			DeviceID:  result.Device.Address,
+			Name:      name,
+			RSSI:      rssi,
+			Platform:  "unknown",
+			PhotoHash: photoHash,
 		})
 	}
+}
+
+// SetProfilePhoto sets the profile photo and broadcasts the hash
+func (a *Android) SetProfilePhoto(photoPath string) error {
+	// Read photo file
+	data, err := os.ReadFile(photoPath)
+	if err != nil {
+		return fmt.Errorf("failed to read photo: %w", err)
+	}
+
+	// Calculate hash
+	hash := sha256.Sum256(data)
+	photoHash := hex.EncodeToString(hash[:])
+
+	// Update fields
+	a.photoPath = photoPath
+	a.photoHash = photoHash
+	a.photoData = data
+
+	// Update advertising data to broadcast new hash
+	a.setupBLE()
+
+	fmt.Printf("[%s Android] Updated profile photo (hash: %s)\n", a.deviceUUID[:8], photoHash[:8])
+
+	// TODO: Send photo to all connected devices
+	// For now, devices will request it when they see the hash change
+
+	return nil
+}
+
+// GetProfilePhotoHash returns the hash of the current profile photo
+func (a *Android) GetProfilePhotoHash() string {
+	return a.photoHash
 }
