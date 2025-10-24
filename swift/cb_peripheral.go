@@ -55,7 +55,7 @@ func (p *CBPeripheral) StartListening() {
 	p.stopChan = make(chan struct{})
 
 	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
+		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
