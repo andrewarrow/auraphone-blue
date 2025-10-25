@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"image"
 	"image/color"
 	_ "image/jpeg"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -923,15 +926,118 @@ func cleanupOldDevices() error {
 	return nil
 }
 
+// runStressTest runs 2 iPhones and 2 Android devices in headless mode
+func runStressTest() {
+	fmt.Println("=== Auraphone Blue - Stress Test Mode ===")
+	fmt.Println("Starting 2 iOS and 2 Android devices in headless mode...")
+
+	// Set log level to INFO for stress test to reduce noise
+	logger.SetLevel(logger.INFO)
+
+	// Create device manager for hardware UUIDs
+	manager := phone.GetHardwareUUIDManager()
+
+	// Create 2 iPhones
+	iphones := make([]phone.Phone, 2)
+	for i := 0; i < 2; i++ {
+		hardwareUUID, err := manager.AllocateNextUUID()
+		if err != nil {
+			fmt.Printf("ERROR: Failed to allocate UUID for iPhone %d: %v\n", i+1, err)
+			return
+		}
+
+		iphones[i] = iphone.NewIPhone(hardwareUUID)
+		if iphones[i] == nil {
+			fmt.Printf("ERROR: Failed to create iPhone %d\n", i+1)
+			return
+		}
+
+		// Set profile photo (face1 for first iPhone, face2 for second)
+		photoPath := fmt.Sprintf("testdata/face%d.jpg", i+1)
+		if err := iphones[i].SetProfilePhoto(photoPath); err != nil {
+			fmt.Printf("Warning: Failed to set profile photo for iPhone %d: %v\n", i+1, err)
+		}
+
+		// Start the phone
+		iphones[i].Start()
+		fmt.Printf("Started iPhone %d (UUID: %s, Device ID: %s)\n",
+			i+1, hardwareUUID[:8], iphones[i].GetDeviceUUID()[:8])
+	}
+
+	// Create 2 Android devices
+	androids := make([]phone.Phone, 2)
+	for i := 0; i < 2; i++ {
+		hardwareUUID, err := manager.AllocateNextUUID()
+		if err != nil {
+			fmt.Printf("ERROR: Failed to allocate UUID for Android %d: %v\n", i+1, err)
+			return
+		}
+
+		androids[i] = android.NewAndroid(hardwareUUID)
+		if androids[i] == nil {
+			fmt.Printf("ERROR: Failed to create Android %d\n", i+1)
+			return
+		}
+
+		// Set profile photo (face3 for first Android, face4 for second)
+		photoPath := fmt.Sprintf("testdata/face%d.jpg", i+3)
+		if err := androids[i].SetProfilePhoto(photoPath); err != nil {
+			fmt.Printf("Warning: Failed to set profile photo for Android %d: %v\n", i+1, err)
+		}
+
+		// Start the phone
+		androids[i].Start()
+		fmt.Printf("Started Android %d (UUID: %s, Device ID: %s)\n",
+			i+1, hardwareUUID[:8], androids[i].GetDeviceUUID()[:8])
+	}
+
+	fmt.Println("\nAll devices started. Press Ctrl+C to stop...")
+
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	<-sigChan
+
+	fmt.Println("\nShutting down devices...")
+
+	// Stop all devices
+	for i, p := range iphones {
+		if p != nil {
+			p.Stop()
+			fmt.Printf("Stopped iPhone %d\n", i+1)
+		}
+	}
+
+	for i, p := range androids {
+		if p != nil {
+			p.Stop()
+			fmt.Printf("Stopped Android %d\n", i+1)
+		}
+	}
+
+	fmt.Println("Stress test completed.")
+}
+
 func main() {
-	fmt.Println("=== Auraphone Blue - Launcher ===")
-	fmt.Println("Starting launcher menu...")
+	// Parse CLI flags
+	stressTest := flag.Bool("stress-test", false, "Run headless stress test with 2 iPhones and 2 Android devices")
+	flag.Parse()
+
+	fmt.Println("=== Auraphone Blue ===")
 
 	// Clean up old device directories from previous runs
 	if err := cleanupOldDevices(); err != nil {
 		fmt.Printf("Warning: failed to cleanup old devices: %v\n", err)
 	}
 
+	// Run in stress test mode if flag is provided
+	if *stressTest {
+		runStressTest()
+		return
+	}
+
+	// Otherwise, run the normal GUI launcher
+	fmt.Println("Starting launcher menu...")
 	launcher := NewLauncher()
 	launcher.Run()
 }
