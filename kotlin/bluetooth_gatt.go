@@ -311,7 +311,7 @@ func (g *BluetoothGatt) SetCharacteristicNotification(characteristic *BluetoothG
 	if g.wire == nil {
 		return false
 	}
-	if characteristic == nil {
+	if characteristic == nil || characteristic.Service == nil {
 		return false
 	}
 
@@ -321,9 +321,16 @@ func (g *BluetoothGatt) SetCharacteristicNotification(characteristic *BluetoothG
 
 	g.notifyingCharacteristics[characteristic.UUID] = enable
 
+	// Send subscribe/unsubscribe message to peripheral
 	// In real Android, this would also write to the CCCD descriptor
-	// For our simulation, we just track the subscription state
-	return true
+	var err error
+	if enable {
+		err = g.wire.SubscribeCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
+	} else {
+		err = g.wire.UnsubscribeCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
+	}
+
+	return err == nil
 }
 
 func (g *BluetoothGatt) StartListening() {

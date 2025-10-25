@@ -16,20 +16,49 @@ func NewBluetoothManager(uuid string) *BluetoothManager {
 	}
 }
 
+// OpenGattServer opens a GATT server for peripheral mode
+// Matches: bluetoothManager.openGattServer(context, callback)
+func (m *BluetoothManager) OpenGattServer(callback BluetoothGattServerCallback, platform wire.Platform, deviceName string) *BluetoothGattServer {
+	return NewBluetoothGattServer(m.uuid, callback, platform, deviceName)
+}
+
 type BluetoothAdapter struct {
-	scanner *BluetoothLeScanner
-	uuid    string
+	scanner    *BluetoothLeScanner
+	advertiser *BluetoothLeAdvertiser
+	uuid       string
+	platform   wire.Platform
+	deviceName string
 }
 
 func NewBluetoothAdapter(uuid string) *BluetoothAdapter {
 	return &BluetoothAdapter{
-		scanner: NewBluetoothLeScanner(uuid),
-		uuid:    uuid,
+		scanner:  NewBluetoothLeScanner(uuid),
+		uuid:     uuid,
+		platform: wire.PlatformAndroid,
+	}
+}
+
+// NewBluetoothAdapterWithPlatform creates an adapter with platform info for advertising
+func NewBluetoothAdapterWithPlatform(uuid string, platform wire.Platform, deviceName string) *BluetoothAdapter {
+	return &BluetoothAdapter{
+		scanner:    NewBluetoothLeScanner(uuid),
+		uuid:       uuid,
+		platform:   platform,
+		deviceName: deviceName,
 	}
 }
 
 func (a *BluetoothAdapter) GetBluetoothLeScanner() *BluetoothLeScanner {
 	return a.scanner
+}
+
+// GetBluetoothLeAdvertiser returns the advertiser for peripheral mode
+// Matches: bluetoothAdapter.getBluetoothLeAdvertiser()
+func (a *BluetoothAdapter) GetBluetoothLeAdvertiser() *BluetoothLeAdvertiser {
+	if a.advertiser == nil {
+		a.advertiser = NewBluetoothLeAdvertiser(a.uuid, a.platform, a.deviceName)
+	}
+	return a.advertiser
 }
 
 type BluetoothLeScanner struct {

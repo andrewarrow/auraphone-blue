@@ -89,6 +89,8 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 ✅ **Packet loss & retries** - ~98.4% overall success rate with realistic radio interference
 ✅ **RSSI variance** - Distance-based signal strength with realistic fluctuations
 ✅ **Platform-specific reconnection** - iOS auto-reconnect vs Android manual/auto modes
+✅ **Peripheral mode** - iOS CBPeripheralManager and Android BluetoothLeAdvertiser for advertising and serving GATT data
+✅ **Notifications/Indications** - Subscribe/unsubscribe mechanism matches real BLE CCCD descriptor writes
 
 ## Design Principles
 - **Use real platform API names** - CBCentralManager, BluetoothGatt, etc.
@@ -165,14 +167,34 @@ Characteristic operations are sent as JSON message files in inbox/outbox:
 ```
 
 ### API Changes (✅ Implemented)
-- **iOS**: `CBService` and `CBCharacteristic` types added
+
+#### Central Mode (Scanning & Connecting)
+- **iOS**: `CBCentralManager` and `CBPeripheral` for scanning and connecting
+  - `centralManager.ScanForPeripherals()` discovers advertising devices
   - `peripheral.DiscoverServices()` reads remote gatt.json
   - `peripheral.WriteValue(data, characteristic)` sends to specific characteristic
+  - `peripheral.SetNotifyValue(enabled, characteristic)` subscribes to notifications
   - `peripheral.GetCharacteristic(serviceUUID, charUUID)` lookup helper
-- **Android**: `BluetoothGattService` and `BluetoothGattCharacteristic` types added
+
+- **Android**: `BluetoothLeScanner` and `BluetoothGatt` for scanning and connecting
+  - `scanner.StartScan(callback)` discovers advertising devices
   - `gatt.DiscoverServices()` reads remote gatt.json
   - `gatt.WriteCharacteristic(characteristic)` sends characteristic.Value
+  - `gatt.SetCharacteristicNotification(characteristic, enable)` subscribes to notifications
   - `gatt.GetCharacteristic(serviceUUID, charUUID)` lookup helper
+
+#### Peripheral Mode (Advertising & Serving) ✅ NEW
+- **iOS**: `CBPeripheralManager` for advertising and GATT server
+  - `peripheralManager.AddService(service)` adds services to local GATT database
+  - `peripheralManager.StartAdvertising(data)` begins advertising
+  - `peripheralManager.UpdateValue(value, characteristic, centrals)` sends notifications
+  - Delegate callbacks: `DidReceiveReadRequest`, `DidReceiveWriteRequests`, `CentralDidSubscribe`
+
+- **Android**: `BluetoothLeAdvertiser` and `BluetoothGattServer` for advertising and GATT server
+  - `gattServer.AddService(service)` adds services to local GATT database
+  - `advertiser.StartAdvertising(settings, data, callback)` begins advertising
+  - `gattServer.NotifyCharacteristicChanged(device, characteristic, confirm)` sends notifications
+  - Callbacks: `OnCharacteristicReadRequest`, `OnCharacteristicWriteRequest`, `OnConnectionStateChange`
 
 ## Role Negotiation
 
@@ -247,5 +269,7 @@ config.Seed = 12345          // Fixed random seed
 - [x] Simulate connection failures and retries
 - [x] Add device role enforcement (iOS dual, Android peripheral-only)
 - [x] Model RSSI based on distance
-- [ ] Add notifications/indications instead of polling (intentionally simplified)
-- [ ] Add peripheral mode for iOS (currently in swift/ but not fully integrated)
+- [x] Add peripheral mode for iOS (CBPeripheralManager)
+- [x] Add peripheral mode for Android (BluetoothLeAdvertiser + BluetoothGattServer)
+- [x] Add subscribe/unsubscribe protocol for notifications/indications
+- [ ] Add filesystem watchers instead of polling (intentionally simplified for portability)

@@ -780,6 +780,40 @@ func (w *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, da
 	return w.sendCharacteristicMessage(targetUUID, &msg)
 }
 
+// SubscribeCharacteristic sends a subscription request to target device
+func (w *Wire) SubscribeCharacteristic(targetUUID, serviceUUID, charUUID string) error {
+	msg := CharacteristicMessage{
+		Operation:   "subscribe",
+		ServiceUUID: serviceUUID,
+		CharUUID:    charUUID,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  w.localUUID,
+	}
+
+	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+		fmt.Sprintf("📤 TX Subscribe (to %s, svc=%s, char=%s)",
+			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
+
+	return w.sendCharacteristicMessage(targetUUID, &msg)
+}
+
+// UnsubscribeCharacteristic sends an unsubscription request to target device
+func (w *Wire) UnsubscribeCharacteristic(targetUUID, serviceUUID, charUUID string) error {
+	msg := CharacteristicMessage{
+		Operation:   "unsubscribe",
+		ServiceUUID: serviceUUID,
+		CharUUID:    charUUID,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  w.localUUID,
+	}
+
+	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+		fmt.Sprintf("📤 TX Unsubscribe (to %s, svc=%s, char=%s)",
+			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
+
+	return w.sendCharacteristicMessage(targetUUID, &msg)
+}
+
 // sendCharacteristicMessage writes a characteristic message to target's inbox as JSON
 func (w *Wire) sendCharacteristicMessage(targetUUID string, msg *CharacteristicMessage) error {
 	data, err := json.Marshal(msg)

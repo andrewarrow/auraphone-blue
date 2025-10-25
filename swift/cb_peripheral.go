@@ -246,7 +246,7 @@ func (p *CBPeripheral) SetNotifyValue(enabled bool, characteristic *CBCharacteri
 	if p.wire == nil {
 		return fmt.Errorf("peripheral not connected")
 	}
-	if characteristic == nil {
+	if characteristic == nil || characteristic.Service == nil {
 		return fmt.Errorf("invalid characteristic")
 	}
 
@@ -256,9 +256,16 @@ func (p *CBPeripheral) SetNotifyValue(enabled bool, characteristic *CBCharacteri
 
 	p.notifyingCharacteristics[characteristic.UUID] = enabled
 
+	// Send subscribe/unsubscribe message to peripheral
 	// In real iOS, this would write to the CCCD descriptor
-	// For our simulation, we just track the subscription state
-	return nil
+	var err error
+	if enabled {
+		err = p.wire.SubscribeCharacteristic(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
+	} else {
+		err = p.wire.UnsubscribeCharacteristic(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
+	}
+
+	return err
 }
 
 // GetCharacteristic finds a characteristic by UUID within the peripheral's services
