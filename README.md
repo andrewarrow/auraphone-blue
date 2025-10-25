@@ -4,6 +4,20 @@ A Go-based Bluetooth Low Energy (BLE) simulator that uses filesystem-based messa
 
 ## Why This Exists
 
+I've been working on a bluetooth only ios and android app for a few months now. Been through lots of different ways to test. I ran multiple real phones from my macbook. I wrote a golang program using [github.com/go-ble/ble](https://github.com/go-ble/ble) that actually works and connects from the macbook to a phone. But in the end to really get the level of testing I needed I started:
+
+https://github.com/andrewarrow/auraphone-blue
+
+Which is a 100% go program but it has a "swift" package with [cb_central_manager.go](swift/cb_central_manager.go), [cb_peripheral_manager.go](swift/cb_peripheral_manager.go), and [cb_peripheral.go](swift/cb_peripheral.go). And a "kotlin" package with [bluetooth_device.go](kotlin/bluetooth_device.go), [bluetooth_gatt.go](kotlin/bluetooth_gatt.go) and [bluetooth_manager.go](kotlin/bluetooth_manager.go). These simulate the real ios and android bluetooth stacks with all their subtle differences.
+
+Using go's fyne GUI I made the actual phone "apps" and can run many android phones and many iphones. The filesystem is used to write data "down the wire" or "over the air" since this is bluetooth.
+
+![screenshot](https://i.imgur.com/Io3OZ5x.png)
+
+To test complex scenarios like 7 iphones and 4 androids all running at the same time I run this gui and keep fine tuning the logic and fixing all the edge cases. Then I move this logic from go back to real kotlin and swift for the real apps. The ios app is live in the app store:
+
+https://apps.apple.com/us/app/auraphone/id6752836343
+
 Testing real-world BLE edge cases is difficult:
 - **Hardware Required:** Need multiple physical iOS and Android devices
 - **Hard to Reproduce:** Edge cases like photo collision, stale handshakes, and connection race conditions are timing-dependent
@@ -16,7 +30,6 @@ This simulator lets you:
 - ✅ Convert real app logs into replayable test cases
 - ✅ Iterate rapidly without deploying to devices
 
-![screenshot](https://i.imgur.com/Io3OZ5x.png)
 
 ## Architecture
 
