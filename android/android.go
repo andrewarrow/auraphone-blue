@@ -167,11 +167,48 @@ func NewAndroid(hardwareUUID string) *Android {
 	return a
 }
 
-// initializePeripheralMode sets up advertiser for peripheral role
+// androidGattServerDelegate wraps Android to provide separate delegate for GATT server
+type androidGattServerDelegate struct {
+	android *Android
+}
+
+// initializePeripheralMode sets up advertiser and GATT server for peripheral role
 func (a *Android) initializePeripheralMode() {
-	// Create advertiser - it will poll inbox and handle incoming messages
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
+
+	// Create GATT server with wrapper callback
+	delegate := &androidGattServerDelegate{android: a}
+	gattServer := kotlin.NewBluetoothGattServer(a.hardwareUUID, delegate, wire.PlatformAndroid, a.deviceName)
+
+	// Add the Aura service
+	service := &kotlin.BluetoothGattService{
+		UUID: auraServiceUUID,
+		Type: kotlin.SERVICE_TYPE_PRIMARY,
+	}
+
+	// Add characteristics (no Permissions field, it's server-side so properties are enough)
+	textChar := &kotlin.BluetoothGattCharacteristic{
+		UUID:       auraTextCharUUID,
+		Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
+	}
+	photoChar := &kotlin.BluetoothGattCharacteristic{
+		UUID:       auraPhotoCharUUID,
+		Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
+	}
+	profileChar := &kotlin.BluetoothGattCharacteristic{
+		UUID:       auraProfileCharUUID,
+		Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
+	}
+
+	service.Characteristics = append(service.Characteristics, textChar, photoChar, profileChar)
+	gattServer.AddService(service)
+
+	// Create advertiser
 	a.advertiser = kotlin.NewBluetoothLeAdvertiser(a.hardwareUUID, wire.PlatformAndroid, a.deviceName)
-	// Note: The advertiser automatically polls the inbox when advertising starts
+	a.advertiser.SetGattServer(gattServer)
 }
 
 // setupBLE configures GATT table and advertising data
@@ -1272,83 +1309,6 @@ func (a *Android) handleProfileMessage(gatt *kotlin.BluetoothGatt, data []byte) 
 }
 
 // ====================================================================================
-// BluetoothGattServerCallback implementation (Peripheral mode)
-// ====================================================================================
-
-// Server callbacks are handled by the gattServer's internal message polling
-// The advertiser polls inbox and forwards to handleServerWrite below
-
-// handleServerWrite processes writes from remote central devices to our GATT server
-func (a *Android) handleServerWrite(senderUUID string, charUUID string, value []byte) {
-	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
-
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
-
-	logger.Debug(prefix, "📥 GATT server write from %s to char %s (%d bytes)", senderUUID[:8], charUUID[:8], len(value))
-
-	// Create a fake GATT connection for this sender if we don't have one
-	a.mu.Lock()
-	gatt, exists := a.connectedGatts[senderUUID]
-	if !exists {
-		// Create a new GATT connection representing the incoming connection
-		gatt = &kotlin.BluetoothGatt{}
-		a.connectedGatts[senderUUID] = gatt
-		logger.Debug(prefix, "📝 Created GATT connection for incoming central %s", senderUUID[:8])
-	}
-	a.mu.Unlock()
-
-	// Process based on characteristic
-	switch charUUID {
-	case auraTextCharUUID:
-		// Handshake message - decode protobuf
-		handshake := &proto.HandshakeMessage{}
-		if err := proto2.Unmarshal(value, handshake); err != nil {
-			logger.Error(prefix, "❌ Failed to decode handshake: %v", err)
-			return
-		}
-
-		// Process handshake (simplified version of handleHandshake)
-		a.mu.Lock()
-		a.remoteUUIDToDeviceID[senderUUID] = handshake.DeviceId
-		if len(handshake.TxPhotoHash) > 0 {
-			a.deviceIDToPhotoHash[handshake.DeviceId] = hashBytesToString(handshake.TxPhotoHash)
-		}
-		a.mu.Unlock()
-
-		logger.Info(prefix, "📥 RX Handshake from server write: deviceID=%s", handshake.DeviceId)
-
-		// Send our handshake back through the wire
-		go a.sendHandshakeToDevice(senderUUID)
-
-	case auraPhotoCharUUID:
-		// Photo chunk - process photo message
-		go a.handlePhotoMessage(gatt, value)
-
-	case auraProfileCharUUID:
-		// Profile message
-		go a.handleProfileMessage(gatt, value)
-	}
-}
-
-func (a *Android) sendHandshakeToDevice(targetUUID string) {
-	// Send handshake back via wire protocol
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-
-	msg := &proto.HandshakeMessage{
-		DeviceId:        a.deviceID,
-		FirstName:       "Android",
-		ProtocolVersion: 1,
-		TxPhotoHash:     hashStringToBytes(a.photoHash),
-	}
-
-	data, _ := proto2.Marshal(msg)
-	a.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraTextCharUUID, data)
-}
-
-// ====================================================================================
 // AdvertiseCallback implementation (Peripheral mode)
 // ====================================================================================
 
@@ -1362,4 +1322,82 @@ func (a *Android) OnStartSuccess(settingsInEffect *kotlin.AdvertiseSettings) {
 func (a *Android) OnStartFailure(errorCode int) {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	logger.Error(prefix, "❌ Advertising failed to start (error code: %d)", errorCode)
+}
+
+// ====================================================================================
+// BluetoothGattServerCallback implementation (Peripheral mode - GATT server)
+// ====================================================================================
+
+// OnConnectionStateChange is called when a central device connects/disconnects
+func (d *androidGattServerDelegate) OnConnectionStateChange(device *kotlin.BluetoothDevice, status int, newState int) {
+	prefix := fmt.Sprintf("%s Android", d.android.hardwareUUID[:8])
+	if newState == kotlin.STATE_CONNECTED {
+		logger.Debug(prefix, "📥 GATT server: Central %s connected", device.Address[:8])
+	} else if newState == kotlin.STATE_DISCONNECTED {
+		logger.Debug(prefix, "📥 GATT server: Central %s disconnected", device.Address[:8])
+	}
+}
+
+// OnCharacteristicReadRequest is called when a central reads a characteristic
+func (d *androidGattServerDelegate) OnCharacteristicReadRequest(device *kotlin.BluetoothDevice, requestId int, offset int, characteristic *kotlin.BluetoothGattCharacteristic) {
+	prefix := fmt.Sprintf("%s Android", d.android.hardwareUUID[:8])
+	logger.Debug(prefix, "📥 GATT server: Read request from %s for char %s", device.Address[:8], characteristic.UUID[:8])
+	// For now, we don't support reads - all data is pushed via writes
+}
+
+// OnCharacteristicWriteRequest is called when a central writes to a characteristic
+func (d *androidGattServerDelegate) OnCharacteristicWriteRequest(device *kotlin.BluetoothDevice, requestId int, characteristic *kotlin.BluetoothGattCharacteristic, preparedWrite bool, responseNeeded bool, offset int, value []byte) {
+	prefix := fmt.Sprintf("%s Android", d.android.hardwareUUID[:8])
+
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
+
+	logger.Debug(prefix, "📥 GATT server: Write request from %s to char %s (%d bytes)", device.Address[:8], characteristic.UUID[:8], len(value))
+
+	// Get or create GATT connection for this sender
+	senderUUID := device.Address
+	d.android.mu.Lock()
+	gatt, exists := d.android.connectedGatts[senderUUID]
+	if !exists {
+		// Create a pseudo GATT connection representing the incoming connection by using ConnectGatt
+		// This properly initializes the GATT connection with wire and callbacks
+		// We use the discovered device if available, otherwise create a temporary one
+		tempDevice, deviceExists := d.android.discoveredDevices[senderUUID]
+		if !deviceExists {
+			tempDevice = &kotlin.BluetoothDevice{
+				Address: senderUUID,
+				Name:    "Central Device",
+			}
+		}
+		gatt = tempDevice.ConnectGatt(nil, false, d.android)
+		d.android.connectedGatts[senderUUID] = gatt
+		logger.Debug(prefix, "📝 Created GATT connection for incoming central %s", senderUUID[:8])
+	}
+	d.android.mu.Unlock()
+
+	// Process based on characteristic
+	switch characteristic.UUID {
+	case auraTextCharUUID:
+		// Handshake message
+		d.android.handleHandshakeMessage(gatt, value)
+	case auraPhotoCharUUID:
+		// Photo chunk
+		go d.android.handlePhotoMessage(gatt, value)
+	case auraProfileCharUUID:
+		// Profile message
+		go d.android.handleProfileMessage(gatt, value)
+	}
+}
+
+// OnDescriptorReadRequest is called when a central reads a descriptor
+func (d *androidGattServerDelegate) OnDescriptorReadRequest(device *kotlin.BluetoothDevice, requestId int, offset int, descriptor *kotlin.BluetoothGattDescriptor) {
+	// Not used in this implementation
+}
+
+// OnDescriptorWriteRequest is called when a central writes to a descriptor
+func (d *androidGattServerDelegate) OnDescriptorWriteRequest(device *kotlin.BluetoothDevice, requestId int, descriptor *kotlin.BluetoothGattDescriptor, preparedWrite bool, responseNeeded bool, offset int, value []byte) {
+	// Used for enabling/disabling notifications - handle subscribe/unsubscribe
+	prefix := fmt.Sprintf("%s Android", d.android.hardwareUUID[:8])
+	logger.Debug(prefix, "📥 GATT server: Descriptor write from %s", device.Address[:8])
 }
