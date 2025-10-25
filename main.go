@@ -320,9 +320,15 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 						if photoHash, hasHash := pw.devicePhotoHashes[device.DeviceID]; hasHash {
 							if img, hasImage := pw.deviceImages[photoHash]; hasImage {
 								profileImage.Image = img
-								profileImage.Refresh()
+							} else {
+								// Hash exists but image not loaded yet - clear any stale image from widget reuse
+								profileImage.Image = nil
 							}
+						} else {
+							// No hash for this device yet - clear any stale image from widget reuse
+							profileImage.Image = nil
 						}
+						profileImage.Refresh()
 					}
 				}
 			},
