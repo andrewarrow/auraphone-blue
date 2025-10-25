@@ -331,14 +331,48 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 		})
 	}
 
-	// Auto-connect if not already connected
+	// Auto-connect if not already connected AND we should act as Central
 	if !alreadyConnected {
-		logger.Debug(prefix, "🔌 Connecting to %s (autoConnect=%v)", result.Device.Address[:8], a.useAutoConnect)
-		gatt := result.Device.ConnectGatt(nil, a.useAutoConnect, a)
-		a.mu.Lock()
-		a.connectedGatts[result.Device.Address] = gatt
-		a.mu.Unlock()
+		// Check if we should act as Central for this device using role negotiation
+		if a.shouldActAsCentral(result.Device.Address, name) {
+			logger.Debug(prefix, "🔌 Connecting to %s (acting as Central, autoConnect=%v)", result.Device.Address[:8], a.useAutoConnect)
+			gatt := result.Device.ConnectGatt(nil, a.useAutoConnect, a)
+			a.mu.Lock()
+			a.connectedGatts[result.Device.Address] = gatt
+			a.mu.Unlock()
+		} else {
+			logger.Debug(prefix, "⏸️  Not connecting to %s (will act as Peripheral, waiting for them to connect)", result.Device.Address[:8])
+		}
 	}
+}
+
+// shouldActAsCentral determines if this Android device should initiate connection to a discovered device
+// Returns true if we should connect (act as Central), false if we should wait (act as Peripheral)
+func (a *Android) shouldActAsCentral(remoteUUID, remoteName string) bool {
+	// Determine remote platform from device name
+	isRemoteIOS := false
+	isRemoteAndroid := false
+
+	if remoteName != "" {
+		if len(remoteName) >= 3 && remoteName[:3] == "iOS" {
+			isRemoteIOS = true
+		} else if len(remoteName) >= 7 && remoteName[:7] == "Android" {
+			isRemoteAndroid = true
+		}
+	}
+
+	// Android → iOS: Android acts as Peripheral (waits for iOS to connect)
+	if isRemoteIOS {
+		return false
+	}
+
+	// Android → Android: Device with larger name acts as Central
+	if isRemoteAndroid {
+		return a.deviceName > remoteName
+	}
+
+	// Unknown platform: use UUID comparison as fallback
+	return a.deviceUUID > remoteUUID
 }
 
 // SetProfilePhoto sets the profile photo and broadcasts the hash

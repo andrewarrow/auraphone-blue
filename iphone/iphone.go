@@ -332,15 +332,49 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 		})
 	}
 
-	// Auto-connect if not already connected
+	// Auto-connect if not already connected AND we should act as Central
 	ip.mu.RLock()
 	_, alreadyConnected := ip.connectedPeripherals[peripheral.UUID]
 	ip.mu.RUnlock()
 
 	if !alreadyConnected {
-		logger.Debug(prefix, "🔌 Connecting to %s", peripheral.UUID[:8])
-		ip.manager.Connect(&peripheral, nil)
+		// Check if we should act as Central for this device using role negotiation
+		if ip.shouldActAsCentral(peripheral.UUID, name) {
+			logger.Debug(prefix, "🔌 Connecting to %s (acting as Central)", peripheral.UUID[:8])
+			ip.manager.Connect(&peripheral, nil)
+		} else {
+			logger.Debug(prefix, "⏸️  Not connecting to %s (will act as Peripheral, waiting for them to connect)", peripheral.UUID[:8])
+		}
 	}
+}
+
+// shouldActAsCentral determines if this iPhone should initiate connection to a discovered device
+// Returns true if we should connect (act as Central), false if we should wait (act as Peripheral)
+func (ip *iPhone) shouldActAsCentral(remoteUUID, remoteName string) bool {
+	// Determine remote platform from device name
+	isRemoteIOS := false
+	isRemoteAndroid := false
+
+	if remoteName != "" {
+		if len(remoteName) >= 3 && remoteName[:3] == "iOS" {
+			isRemoteIOS = true
+		} else if len(remoteName) >= 7 && remoteName[:7] == "Android" {
+			isRemoteAndroid = true
+		}
+	}
+
+	// iOS → iOS: Device with larger UUID acts as Central (prevents both from connecting)
+	if isRemoteIOS {
+		return ip.deviceUUID > remoteUUID
+	}
+
+	// iOS → Android: iOS always acts as Central
+	if isRemoteAndroid {
+		return true
+	}
+
+	// Unknown platform: use UUID comparison as fallback
+	return ip.deviceUUID > remoteUUID
 }
 
 func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral) {

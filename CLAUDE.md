@@ -66,8 +66,9 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 5. **✅ Packet Loss & Retries** - ~1.5% packet loss rate with automatic retries (up to 3 attempts). Overall success rate: ~98.4%.
 
 6. **✅ Device Roles & Negotiation** - Both iOS and Android support dual-role (Central+Peripheral). Smart role negotiation prevents connection conflicts:
-   - **iOS → any device**: Always acts as Central (initiates connection)
-   - **Android → iOS**: Acts as Peripheral (waits for iOS to connect)
+   - **iOS → iOS**: Lexicographic device UUID comparison - device with LARGER UUID acts as Central
+   - **iOS → Android**: iOS acts as Central (initiates connection)
+   - **Android → iOS**: Android acts as Peripheral (waits for iOS to connect)
    - **Android → Android**: Lexicographic device name comparison - device with LARGER name acts as Central
 
 7. **✅ Platform-Specific Reconnection Behavior** - iOS and Android have completely different reconnection behaviors:
@@ -211,8 +212,19 @@ Characteristic operations are sent as JSON message files in inbox/outbox:
 Both iOS and Android devices support dual-role BLE (can act as Central or Peripheral). To prevent connection conflicts when two devices discover each other simultaneously, the system uses smart role arbitration:
 
 ```go
-// iOS device always initiates connections
-iosWire := wire.NewWireWithPlatform(uuid, wire.PlatformIOS, "iPhone 15", nil)
+// iOS devices use UUID comparison for iOS-to-iOS
+ios1 := wire.NewWireWithPlatform(uuid1, wire.PlatformIOS, "iPhone 15", nil)
+ios2 := wire.NewWireWithPlatform(uuid2, wire.PlatformIOS, "iPhone 14", nil)
+
+// Device with larger UUID acts as Central
+shouldConnect := ios1.ShouldActAsCentral(ios2) // Compares UUIDs lexicographically
+
+// iOS to Android: iOS always acts as Central
+iosWire := wire.NewWireWithPlatform(uuidIOS, wire.PlatformIOS, "iPhone 15", nil)
+androidWire := wire.NewWireWithPlatform(uuidAndroid, wire.PlatformAndroid, "Pixel 8", nil)
+
+// iOS initiates connection to Android
+shouldConnect := iosWire.ShouldActAsCentral(androidWire) // true
 
 // Android devices use device name comparison for Android-to-Android
 android1 := wire.NewWireWithPlatform(uuid1, wire.PlatformAndroid, "Pixel 8", nil)
@@ -223,9 +235,12 @@ shouldConnect := android1.ShouldActAsCentral(android2) // true
 ```
 
 **Rules:**
-1. **iOS → any**: iOS always acts as Central (initiates connection)
-2. **Android → iOS**: Android acts as Peripheral (waits for iOS)
-3. **Android → Android**: Device with lexicographically larger name acts as Central
+1. **iOS → iOS**: Device with lexicographically larger UUID acts as Central
+   - Example: UUID starting with "b1..." > UUID starting with "5a..." → "b1" device connects
+   - Deterministic role assignment prevents simultaneous connection attempts
+2. **iOS → Android**: iOS always acts as Central (initiates connection)
+3. **Android → iOS**: Android acts as Peripheral (waits for iOS)
+4. **Android → Android**: Device with lexicographically larger name acts as Central
    - Example: "Pixel 8" > "Galaxy S23" → Pixel connects to Galaxy
    - Prevents simultaneous connection attempts
 

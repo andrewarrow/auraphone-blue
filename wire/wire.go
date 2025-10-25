@@ -180,7 +180,6 @@ func (w *Wire) CanAdvertise() bool {
 	return w.role&RolePeripheralOnly != 0
 }
 
-
 // SetBasePath sets the base directory for device communication
 func (w *Wire) SetBasePath(path string) {
 	w.basePath = path
