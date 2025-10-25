@@ -122,9 +122,8 @@ func (c *CBCentralManager) ShouldInitiateConnection(targetPlatform wire.Platform
 }
 
 func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]interface{}) {
-	// iOS Role Policy: Apps should call ShouldInitiateConnection() before calling Connect()
-	// to avoid simultaneous connection attempts (especially for iOS-to-iOS scenarios).
-	// For non-iOS targets, iOS typically initiates connections (common app pattern).
+	// Role Policy: Apps should call ShouldInitiateConnection() before calling Connect()
+	// to avoid simultaneous connection attempts with dual-role devices.
 
 	// Set up the peripheral's wire connection
 	peripheral.wire = c.wire
