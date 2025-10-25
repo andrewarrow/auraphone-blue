@@ -48,7 +48,7 @@ func (m *DeviceCacheManager) InitializeCache() error {
 	}
 
 	// Create photos subdirectory
-	photosDir := filepath.Join(m.baseDir, "Photos")
+	photosDir := filepath.Join(m.baseDir, "photos")
 	if err := os.MkdirAll(photosDir, 0755); err != nil {
 		return fmt.Errorf("failed to create photos directory: %w", err)
 	}
@@ -92,13 +92,13 @@ func (m *DeviceCacheManager) SaveLocalUserPhoto(photoData []byte) (string, error
 	photoHash := m.CalculatePhotoHash(photoData)
 
 	// Save photo file named by hash
-	photoPath := filepath.Join(m.baseDir, "Photos", fmt.Sprintf("%s.jpg", photoHash))
+	photoPath := filepath.Join(m.baseDir, "photos", fmt.Sprintf("%s.jpg", photoHash))
 	if err := os.WriteFile(photoPath, photoData, 0644); err != nil {
 		return "", fmt.Errorf("failed to save photo: %w", err)
 	}
 
 	// Also save as local_user.jpg for convenience
-	localPhotoPath := filepath.Join(m.baseDir, "Photos", "local_user.jpg")
+	localPhotoPath := filepath.Join(m.baseDir, "photos", "local_user.jpg")
 	if err := os.WriteFile(localPhotoPath, photoData, 0644); err != nil {
 		return "", fmt.Errorf("failed to save local photo: %w", err)
 	}
@@ -132,7 +132,7 @@ func (m *DeviceCacheManager) SaveLocalUserPhoto(photoData []byte) (string, error
 
 // LoadLocalUserPhoto loads our profile photo
 func (m *DeviceCacheManager) LoadLocalUserPhoto() ([]byte, error) {
-	photoPath := filepath.Join(m.baseDir, "Photos", "local_user.jpg")
+	photoPath := filepath.Join(m.baseDir, "photos", "local_user.jpg")
 	data, err := os.ReadFile(photoPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -175,7 +175,7 @@ func (m *DeviceCacheManager) SaveDevicePhoto(deviceID string, photoData []byte, 
 	}
 
 	// Save photo file named by hash
-	photoPath := filepath.Join(m.baseDir, "Photos", fmt.Sprintf("%s.jpg", photoHash))
+	photoPath := filepath.Join(m.baseDir, "photos", fmt.Sprintf("%s.jpg", photoHash))
 	if err := os.WriteFile(photoPath, photoData, 0644); err != nil {
 		return fmt.Errorf("failed to save device photo: %w", err)
 	}
@@ -218,7 +218,7 @@ func (m *DeviceCacheManager) LoadDevicePhoto(deviceID string) ([]byte, error) {
 	}
 
 	// Load photo by hash
-	photoPath := filepath.Join(m.baseDir, "Photos", fmt.Sprintf("%s.jpg", photoHash))
+	photoPath := filepath.Join(m.baseDir, "photos", fmt.Sprintf("%s.jpg", photoHash))
 	data, err := os.ReadFile(photoPath)
 	if err != nil {
 		if os.IsNotExist(err) {

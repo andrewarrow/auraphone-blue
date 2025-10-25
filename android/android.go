@@ -35,6 +35,7 @@ type Android struct {
 	deviceUUID           string
 	deviceName           string
 	wire                 *wire.Wire
+	cacheManager         *wire.DeviceCacheManager           // Persistent photo storage
 	manager              *kotlin.BluetoothManager
 	discoveryCallback    phone.DeviceDiscoveryCallback
 	photoPath            string
@@ -78,6 +79,16 @@ func NewAndroid() *Android {
 		fmt.Printf("Failed to initialize Android device: %v\n", err)
 		return nil
 	}
+
+	// Initialize cache manager
+	a.cacheManager = wire.NewDeviceCacheManager(deviceUUID)
+	if err := a.cacheManager.InitializeCache(); err != nil {
+		fmt.Printf("Failed to initialize cache: %v\n", err)
+		return nil
+	}
+
+	// Load existing photo mappings from disk
+	a.loadReceivedPhotoMappings()
 
 	// Setup BLE
 	a.setupBLE()
@@ -134,6 +145,55 @@ func (a *Android) setupBLE() {
 	}
 
 	logger.Info(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "Setup complete - advertising as: %s", a.deviceName)
+}
+
+// loadReceivedPhotoMappings loads deviceID->photoHash mappings from disk cache
+// This restores knowledge of which photos we've already received from other devices
+func (a *Android) loadReceivedPhotoMappings() {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+
+	// Scan cache/photos directory for received photos
+	photosDir := fmt.Sprintf("data/%s/cache/photos", a.deviceUUID)
+	entries, err := os.ReadDir(photosDir)
+	if err != nil {
+		// Directory doesn't exist yet - no photos received
+		return
+	}
+
+	// For each photo file, check if we have metadata mapping it to a device
+	loadedCount := 0
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jpg" {
+			continue
+		}
+
+		// Extract hash from filename (e.g., "abc123...def.jpg" -> "abc123...def")
+		photoHash := entry.Name()[:len(entry.Name())-4]
+
+		// Look for device metadata files to find which device sent this photo
+		metadataFiles, err := filepath.Glob(fmt.Sprintf("data/%s/cache/*_metadata.json", a.deviceUUID))
+		if err != nil {
+			continue
+		}
+
+		for _, metadataFile := range metadataFiles {
+			deviceID := filepath.Base(metadataFile)
+			deviceID = deviceID[:len(deviceID)-len("_metadata.json")]
+
+			// Check if this device's metadata references our photo hash
+			hash, err := a.cacheManager.GetDevicePhotoHash(deviceID)
+			if err == nil && hash == photoHash {
+				a.receivedPhotoHashes[deviceID] = photoHash
+				loadedCount++
+				logger.Debug(prefix, "Loaded cached photo mapping: %s -> %s", deviceID[:8], photoHash[:8])
+				break
+			}
+		}
+	}
+
+	if loadedCount > 0 {
+		logger.Info(prefix, "Loaded %d cached photo mappings from disk", loadedCount)
+	}
 }
 
 // Start begins BLE advertising and scanning
@@ -615,17 +675,16 @@ func (a *Android) reassembleAndSavePhoto() error {
 	hash := sha256.Sum256(photoData)
 	hashStr := hex.EncodeToString(hash[:])
 
-	// Save with hash as filename
-	cachePath := fmt.Sprintf("data/%s/cache/photos/%s.jpg", a.deviceUUID, hashStr)
-	os.MkdirAll(filepath.Dir(cachePath), 0755)
-	if err := os.WriteFile(cachePath, photoData, 0644); err != nil {
+	// Save photo using cache manager (persists deviceID -> photoHash mapping)
+	if err := a.cacheManager.SaveDevicePhoto(a.photoReceiveState.senderDeviceID, photoData, hashStr); err != nil {
+		logger.Error(prefix, "❌ Failed to save photo: %v", err)
 		return err
 	}
 
 	logger.Info(prefix, "✅ Photo saved from %s (hash: %s, size: %d bytes)",
 		a.photoReceiveState.senderDeviceID[:8], hashStr[:8], len(photoData))
 
-	// Update received photo hash mapping
+	// Update in-memory mapping
 	a.receivedPhotoHashes[a.photoReceiveState.senderDeviceID] = hashStr
 
 	// Notify GUI about the new photo by re-triggering discovery callback
