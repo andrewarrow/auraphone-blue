@@ -427,13 +427,10 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 func (a *Android) shouldActAsCentral(remoteUUID, remoteName string) bool {
 	// Determine remote platform from device name
 	isRemoteIOS := false
-	isRemoteAndroid := false
 
 	if remoteName != "" {
 		if len(remoteName) >= 3 && remoteName[:3] == "iOS" {
 			isRemoteIOS = true
-		} else if len(remoteName) >= 7 && remoteName[:7] == "Android" {
-			isRemoteAndroid = true
 		}
 	}
 
@@ -442,13 +439,8 @@ func (a *Android) shouldActAsCentral(remoteUUID, remoteName string) bool {
 		return false
 	}
 
-	// Android → Android: Use hardware UUID comparison (like iOS does)
-	// Device names are not unique ("Android Device"), so we use hardware UUID
-	if isRemoteAndroid {
-		return a.hardwareUUID > remoteUUID
-	}
-
-	// Unknown platform: use hardware UUID comparison as fallback
+	// Android → Android and Android → Unknown: Use hardware UUID comparison
+	// Device with LARGER UUID acts as Central (deterministic collision avoidance)
 	return a.hardwareUUID > remoteUUID
 }
 

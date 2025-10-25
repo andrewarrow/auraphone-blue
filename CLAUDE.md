@@ -66,10 +66,10 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 5. **✅ Packet Loss & Retries** - ~1.5% packet loss rate with automatic retries (up to 3 attempts). Overall success rate: ~98.4%.
 
 6. **✅ Device Roles & Negotiation** - Both iOS and Android support dual-role (Central+Peripheral). Smart role negotiation prevents connection conflicts:
-   - **iOS → iOS**: Lexicographic device UUID comparison - device with LARGER UUID acts as Central
+   - **iOS → iOS**: Lexicographic hardware UUID comparison - device with LARGER UUID acts as Central
    - **iOS → Android**: iOS acts as Central (initiates connection)
    - **Android → iOS**: Android acts as Peripheral (waits for iOS to connect)
-   - **Android → Android**: Lexicographic device name comparison - device with LARGER name acts as Central
+   - **Android → Android**: Lexicographic hardware UUID comparison - device with LARGER UUID acts as Central
 
 7. **✅ Platform-Specific Reconnection Behavior** - iOS and Android have completely different reconnection behaviors:
    - **iOS Auto-Reconnect**: When you call `Connect()`, iOS remembers the peripheral. If connection drops, iOS automatically retries in background until it succeeds. App just waits for `DidConnectPeripheral` callback again.
@@ -226,23 +226,23 @@ androidWire := wire.NewWireWithPlatform(uuidAndroid, wire.PlatformAndroid, "Pixe
 // iOS initiates connection to Android
 shouldConnect := iosWire.ShouldActAsCentral(androidWire) // true
 
-// Android devices use device name comparison for Android-to-Android
+// Android devices use hardware UUID comparison for Android-to-Android
 android1 := wire.NewWireWithPlatform(uuid1, wire.PlatformAndroid, "Pixel 8", nil)
 android2 := wire.NewWireWithPlatform(uuid2, wire.PlatformAndroid, "Samsung S23", nil)
 
-// "Pixel 8" > "Samsung S23" lexicographically, so Pixel acts as Central
-shouldConnect := android1.ShouldActAsCentral(android2) // true
+// uuid1 > uuid2 lexicographically, so android1 acts as Central
+shouldConnect := android1.ShouldActAsCentral(android2) // true if uuid1 > uuid2
 ```
 
 **Rules:**
-1. **iOS → iOS**: Device with lexicographically larger UUID acts as Central
+1. **iOS → iOS**: Device with lexicographically larger hardware UUID acts as Central
    - Example: UUID starting with "b1..." > UUID starting with "5a..." → "b1" device connects
    - Deterministic role assignment prevents simultaneous connection attempts
 2. **iOS → Android**: iOS always acts as Central (initiates connection)
 3. **Android → iOS**: Android acts as Peripheral (waits for iOS)
-4. **Android → Android**: Device with lexicographically larger name acts as Central
-   - Example: "Pixel 8" > "Galaxy S23" → Pixel connects to Galaxy
-   - Prevents simultaneous connection attempts
+4. **Android → Android**: Device with lexicographically larger hardware UUID acts as Central
+   - Example: UUID "b1234..." > UUID "5abcd..." → "b1234..." device connects to "5abcd..." device
+   - Deterministic collision avoidance prevents simultaneous connection attempts
 
 ## BLE Simulation Configuration
 

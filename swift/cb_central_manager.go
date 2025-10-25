@@ -115,16 +115,16 @@ func (c *CBCentralManager) StopScan() {
 // ShouldInitiateConnection determines if this iOS device should initiate connection to target
 // iOS Role Policy:
 // - When discovering non-iOS: ALWAYS connect (iOS takes priority - common app pattern)
-// - When discovering iOS: Connect only if our device name is lexicographically LARGER (collision avoidance)
-func (c *CBCentralManager) ShouldInitiateConnection(targetPlatform wire.Platform, targetDeviceName string) bool {
+// - When discovering iOS: Connect only if our hardware UUID is lexicographically LARGER (collision avoidance)
+func (c *CBCentralManager) ShouldInitiateConnection(targetPlatform wire.Platform, targetUUID string) bool {
 	// iOS connecting to non-iOS: always initiate (iOS-first convention)
 	if targetPlatform != wire.PlatformIOS {
 		return true
 	}
 
-	// iOS-to-iOS: use lexicographic device name comparison to avoid collision
-	// Device with LARGER name initiates the connection
-	return c.wire.GetDeviceName() > targetDeviceName
+	// iOS-to-iOS: use lexicographic hardware UUID comparison to avoid collision
+	// Device with LARGER UUID initiates the connection (deterministic)
+	return c.uuid > targetUUID
 }
 
 func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]interface{}) {

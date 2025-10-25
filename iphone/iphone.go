@@ -416,20 +416,12 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 // Returns true if we should connect (act as Central), false if we should wait (act as Peripheral)
 func (ip *iPhone) shouldActAsCentral(remoteUUID, remoteName string) bool {
 	// Determine remote platform from device name
-	isRemoteIOS := false
 	isRemoteAndroid := false
 
 	if remoteName != "" {
-		if len(remoteName) >= 3 && remoteName[:3] == "iOS" {
-			isRemoteIOS = true
-		} else if len(remoteName) >= 7 && remoteName[:7] == "Android" {
+		if len(remoteName) >= 7 && remoteName[:7] == "Android" {
 			isRemoteAndroid = true
 		}
-	}
-
-	// iOS → iOS: Device with larger UUID acts as Central (prevents both from connecting)
-	if isRemoteIOS {
-		return ip.hardwareUUID > remoteUUID
 	}
 
 	// iOS → Android: iOS always acts as Central
@@ -437,7 +429,8 @@ func (ip *iPhone) shouldActAsCentral(remoteUUID, remoteName string) bool {
 		return true
 	}
 
-	// Unknown platform: use hardware UUID comparison as fallback
+	// iOS → iOS and iOS → Unknown: Device with larger UUID acts as Central
+	// (deterministic collision avoidance)
 	return ip.hardwareUUID > remoteUUID
 }
 
