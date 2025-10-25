@@ -26,6 +26,15 @@ import (
 	"github.com/user/auraphone-blue/phone"
 )
 
+// truncateHash safely truncates a hash string to the first n characters
+// Returns the full string if it's shorter than n
+func truncateHash(hash string, n int) string {
+	if len(hash) <= n {
+		return hash
+	}
+	return hash[:n]
+}
+
 // PhoneWindow represents a single phone instance with its own window
 type PhoneWindow struct {
 	window            fyne.Window
@@ -546,7 +555,7 @@ func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
 		// Cached photo is corrupted, delete it
 		os.Remove(cachePath)
 		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
-		logger.Warn(prefix, "⚠️  Cached photo %s has wrong hash, deleted", photoHash[:8])
+		logger.Warn(prefix, "⚠️  Cached photo %s has wrong hash, deleted", truncateHash(photoHash, 8))
 		return
 	}
 
@@ -555,7 +564,7 @@ func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
 	if err == nil {
 		pw.deviceImages[photoHash] = img
 		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
-		logger.Debug(prefix, "📷 Loaded cached photo %s from disk", photoHash[:8])
+		logger.Debug(prefix, "📷 Loaded cached photo %s from disk", truncateHash(photoHash, 8))
 	}
 }
 

@@ -20,6 +20,15 @@ import (
 	proto2 "google.golang.org/protobuf/proto"
 )
 
+// truncateHash safely truncates a hash string to the first n characters
+// Returns the full string if it's shorter than n
+func truncateHash(hash string, n int) string {
+	if len(hash) <= n {
+		return hash
+	}
+	return hash[:n]
+}
+
 // photoReceiveState tracks photo reception progress
 type photoReceiveState struct {
 	isReceiving     bool
@@ -123,8 +132,9 @@ func NewAndroid() *Android {
 // setupBLE configures GATT table and advertising data
 func (a *Android) setupBLE() {
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"      // Handshake messages
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"    // Photo transfer
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C" // Profile messages
 
 	// Create GATT table
 	gattTable := &wire.GATTTable{
@@ -139,6 +149,10 @@ func (a *Android) setupBLE() {
 					},
 					{
 						UUID:       auraPhotoCharUUID,
+						Properties: []string{"read", "write", "notify"},
+					},
+					{
+						UUID:       auraProfileCharUUID,
 						Properties: []string{"read", "write", "notify"},
 					},
 				},
@@ -206,7 +220,7 @@ func (a *Android) loadReceivedPhotoMappings() {
 			if err == nil && hash == photoHash {
 				a.receivedPhotoHashes[deviceID] = photoHash
 				loadedCount++
-				logger.Debug(prefix, "Loaded cached photo mapping: %s -> %s", deviceID[:8], photoHash[:8])
+				logger.Debug(prefix, "Loaded cached photo mapping: %s -> %s", deviceID[:8], truncateHash(photoHash, 8))
 				break
 			}
 		}
@@ -326,7 +340,7 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	a.setupBLE()
 
 	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
-	logger.Info(prefix, "📸 Updated profile photo (hash: %s)", photoHash[:8])
+	logger.Info(prefix, "📸 Updated profile photo (hash: %s)", truncateHash(photoHash, 8))
 	logger.Debug(prefix, "   └─ Cached to disk and broadcasting TX hash in advertising data")
 
 	// Re-send handshake to all connected devices to notify them of the new photo
@@ -477,22 +491,18 @@ func (a *Android) OnCharacteristicRead(gatt *kotlin.BluetoothGatt, characteristi
 func (a *Android) OnCharacteristicChanged(gatt *kotlin.BluetoothGatt, characteristic *kotlin.BluetoothGattCharacteristic) {
 	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
 	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	// Handle based on characteristic type
 	if characteristic.UUID == auraTextCharUUID {
-		// Try to unmarshal as HandshakeMessage first
-		var handshake proto.HandshakeMessage
-		if err := proto2.Unmarshal(characteristic.Value, &handshake); err == nil && handshake.DeviceId != "" {
-			a.handleHandshakeMessage(gatt, characteristic.Value)
-		} else {
-			// Try ProfileMessage
-			var profileMsg proto.ProfileMessage
-			if err := proto2.Unmarshal(characteristic.Value, &profileMsg); err == nil && profileMsg.DeviceId != "" {
-				a.handleProfileMessage(gatt, characteristic.Value)
-			}
-		}
+		// Text characteristic is for HandshakeMessage only
+		a.handleHandshakeMessage(gatt, characteristic.Value)
 	} else if characteristic.UUID == auraPhotoCharUUID {
+		// Photo characteristic is for photo transfer
 		a.handlePhotoMessage(gatt, characteristic.Value)
+	} else if characteristic.UUID == auraProfileCharUUID {
+		// Profile characteristic is for ProfileMessage
+		a.handleProfileMessage(gatt, characteristic.Value)
 	}
 }
 
@@ -589,7 +599,7 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	// Check if they have a new photo for us
 	// If their TxPhotoHash differs from what we've received, reply with handshake to trigger them to send
 	if handshake.TxPhotoHash != "" && handshake.TxPhotoHash != a.receivedPhotoHashes[remoteUUID] {
-		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", handshake.TxPhotoHash[:8])
+		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", truncateHash(handshake.TxPhotoHash, 8))
 		// Reply with a handshake that shows we don't have their new photo yet
 		// This will trigger them to send it to us
 		go a.sendHandshakeMessage(gatt)
@@ -940,11 +950,11 @@ func (a *Android) sendProfileMessage(gatt *kotlin.BluetoothGatt) error {
 	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
 
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
-	textChar := gatt.GetCharacteristic(auraServiceUUID, auraTextCharUUID)
-	if textChar == nil {
-		return fmt.Errorf("text characteristic not found")
+	profileChar := gatt.GetCharacteristic(auraServiceUUID, auraProfileCharUUID)
+	if profileChar == nil {
+		return fmt.Errorf("profile characteristic not found")
 	}
 
 	msg := &proto.ProfileMessage{
@@ -976,9 +986,9 @@ func (a *Android) sendProfileMessage(gatt *kotlin.BluetoothGatt) error {
 	jsonData, _ := marshaler.Marshal(msg)
 	logger.Debug(prefix, "📤 TX ProfileMessage (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
-	textChar.Value = data
-	textChar.WriteType = kotlin.WRITE_TYPE_DEFAULT
-	success := gatt.WriteCharacteristic(textChar)
+	profileChar.Value = data
+	profileChar.WriteType = kotlin.WRITE_TYPE_DEFAULT
+	success := gatt.WriteCharacteristic(profileChar)
 	if !success {
 		return fmt.Errorf("failed to write profile message")
 	}

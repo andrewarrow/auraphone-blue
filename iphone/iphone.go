@@ -20,6 +20,15 @@ import (
 	proto2 "google.golang.org/protobuf/proto"
 )
 
+// truncateHash safely truncates a hash string to the first n characters
+// Returns the full string if it's shorter than n
+func truncateHash(hash string, n int) string {
+	if len(hash) <= n {
+		return hash
+	}
+	return hash[:n]
+}
+
 // photoReceiveState tracks photo reception progress
 type photoReceiveState struct {
 	isReceiving     bool
@@ -119,8 +128,9 @@ func NewIPhone() *iPhone {
 // setupBLE configures GATT table and advertising data
 func (ip *iPhone) setupBLE() {
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"      // Handshake messages
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"    // Photo transfer
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C" // Profile messages
 
 	// Create GATT table
 	gattTable := &wire.GATTTable{
@@ -135,6 +145,10 @@ func (ip *iPhone) setupBLE() {
 					},
 					{
 						UUID:       auraPhotoCharUUID,
+						Properties: []string{"read", "write", "notify"},
+					},
+					{
+						UUID:       auraProfileCharUUID,
 						Properties: []string{"read", "write", "notify"},
 					},
 				},
@@ -202,7 +216,7 @@ func (ip *iPhone) loadReceivedPhotoMappings() {
 			if err == nil && hash == photoHash {
 				ip.receivedPhotoHashes[deviceID] = photoHash
 				loadedCount++
-				logger.Debug(prefix, "Loaded cached photo mapping: %s -> %s", deviceID[:8], photoHash[:8])
+				logger.Debug(prefix, "Loaded cached photo mapping: %s -> %s", deviceID[:8], truncateHash(photoHash, 8))
 				break
 			}
 		}
@@ -276,7 +290,7 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 	logger.Debug(prefix, "📱 DISCOVERED device %s (%s)", peripheral.UUID[:8], name)
 	logger.Debug(prefix, "   └─ RSSI: %.0f dBm", rssi)
 	if txPhotoHash != "" {
-		logger.Debug(prefix, "   └─ TX Photo Hash: %s", txPhotoHash[:8])
+		logger.Debug(prefix, "   └─ TX Photo Hash: %s", truncateHash(txPhotoHash, 8))
 	} else {
 		logger.Debug(prefix, "   └─ TX Photo Hash: (none)")
 	}
@@ -369,7 +383,7 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	ip.setupBLE()
 
 	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
-	logger.Info(prefix, "📸 Updated profile photo (hash: %s)", photoHash[:8])
+	logger.Info(prefix, "📸 Updated profile photo (hash: %s)", truncateHash(photoHash, 8))
 	logger.Debug(prefix, "   └─ Cached to disk and broadcasting TX hash in advertising data")
 
 	// Re-send handshake to all connected devices to notify them of the new photo
@@ -491,22 +505,18 @@ func (ip *iPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral
 
 	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
 	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	// Handle based on characteristic type
 	if characteristic.UUID == auraTextCharUUID {
-		// Try to unmarshal as HandshakeMessage first
-		var handshake proto.HandshakeMessage
-		if err := proto2.Unmarshal(characteristic.Value, &handshake); err == nil && handshake.DeviceId != "" {
-			ip.handleHandshakeMessage(peripheral, characteristic.Value)
-		} else {
-			// Try ProfileMessage
-			var profileMsg proto.ProfileMessage
-			if err := proto2.Unmarshal(characteristic.Value, &profileMsg); err == nil && profileMsg.DeviceId != "" {
-				ip.handleProfileMessage(peripheral, characteristic.Value)
-			}
-		}
+		// Text characteristic is for HandshakeMessage only
+		ip.handleHandshakeMessage(peripheral, characteristic.Value)
 	} else if characteristic.UUID == auraPhotoCharUUID {
+		// Photo characteristic is for photo transfer
 		ip.handlePhotoMessage(peripheral, characteristic.Value)
+	} else if characteristic.UUID == auraProfileCharUUID {
+		// Profile characteristic is for ProfileMessage
+		ip.handleProfileMessage(peripheral, characteristic.Value)
 	}
 }
 
@@ -917,11 +927,11 @@ func (ip *iPhone) sendProfileMessage(peripheral *swift.CBPeripheral) error {
 	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
 
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
-	textChar := peripheral.GetCharacteristic(auraServiceUUID, auraTextCharUUID)
-	if textChar == nil {
-		return fmt.Errorf("text characteristic not found")
+	profileChar := peripheral.GetCharacteristic(auraServiceUUID, auraProfileCharUUID)
+	if profileChar == nil {
+		return fmt.Errorf("profile characteristic not found")
 	}
 
 	msg := &proto.ProfileMessage{
@@ -953,7 +963,7 @@ func (ip *iPhone) sendProfileMessage(peripheral *swift.CBPeripheral) error {
 	jsonData, _ := marshaler.Marshal(msg)
 	logger.Debug(prefix, "📤 TX ProfileMessage (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
-	return peripheral.WriteValue(data, textChar, swift.CBCharacteristicWriteWithResponse)
+	return peripheral.WriteValue(data, profileChar, swift.CBCharacteristicWriteWithResponse)
 }
 
 // handleProfileMessage processes incoming ProfileMessage
