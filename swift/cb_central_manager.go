@@ -113,6 +113,10 @@ func (c *CBCentralManager) StopScan() {
 }
 
 func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]interface{}) {
+	// iOS Role Policy: iOS ALWAYS acts as Central (initiates connections)
+	// This is platform-specific behavior - iOS doesn't need to check the remote
+	// device's platform because iOS always initiates regardless of who it's connecting to.
+
 	// Set up the peripheral's wire connection
 	peripheral.wire = c.wire
 	peripheral.remoteUUID = peripheral.UUID

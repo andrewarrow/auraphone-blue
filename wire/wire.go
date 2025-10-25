@@ -180,31 +180,6 @@ func (w *Wire) CanAdvertise() bool {
 	return w.role&RolePeripheralOnly != 0
 }
 
-// ShouldActAsCentral determines if this device should initiate connection to target
-// Implements platform-specific role negotiation:
-// - iOS always acts as Central (initiates connections)
-// - Android acts as Central when connecting to another Android with smaller device name
-// - Android acts as Peripheral when connecting to iOS (for compatibility)
-func (w *Wire) ShouldActAsCentral(targetWire *Wire) bool {
-	// iOS always acts as Central
-	if w.platform == PlatformIOS {
-		return true
-	}
-
-	// Android connecting to iOS: act as Peripheral (iOS will connect to us)
-	if w.platform == PlatformAndroid && targetWire.platform == PlatformIOS {
-		return false
-	}
-
-	// Android-to-Android: use lexicographic device name comparison
-	// Device with LARGER name acts as Central
-	if w.platform == PlatformAndroid && targetWire.platform == PlatformAndroid {
-		return w.deviceName > targetWire.deviceName
-	}
-
-	// Generic/unknown platforms: both can act as Central
-	return true
-}
 
 // SetBasePath sets the base directory for device communication
 func (w *Wire) SetBasePath(path string) {

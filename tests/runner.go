@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/user/auraphone-blue/kotlin"
+	"github.com/user/auraphone-blue/phone"
 	auraphone "github.com/user/auraphone-blue/proto"
 	"github.com/user/auraphone-blue/swift"
 	"github.com/user/auraphone-blue/wire"
@@ -31,6 +32,7 @@ type SimulatedDevice struct {
 	UUID      string
 	Wire      *wire.Wire
 	Cache     *wire.DeviceCacheManager
+	PhotoSync *phone.PhotoSyncManager
 	IOSMgr    *swift.CBCentralManager
 	AndroidMgr *kotlin.BluetoothManager
 
@@ -116,11 +118,15 @@ func (r *ScenarioRunner) createDevice(config *DeviceConfig) (*SimulatedDevice, e
 	uuid := generateDeviceUUID(config.ID)
 	w := wire.NewWire(uuid)
 
+	cache := wire.NewDeviceCacheManager(uuid)
+	photoSync := phone.NewPhotoSyncManager(cache)
+
 	device := &SimulatedDevice{
 		Config:             config,
 		UUID:               uuid,
 		Wire:               w,
-		Cache:              wire.NewDeviceCacheManager(uuid),
+		Cache:              cache,
+		PhotoSync:          photoSync,
 		ConnectedTo:        make(map[string]bool),
 		HandshakesSent:     make(map[string]bool),
 		HandshakesReceived: make(map[string]*HandshakeData),
@@ -467,7 +473,7 @@ func (r *ScenarioRunner) handleSendPhotoMetadata(device *SimulatedDevice, target
 	}
 
 	// Check if we should send photo
-	shouldSend, err := device.Cache.ShouldSendPhotoToDevice(targetHandshake.RxPhotoHash)
+	shouldSend, err := device.PhotoSync.ShouldSendPhotoToDevice(targetHandshake.RxPhotoHash)
 	if err != nil {
 		return fmt.Errorf("failed to check should send: %w", err)
 	}

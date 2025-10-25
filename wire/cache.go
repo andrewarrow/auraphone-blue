@@ -270,51 +270,6 @@ func (m *DeviceCacheManager) GetPhotoVersionSentToDevice(deviceID string) (strin
 	return metadata.SentVersions[deviceID], nil
 }
 
-// ShouldSendPhotoToDevice determines if we need to send our photo to a remote device
-// based on what version they have cached (their rx_photo_hash)
-func (m *DeviceCacheManager) ShouldSendPhotoToDevice(remoteRxPhotoHash string) (bool, error) {
-	// Get our current photo hash
-	ourPhotoHash, err := m.GetLocalUserPhotoHash()
-	if err != nil {
-		return false, err
-	}
-
-	// No photo to send
-	if ourPhotoHash == "" {
-		return false, nil
-	}
-
-	// Remote has no photo from us, or has a different version
-	if remoteRxPhotoHash == "" || remoteRxPhotoHash != ourPhotoHash {
-		return true, nil
-	}
-
-	// Remote already has our current photo
-	return false, nil
-}
-
-// ShouldReceivePhotoFromDevice determines if we need to receive a photo from a remote device
-// based on what we have cached vs what they're offering (their tx_photo_hash)
-func (m *DeviceCacheManager) ShouldReceivePhotoFromDevice(deviceID string, remoteTxPhotoHash string) (bool, error) {
-	// Remote has no photo to send
-	if remoteTxPhotoHash == "" {
-		return false, nil
-	}
-
-	// Get what we have cached from them
-	cachedHash, err := m.GetDevicePhotoHash(deviceID)
-	if err != nil {
-		return false, err
-	}
-
-	// We don't have their photo, or they have a new version
-	if cachedHash == "" || cachedHash != remoteTxPhotoHash {
-		return true, nil
-	}
-
-	// We already have their current photo
-	return false, nil
-}
 
 // SaveDeviceMetadata saves metadata about a remote device
 func (m *DeviceCacheManager) SaveDeviceMetadata(metadata *DeviceMetadata) error {

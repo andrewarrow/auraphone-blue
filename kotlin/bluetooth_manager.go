@@ -52,6 +52,26 @@ func (a *BluetoothAdapter) GetBluetoothLeScanner() *BluetoothLeScanner {
 	return a.scanner
 }
 
+// ShouldInitiateConnection determines if this Android device should initiate connection to target
+// Android Role Policy:
+// - When discovering iOS: DON'T connect (wait for iOS to connect to us)
+// - When discovering Android: Connect only if our device name is lexicographically LARGER
+func (a *BluetoothAdapter) ShouldInitiateConnection(targetPlatform wire.Platform, targetDeviceName string) bool {
+	// Android connecting to iOS: act as Peripheral (wait for iOS to connect to us)
+	if targetPlatform == wire.PlatformIOS {
+		return false
+	}
+
+	// Android-to-Android: use lexicographic device name comparison
+	// Device with LARGER name initiates the connection
+	if targetPlatform == wire.PlatformAndroid {
+		return a.deviceName > targetDeviceName
+	}
+
+	// Generic/unknown platforms: can initiate connection
+	return true
+}
+
 // GetBluetoothLeAdvertiser returns the advertiser for peripheral mode
 // Matches: bluetoothAdapter.getBluetoothLeAdvertiser()
 func (a *BluetoothAdapter) GetBluetoothLeAdvertiser() *BluetoothLeAdvertiser {
