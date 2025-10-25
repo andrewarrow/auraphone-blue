@@ -918,6 +918,7 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 		photoChar.Value = chunkPacket
 		photoChar.WriteType = kotlin.WRITE_TYPE_NO_RESPONSE
 		if !gatt.WriteCharacteristic(photoChar) {
+			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s", i+1, len(chunks), remoteUUID[:8])
 			return fmt.Errorf("failed to send chunk %d", i)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1274,10 +1275,15 @@ func (a *Android) checkStalePhotoTransfers() {
 				if gatt != nil {
 					char := gatt.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
 					if char != nil {
-						gatt.WriteCharacteristic(char)
 						char.Value = retransReq
-						gatt.WriteCharacteristic(char)
+						if !gatt.WriteCharacteristic(char) {
+							logger.Warn(prefix, "❌ Failed to send retransmit request to %s", rUUID[:8])
+						}
+					} else {
+						logger.Warn(prefix, "❌ Photo characteristic not found for retransmit request to %s", rUUID[:8])
 					}
+				} else {
+					logger.Warn(prefix, "❌ GATT not found for retransmit request to %s", rUUID[:8])
 				}
 			}(remoteUUID, missingChunks)
 		} else {
@@ -1332,7 +1338,9 @@ func (a *Android) checkStalePhotoTransfers() {
 			// Send retransmit request via wire (server mode)
 			go func(sUUID string, chunks []uint16) {
 				retransReq := phototransfer.EncodeRetransmitRequest(chunks)
-				a.wire.WriteCharacteristic(sUUID, auraServiceUUID, auraPhotoCharUUID, retransReq)
+				if err := a.wire.WriteCharacteristic(sUUID, auraServiceUUID, auraPhotoCharUUID, retransReq); err != nil {
+					logger.Warn(prefix, "❌ Failed to send retransmit request to %s (server mode): %v", sUUID[:8], err)
+				}
 			}(senderUUID, missingChunks)
 		} else {
 			state.mu.Unlock()
@@ -1854,6 +1862,7 @@ func (a *Android) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 	for i, chunk := range chunks {
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
 		if err := a.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, chunkPacket); err != nil {
+			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s (server mode): %v", i+1, len(chunks), targetUUID[:8], err)
 			return fmt.Errorf("failed to send chunk %d: %w", i, err)
 		}
 		time.Sleep(10 * time.Millisecond)

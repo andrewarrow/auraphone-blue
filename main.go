@@ -894,13 +894,10 @@ func (l *Launcher) buildUI(initialLogLevel string) fyne.CanvasObject {
 	subtitle := widget.NewLabel("Fake Bluetooth Simulator")
 	subtitle.Alignment = fyne.TextAlignCenter
 
-	// Log level selector
+	// Log level display (read-only, set via CLI flag)
 	logLevelLabel := widget.NewLabel("Log Level:")
-	logLevelSelect := widget.NewSelect([]string{"ERROR", "WARN", "INFO", "DEBUG", "TRACE"}, func(selected string) {
-		logger.SetLevel(logger.ParseLevel(selected))
-		fmt.Printf("Log level set to: %s\n", selected)
-	})
-	logLevelSelect.SetSelected(initialLogLevel) // Use CLI-provided log level
+	logLevelDisplay := widget.NewLabel(initialLogLevel)
+	logLevelDisplay.TextStyle = fyne.TextStyle{Bold: true}
 
 	// Start iOS button
 	iosBtn := widget.NewButton("Start iOS Device", func() {
@@ -936,7 +933,7 @@ func (l *Launcher) buildUI(initialLogLevel string) fyne.CanvasObject {
 		subtitle,
 		widget.NewSeparator(),
 		widget.NewLabel(""),
-		container.NewHBox(logLevelLabel, logLevelSelect),
+		container.NewHBox(logLevelLabel, logLevelDisplay),
 		widget.NewLabel(""),
 		iosBtn,
 		androidBtn,

@@ -60,7 +60,7 @@ func ParseLevel(level string) LogLevel {
 }
 
 func log(level LogLevel, prefix, format string, args ...interface{}) {
-	if level > GetLevel() {
+	if level < GetLevel() {
 		return
 	}
 

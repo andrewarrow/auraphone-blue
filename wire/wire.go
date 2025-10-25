@@ -651,10 +651,16 @@ func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) err
 			if attempt > 0 {
 				// This is a retry, add delay
 				time.Sleep(time.Duration(w.simulator.config.RetryDelay) * time.Millisecond)
+				logger.Warn(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+					"🔄 Retrying packet to %s (attempt %d/%d, file: %s)",
+					targetUUID[:8], attempt+1, w.simulator.config.MaxRetries+1, fragmentFilename)
 			}
 
 			if !w.simulator.ShouldPacketSucceed() && attempt < w.simulator.config.MaxRetries {
 				// Packet lost, will retry
+				logger.Warn(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+					"📉 Simulated packet loss to %s (attempt %d/%d, file: %s)",
+					targetUUID[:8], attempt+1, w.simulator.config.MaxRetries+1, fragmentFilename)
 				lastErr = fmt.Errorf("packet loss (attempt %d/%d)", attempt+1, w.simulator.config.MaxRetries+1)
 				continue
 			}
@@ -710,6 +716,9 @@ func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) err
 		}
 
 		if lastErr != nil {
+			logger.Warn(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+				"❌ Failed to send fragment %d/%d to %s after %d retries (file: %s): %v",
+				i+1, len(fragments), targetUUID[:8], w.simulator.config.MaxRetries, fragmentFilename, lastErr)
 			return fmt.Errorf("failed to send fragment %d after %d retries: %w", i, w.simulator.config.MaxRetries, lastErr)
 		}
 	}
@@ -955,8 +964,9 @@ func (w *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID s
 		if err := w.sendCharacteristicMessage(targetUUID, &msg); err != nil {
 			// Real BLE: transmission failures are completely silent to the app
 			// App has no way to know if the packet was lost
-			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-				"📉 Write NO Response transmission failed silently (realistic BLE behavior): %v", err)
+			logger.Warn(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+				"❌ Write NO Response transmission FAILED to %s (svc=%s, char=%s, %d bytes) - SILENTLY LOST (realistic BLE): %v",
+				targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data), err)
 		}
 	}()
 

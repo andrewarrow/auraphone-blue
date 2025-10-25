@@ -903,6 +903,7 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 	for i, chunk := range chunks {
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
 		if err := peripheral.WriteValue(chunkPacket, photoChar, swift.CBCharacteristicWriteWithoutResponse); err != nil {
+			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s: %v", i+1, len(chunks), peripheral.UUID[:8], err)
 			return fmt.Errorf("failed to send chunk %d: %w", i, err)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1320,8 +1321,14 @@ func (ip *iPhone) checkStalePhotoTransfers() {
 				if peripheral != nil {
 					photoChar := peripheral.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
 					if photoChar != nil {
-						peripheral.WriteValue(retransReq, photoChar, swift.CBCharacteristicWriteWithResponse)
+						if err := peripheral.WriteValue(retransReq, photoChar, swift.CBCharacteristicWriteWithResponse); err != nil {
+							logger.Warn(prefix, "❌ Failed to send retransmit request to %s: %v", pUUID[:8], err)
+						}
+					} else {
+						logger.Warn(prefix, "❌ Photo characteristic not found for retransmit request to %s", pUUID[:8])
 					}
+				} else {
+					logger.Warn(prefix, "❌ Peripheral not found for retransmit request to %s", pUUID[:8])
 				}
 			}(peripheralUUID, missingChunks)
 		} else {
@@ -1376,7 +1383,9 @@ func (ip *iPhone) checkStalePhotoTransfers() {
 			// Send retransmit request via wire (server mode)
 			go func(sUUID string, chunks []uint16) {
 				retransReq := phototransfer.EncodeRetransmitRequest(chunks)
-				ip.wire.WriteCharacteristic(sUUID, auraServiceUUID, auraPhotoCharUUID, retransReq)
+				if err := ip.wire.WriteCharacteristic(sUUID, auraServiceUUID, auraPhotoCharUUID, retransReq); err != nil {
+					logger.Warn(prefix, "❌ Failed to send retransmit request to %s (server mode): %v", sUUID[:8], err)
+				}
 			}(senderUUID, missingChunks)
 		} else {
 			state.mu.Unlock()
@@ -1788,6 +1797,7 @@ func (ip *iPhone) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 	for i, chunk := range chunks {
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
 		if err := ip.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, chunkPacket); err != nil {
+			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s (server mode): %v", i+1, len(chunks), targetUUID[:8], err)
 			return fmt.Errorf("failed to send chunk %d: %w", i, err)
 		}
 		time.Sleep(10 * time.Millisecond)
