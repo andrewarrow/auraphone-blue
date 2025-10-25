@@ -112,10 +112,25 @@ func (c *CBCentralManager) StopScan() {
 	}
 }
 
+// ShouldInitiateConnection determines if this iOS device should initiate connection to target
+// iOS Role Policy:
+// - When discovering non-iOS: ALWAYS connect (iOS takes priority - common app pattern)
+// - When discovering iOS: Connect only if our device name is lexicographically LARGER (collision avoidance)
+func (c *CBCentralManager) ShouldInitiateConnection(targetPlatform wire.Platform, targetDeviceName string) bool {
+	// iOS connecting to non-iOS: always initiate (iOS-first convention)
+	if targetPlatform != wire.PlatformIOS {
+		return true
+	}
+
+	// iOS-to-iOS: use lexicographic device name comparison to avoid collision
+	// Device with LARGER name initiates the connection
+	return c.wire.GetDeviceName() > targetDeviceName
+}
+
 func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]interface{}) {
-	// iOS Role Policy: iOS ALWAYS acts as Central (initiates connections)
-	// This is platform-specific behavior - iOS doesn't need to check the remote
-	// device's platform because iOS always initiates regardless of who it's connecting to.
+	// iOS Role Policy: Apps should call ShouldInitiateConnection() before calling Connect()
+	// to avoid simultaneous connection attempts (especially for iOS-to-iOS scenarios).
+	// For non-iOS targets, iOS typically initiates connections (common app pattern).
 
 	// Set up the peripheral's wire connection
 	peripheral.wire = c.wire
