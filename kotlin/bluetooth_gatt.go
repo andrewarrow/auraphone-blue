@@ -353,10 +353,10 @@ func (g *BluetoothGatt) StartListening() {
 	g.stopChan = make(chan struct{})
 
 	go func() {
-		// Reduced polling interval (10ms instead of 50ms) to simulate interrupt-driven BLE
+		// Polling interval (25ms) balances responsiveness with filesystem stability
 		// Real BLE uses hardware interrupts, but filesystem polling is an intentional
-		// simplification for portability. Faster polling approximates real-time delivery.
-		ticker := time.NewTicker(10 * time.Millisecond)
+		// simplification for portability. This interval reduces filesystem pressure.
+		ticker := time.NewTicker(25 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {

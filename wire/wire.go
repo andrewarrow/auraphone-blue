@@ -591,6 +591,12 @@ func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) err
 
 	// Send each fragment with retry logic
 	for i, fragment := range fragments {
+		// Add realistic inter-packet delay (2ms between fragments)
+		// Real BLE has connection intervals of 7.5-4000ms, we use 2ms for good throughput
+		if i > 0 {
+			time.Sleep(2 * time.Millisecond)
+		}
+
 		fragmentFilename := filename
 		if len(fragments) > 1 {
 			fragmentFilename = fmt.Sprintf("%s.part%d", filename, i)
@@ -681,6 +687,9 @@ func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) err
 			dir.Sync()
 			dir.Close()
 		}
+		// Small delay to let filesystem caches settle (5ms)
+		// This is realistic - real BLE has notification delays
+		time.Sleep(5 * time.Millisecond)
 	} else {
 		return fmt.Errorf("failed to create ready marker: %w", err)
 	}
