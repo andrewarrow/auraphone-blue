@@ -91,7 +91,8 @@ type iPhone struct {
 	photoData            []byte
 	localProfile         *LocalProfile                  // Our local profile data
 	mu                   sync.RWMutex                   // Protects all maps below
-	connectedPeripherals  map[string]*swift.CBPeripheral // UUID -> peripheral
+	connectedPeripherals  map[string]*swift.CBPeripheral // peripheral UUID -> peripheral
+	peripheralToDeviceID  map[string]string              // peripheral UUID -> logical device ID
 	deviceIDToPhotoHash   map[string]string              // deviceID -> their TX photo hash
 	receivedPhotoHashes   map[string]string              // deviceID -> RX hash (photos we got from them)
 	receivedProfileVersion map[string]int32               // deviceID -> their profile version
@@ -110,6 +111,7 @@ func NewIPhone() *iPhone {
 		deviceUUID:             deviceUUID,
 		deviceName:             deviceName,
 		connectedPeripherals:   make(map[string]*swift.CBPeripheral),
+		peripheralToDeviceID:   make(map[string]string),
 		deviceIDToPhotoHash:    make(map[string]string),
 		receivedPhotoHashes:    make(map[string]string),
 		receivedProfileVersion: make(map[string]int32),
@@ -573,8 +575,10 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 		firstName = "iOS" // Default if not set
 	}
 
+	// Get the deviceID for this peripheral
 	ip.mu.RLock()
-	rxPhotoHash := ip.receivedPhotoHashes[peripheral.UUID]
+	deviceID := ip.peripheralToDeviceID[peripheral.UUID]
+	rxPhotoHash := ip.receivedPhotoHashes[deviceID]
 	ip.mu.RUnlock()
 
 	msg := &proto.HandshakeMessage{
@@ -628,9 +632,15 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	jsonData, _ := marshaler.Marshal(&handshake)
 	logger.Debug(prefix, "📥 RX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
+	// IMPORTANT: Map peripheral.UUID to the logical device_id from handshake
+	deviceID := handshake.DeviceId
+	ip.mu.Lock()
+	ip.peripheralToDeviceID[peripheral.UUID] = deviceID
+	ip.mu.Unlock()
+
 	// Record handshake timestamp when received
 	ip.mu.Lock()
-	ip.lastHandshakeTime[peripheral.UUID] = time.Now()
+	ip.lastHandshakeTime[deviceID] = time.Now()
 	ip.mu.Unlock()
 
 	// Convert photo hashes from bytes to hex strings
@@ -640,16 +650,16 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	// Store their TX photo hash
 	if txPhotoHash != "" {
 		ip.mu.Lock()
-		ip.deviceIDToPhotoHash[peripheral.UUID] = txPhotoHash
+		ip.deviceIDToPhotoHash[deviceID] = txPhotoHash
 		ip.mu.Unlock()
 	}
 
 	// Save first_name to device metadata
 	if handshake.FirstName != "" {
-		metadata, _ := ip.cacheManager.LoadDeviceMetadata(peripheral.UUID)
+		metadata, _ := ip.cacheManager.LoadDeviceMetadata(deviceID)
 		if metadata == nil {
 			metadata = &phone.DeviceMetadata{
-				DeviceID: peripheral.UUID,
+				DeviceID: deviceID,
 			}
 		}
 		metadata.FirstName = handshake.FirstName
@@ -659,7 +669,7 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	// Check if they have a new photo for us
 	// If their TxPhotoHash differs from what we've received, reply with handshake to trigger them to send
 	ip.mu.RLock()
-	ourReceivedHash := ip.receivedPhotoHashes[peripheral.UUID]
+	ourReceivedHash := ip.receivedPhotoHashes[deviceID]
 	ip.mu.RUnlock()
 
 	if txPhotoHash != "" && txPhotoHash != ourReceivedHash {
@@ -680,16 +690,31 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	// Check if they have a new profile version
 	// If their ProfileVersion differs from what we've received, request ProfileMessage
 	ip.mu.RLock()
-	lastProfileVersion := ip.receivedProfileVersion[peripheral.UUID]
+	lastProfileVersion := ip.receivedProfileVersion[deviceID]
 	ip.mu.RUnlock()
 	if handshake.ProfileVersion > lastProfileVersion {
 		logger.Debug(prefix, "📝 Remote has new profile (version %d > %d), requesting ProfileMessage",
 			handshake.ProfileVersion, lastProfileVersion)
 		ip.mu.Lock()
-		ip.receivedProfileVersion[peripheral.UUID] = handshake.ProfileVersion
+		ip.receivedProfileVersion[deviceID] = handshake.ProfileVersion
 		ip.mu.Unlock()
 		// Request their profile by sending handshake back (they'll see we need it)
 		go ip.sendHandshakeMessage(peripheral)
+	}
+
+	// Trigger discovery callback to update GUI with correct deviceID and name
+	if ip.discoveryCallback != nil {
+		name := deviceID[:8]
+		if handshake.FirstName != "" {
+			name = handshake.FirstName
+		}
+		ip.discoveryCallback(phone.DiscoveredDevice{
+			DeviceID:  deviceID,
+			Name:      name,
+			RSSI:      -50, // Placeholder, actual RSSI not needed for handshake update
+			Platform:  "unknown",
+			PhotoHash: txPhotoHash,
+		})
 	}
 }
 
@@ -856,37 +881,42 @@ func (ip *iPhone) reassembleAndSavePhoto() error {
 	hash := sha256.Sum256(photoData)
 	hashStr := hex.EncodeToString(hash[:])
 
+	// Get the logical deviceID from the peripheral UUID
+	peripheralUUID := ip.photoReceiveState.senderDeviceID
+	ip.mu.Lock()
+	deviceID := ip.peripheralToDeviceID[peripheralUUID]
+	ip.mu.Unlock()
+
 	// Save photo using cache manager (persists deviceID -> photoHash mapping)
-	if err := ip.cacheManager.SaveDevicePhoto(ip.photoReceiveState.senderDeviceID, photoData, hashStr); err != nil {
+	if err := ip.cacheManager.SaveDevicePhoto(deviceID, photoData, hashStr); err != nil {
 		logger.Error(prefix, "❌ Failed to save photo: %v", err)
 		return err
 	}
 
-	logger.Info(prefix, "✅ Photo saved from %s (hash: %s, size: %d bytes)",
-		ip.photoReceiveState.senderDeviceID[:8], hashStr[:8], len(photoData))
-
 	// Update in-memory mapping
 	ip.mu.Lock()
-	ip.receivedPhotoHashes[ip.photoReceiveState.senderDeviceID] = hashStr
+	ip.receivedPhotoHashes[deviceID] = hashStr
 	ip.mu.Unlock()
+
+	logger.Info(prefix, "✅ Photo saved from %s (hash: %s, size: %d bytes)",
+		deviceID[:8], hashStr[:8], len(photoData))
 
 	// Notify GUI about the new photo by re-triggering discovery callback
 	if ip.discoveryCallback != nil {
-		senderID := ip.photoReceiveState.senderDeviceID
 		ip.mu.RLock()
-		peripheral, exists := ip.connectedPeripherals[senderID]
+		peripheral, exists := ip.connectedPeripherals[peripheralUUID]
 		ip.mu.RUnlock()
-		if exists {
+		if exists && deviceID != "" {
 			// Get device name from advertising data or use UUID
-			name := senderID[:8]
-			if advData, err := ip.wire.ReadAdvertisingData(senderID); err == nil && advData != nil {
+			name := deviceID[:8]
+			if advData, err := ip.wire.ReadAdvertisingData(peripheralUUID); err == nil && advData != nil {
 				if advData.DeviceName != "" {
 					name = advData.DeviceName
 				}
 			}
 
 			ip.discoveryCallback(phone.DiscoveredDevice{
-				DeviceID:  senderID,
+				DeviceID:  deviceID,
 				Name:      name,
 				RSSI:      -50, // Default RSSI, actual value not critical for photo update
 				Platform:  "unknown",

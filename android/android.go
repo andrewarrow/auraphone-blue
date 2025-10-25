@@ -91,8 +91,9 @@ type Android struct {
 	photoData            []byte
 	localProfile         *LocalProfile                      // Our local profile data
 	mu                   sync.RWMutex                       // Protects all maps below
-	connectedGatts       map[string]*kotlin.BluetoothGatt   // UUID -> GATT connection
-	discoveredDevices      map[string]*kotlin.BluetoothDevice // UUID -> discovered device (for reconnect)
+	connectedGatts       map[string]*kotlin.BluetoothGatt   // remote UUID -> GATT connection
+	discoveredDevices      map[string]*kotlin.BluetoothDevice // remote UUID -> discovered device (for reconnect)
+	remoteUUIDToDeviceID   map[string]string                  // remote UUID -> logical device ID
 	deviceIDToPhotoHash    map[string]string                  // deviceID -> their TX photo hash
 	receivedPhotoHashes    map[string]string                  // deviceID -> RX hash (photos we got from them)
 	receivedProfileVersion map[string]int32                   // deviceID -> their profile version
@@ -113,6 +114,7 @@ func NewAndroid() *Android {
 		deviceName:             deviceName,
 		connectedGatts:         make(map[string]*kotlin.BluetoothGatt),
 		discoveredDevices:      make(map[string]*kotlin.BluetoothDevice),
+		remoteUUIDToDeviceID:   make(map[string]string),
 		deviceIDToPhotoHash:    make(map[string]string),
 		receivedPhotoHashes:    make(map[string]string),
 		receivedProfileVersion: make(map[string]int32),
@@ -566,8 +568,11 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 		firstName = "Android" // Default if not set
 	}
 
+	// Get the deviceID for this remote connection
+	remoteUUID := gatt.GetRemoteUUID()
 	a.mu.RLock()
-	rxPhotoHash := a.receivedPhotoHashes[gatt.GetRemoteUUID()]
+	deviceID := a.remoteUUIDToDeviceID[remoteUUID]
+	rxPhotoHash := a.receivedPhotoHashes[deviceID]
 	a.mu.RUnlock()
 
 	msg := &proto.HandshakeMessage{
@@ -625,9 +630,15 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 
 	remoteUUID := gatt.GetRemoteUUID()
 
+	// IMPORTANT: Map remoteUUID to the logical device_id from handshake
+	deviceID := handshake.DeviceId
+	a.mu.Lock()
+	a.remoteUUIDToDeviceID[remoteUUID] = deviceID
+	a.mu.Unlock()
+
 	// Record handshake timestamp when received
 	a.mu.Lock()
-	a.lastHandshakeTime[remoteUUID] = time.Now()
+	a.lastHandshakeTime[deviceID] = time.Now()
 	a.mu.Unlock()
 
 	// Convert photo hashes from bytes to hex strings
@@ -637,16 +648,16 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	// Store their TX photo hash
 	if txPhotoHash != "" {
 		a.mu.Lock()
-		a.deviceIDToPhotoHash[remoteUUID] = txPhotoHash
+		a.deviceIDToPhotoHash[deviceID] = txPhotoHash
 		a.mu.Unlock()
 	}
 
 	// Save first_name to device metadata
 	if handshake.FirstName != "" {
-		metadata, _ := a.cacheManager.LoadDeviceMetadata(remoteUUID)
+		metadata, _ := a.cacheManager.LoadDeviceMetadata(deviceID)
 		if metadata == nil {
 			metadata = &phone.DeviceMetadata{
-				DeviceID: remoteUUID,
+				DeviceID: deviceID,
 			}
 		}
 		metadata.FirstName = handshake.FirstName
@@ -656,7 +667,7 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	// Check if they have a new photo for us
 	// If their TxPhotoHash differs from what we've received, reply with handshake to trigger them to send
 	a.mu.RLock()
-	ourReceivedHash := a.receivedPhotoHashes[remoteUUID]
+	ourReceivedHash := a.receivedPhotoHashes[deviceID]
 	a.mu.RUnlock()
 
 	if txPhotoHash != "" && txPhotoHash != ourReceivedHash {
@@ -677,16 +688,31 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	// Check if they have a new profile version
 	// If their ProfileVersion differs from what we've received, request ProfileMessage
 	a.mu.RLock()
-	lastProfileVersion := a.receivedProfileVersion[remoteUUID]
+	lastProfileVersion := a.receivedProfileVersion[deviceID]
 	a.mu.RUnlock()
 	if handshake.ProfileVersion > lastProfileVersion {
 		logger.Debug(prefix, "📝 Remote has new profile (version %d > %d), requesting ProfileMessage",
 			handshake.ProfileVersion, lastProfileVersion)
 		a.mu.Lock()
-		a.receivedProfileVersion[remoteUUID] = handshake.ProfileVersion
+		a.receivedProfileVersion[deviceID] = handshake.ProfileVersion
 		a.mu.Unlock()
 		// Request their profile by sending handshake back (they'll see we need it)
 		go a.sendHandshakeMessage(gatt)
+	}
+
+	// Trigger discovery callback to update GUI with correct deviceID and name
+	if a.discoveryCallback != nil {
+		name := deviceID[:8]
+		if handshake.FirstName != "" {
+			name = handshake.FirstName
+		}
+		a.discoveryCallback(phone.DiscoveredDevice{
+			DeviceID:  deviceID,
+			Name:      name,
+			RSSI:      -50, // Placeholder, actual RSSI not needed for handshake update
+			Platform:  "unknown",
+			PhotoHash: txPhotoHash,
+		})
 	}
 }
 
@@ -859,44 +885,49 @@ func (a *Android) reassembleAndSavePhoto() error {
 	hash := sha256.Sum256(photoData)
 	hashStr := hex.EncodeToString(hash[:])
 
+	// Get the logical deviceID from the remote UUID
+	remoteUUID := a.photoReceiveState.senderDeviceID
+	a.mu.Lock()
+	deviceID := a.remoteUUIDToDeviceID[remoteUUID]
+	a.mu.Unlock()
+
 	// Save photo using cache manager (persists deviceID -> photoHash mapping)
-	if err := a.cacheManager.SaveDevicePhoto(a.photoReceiveState.senderDeviceID, photoData, hashStr); err != nil {
+	if err := a.cacheManager.SaveDevicePhoto(deviceID, photoData, hashStr); err != nil {
 		logger.Error(prefix, "❌ Failed to save photo: %v", err)
 		return err
 	}
 
 	logger.Info(prefix, "✅ Photo saved from %s (hash: %s, size: %d bytes)",
-		a.photoReceiveState.senderDeviceID[:8], hashStr[:8], len(photoData))
+		deviceID[:8], hashStr[:8], len(photoData))
 
 	// Update in-memory mapping
 	a.mu.Lock()
-	a.receivedPhotoHashes[a.photoReceiveState.senderDeviceID] = hashStr
+	a.receivedPhotoHashes[deviceID] = hashStr
 	a.mu.Unlock()
 
 	// Notify GUI about the new photo by re-triggering discovery callback
 	if a.discoveryCallback != nil {
-		senderID := a.photoReceiveState.senderDeviceID
 		a.mu.RLock()
-		_, exists := a.connectedGatts[senderID]
+		_, exists := a.connectedGatts[remoteUUID]
 		a.mu.RUnlock()
-		if exists {
+		if exists && deviceID != "" {
 			// Get device name from advertising data or use UUID
-			name := senderID[:8]
-			if advData, err := a.wire.ReadAdvertisingData(senderID); err == nil && advData != nil {
+			name := deviceID[:8]
+			if advData, err := a.wire.ReadAdvertisingData(remoteUUID); err == nil && advData != nil {
 				if advData.DeviceName != "" {
 					name = advData.DeviceName
 				}
 			}
 
 			a.discoveryCallback(phone.DiscoveredDevice{
-				DeviceID:  senderID,
+				DeviceID:  deviceID,
 				Name:      name,
 				RSSI:      -55, // Default RSSI, actual value not critical for photo update
 				Platform:  "unknown",
 				PhotoHash: hashStr,
 				PhotoData: photoData,
 			})
-			logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", senderID[:8])
+			logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", deviceID[:8])
 		}
 	}
 

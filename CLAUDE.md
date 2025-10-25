@@ -11,6 +11,13 @@ testdata/*.jpg and you know the path and could just display the photo.
 its ok to make iphone/iphone.go and android/android.go not share any code and be very UN-dry
 but also ok to let them share code in phone/ pacakge
 
+ignore  tests/runner.go 
+ignore tests/scenario.go
+ignore cmd/
+
+start from main.go that is active code
+
+
 # Auraphone Blue - Fake Bluetooth Simulator
 
 ## Overview
