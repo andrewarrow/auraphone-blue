@@ -66,10 +66,9 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 5. **✅ Packet Loss & Retries** - ~1.5% packet loss rate with automatic retries (up to 3 attempts). Overall success rate: ~98.4%.
 
 6. **✅ Device Roles & Negotiation** - Both iOS and Android support dual-role (Central+Peripheral). Smart role negotiation prevents connection conflicts:
-   - **iOS → iOS**: Lexicographic hardware UUID comparison - device with LARGER UUID acts as Central
-   - **iOS → Android**: iOS acts as Central (initiates connection)
-   - **Android → iOS**: Android acts as Peripheral (waits for iOS to connect)
-   - **Android → Android**: Lexicographic hardware UUID comparison - device with LARGER UUID acts as Central
+   - **All device pairs**: Simple hardware UUID comparison - device with LARGER UUID acts as Central
+   - Platform-agnostic: Works identically for iOS↔iOS, iOS↔Android, and Android↔Android connections
+   - Deterministic collision avoidance prevents simultaneous connection attempts
 
 7. **✅ Platform-Specific Reconnection Behavior** - iOS and Android have completely different reconnection behaviors:
    - **iOS Auto-Reconnect**: When you call `Connect()`, iOS remembers the peripheral. If connection drops, iOS automatically retries in background until it succeeds. App just waits for `DidConnectPeripheral` callback again.
@@ -209,40 +208,32 @@ Characteristic operations are sent as JSON message files in inbox/outbox:
 
 ## Role Negotiation
 
-Both iOS and Android devices support dual-role BLE (can act as Central or Peripheral). To prevent connection conflicts when two devices discover each other simultaneously, the system uses smart role arbitration:
+Both iOS and Android devices support dual-role BLE (can act as Central or Peripheral). To prevent connection conflicts when two devices discover each other simultaneously, the system uses simple UUID-based role arbitration:
 
 ```go
-// iOS devices use UUID comparison for iOS-to-iOS
-ios1 := wire.NewWireWithPlatform(uuid1, wire.PlatformIOS, "iPhone 15", nil)
-ios2 := wire.NewWireWithPlatform(uuid2, wire.PlatformIOS, "iPhone 14", nil)
+// Simple rule: Device with larger hardware UUID acts as Central
+device1 := wire.NewWireWithPlatform(uuid1, wire.PlatformIOS, "iPhone 15", nil)
+device2 := wire.NewWireWithPlatform(uuid2, wire.PlatformAndroid, "Pixel 8", nil)
 
-// Device with larger UUID acts as Central
-shouldConnect := ios1.ShouldActAsCentral(ios2) // Compares UUIDs lexicographically
+// If uuid1 > uuid2, device1 connects to device2
+// If uuid2 > uuid1, device2 connects to device1
+shouldConnect := device1.ShouldActAsCentral(device2) // true if uuid1 > uuid2
 
-// iOS to Android: iOS always acts as Central
-iosWire := wire.NewWireWithPlatform(uuidIOS, wire.PlatformIOS, "iPhone 15", nil)
-androidWire := wire.NewWireWithPlatform(uuidAndroid, wire.PlatformAndroid, "Pixel 8", nil)
-
-// iOS initiates connection to Android
-shouldConnect := iosWire.ShouldActAsCentral(androidWire) // true
-
-// Android devices use hardware UUID comparison for Android-to-Android
-android1 := wire.NewWireWithPlatform(uuid1, wire.PlatformAndroid, "Pixel 8", nil)
-android2 := wire.NewWireWithPlatform(uuid2, wire.PlatformAndroid, "Samsung S23", nil)
-
-// uuid1 > uuid2 lexicographically, so android1 acts as Central
-shouldConnect := android1.ShouldActAsCentral(android2) // true if uuid1 > uuid2
+// Works identically for all platform combinations:
+// iOS ↔ iOS, iOS ↔ Android, Android ↔ Android
 ```
 
 **Rules:**
-1. **iOS → iOS**: Device with lexicographically larger hardware UUID acts as Central
+1. **All device pairs**: Device with lexicographically larger hardware UUID acts as Central
    - Example: UUID starting with "b1..." > UUID starting with "5a..." → "b1" device connects
+   - Platform-agnostic: Same rule applies regardless of iOS or Android
    - Deterministic role assignment prevents simultaneous connection attempts
-2. **iOS → Android**: iOS always acts as Central (initiates connection)
-3. **Android → iOS**: Android acts as Peripheral (waits for iOS)
-4. **Android → Android**: Device with lexicographically larger hardware UUID acts as Central
-   - Example: UUID "b1234..." > UUID "5abcd..." → "b1234..." device connects to "5abcd..." device
-   - Deterministic collision avoidance prevents simultaneous connection attempts
+2. **Every pairing is deterministic**: Given any two hardware UUIDs, exactly one device will always initiate
+   - With 4 devices (A, B, C, D), if A > B > C > D, then:
+     - A connects to B, C, D (acts as Central for all)
+     - B connects to C, D (acts as Central for lower UUIDs, Peripheral for A)
+     - C connects to D only (acts as Central for D, Peripheral for A and B)
+     - D waits for all others (acts as Peripheral for all)
 
 ## BLE Simulation Configuration
 

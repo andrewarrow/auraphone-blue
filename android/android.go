@@ -424,22 +424,9 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 
 // shouldActAsCentral determines if this Android device should initiate connection to a discovered device
 // Returns true if we should connect (act as Central), false if we should wait (act as Peripheral)
+// Uses simple hardware UUID comparison regardless of remote platform
 func (a *Android) shouldActAsCentral(remoteUUID, remoteName string) bool {
-	// Determine remote platform from device name
-	isRemoteIOS := false
-
-	if remoteName != "" {
-		if len(remoteName) >= 3 && remoteName[:3] == "iOS" {
-			isRemoteIOS = true
-		}
-	}
-
-	// Android → iOS: Android acts as Peripheral (waits for iOS to connect)
-	if isRemoteIOS {
-		return false
-	}
-
-	// Android → Android and Android → Unknown: Use hardware UUID comparison
+	// Use hardware UUID comparison for all devices
 	// Device with LARGER UUID acts as Central (deterministic collision avoidance)
 	return a.hardwareUUID > remoteUUID
 }
