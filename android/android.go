@@ -1355,38 +1355,19 @@ func (d *androidGattServerDelegate) OnCharacteristicWriteRequest(device *kotlin.
 
 	logger.Debug(prefix, "📥 GATT server: Write request from %s to char %s (%d bytes)", device.Address[:8], characteristic.UUID[:8], len(value))
 
-	// Get or create GATT connection for this sender
-	senderUUID := device.Address
-	d.android.mu.Lock()
-	gatt, exists := d.android.connectedGatts[senderUUID]
-	if !exists {
-		// Create a pseudo GATT connection representing the incoming connection by using ConnectGatt
-		// This properly initializes the GATT connection with wire and callbacks
-		// We use the discovered device if available, otherwise create a temporary one
-		tempDevice, deviceExists := d.android.discoveredDevices[senderUUID]
-		if !deviceExists {
-			tempDevice = &kotlin.BluetoothDevice{
-				Address: senderUUID,
-				Name:    "Central Device",
-			}
-		}
-		gatt = tempDevice.ConnectGatt(nil, false, d.android)
-		d.android.connectedGatts[senderUUID] = gatt
-		logger.Debug(prefix, "📝 Created GATT connection for incoming central %s", senderUUID[:8])
-	}
-	d.android.mu.Unlock()
-
 	// Process based on characteristic
+	// We use specialized handlers that work with device UUID instead of requiring a GATT connection
+	senderUUID := device.Address
 	switch characteristic.UUID {
 	case auraTextCharUUID:
 		// Handshake message
-		d.android.handleHandshakeMessage(gatt, value)
+		d.android.handleHandshakeMessageFromServer(senderUUID, value)
 	case auraPhotoCharUUID:
 		// Photo chunk
-		go d.android.handlePhotoMessage(gatt, value)
+		go d.android.handlePhotoMessageFromServer(senderUUID, value)
 	case auraProfileCharUUID:
 		// Profile message
-		go d.android.handleProfileMessage(gatt, value)
+		go d.android.handleProfileMessageFromServer(senderUUID, value)
 	}
 }
 
@@ -1400,4 +1381,108 @@ func (d *androidGattServerDelegate) OnDescriptorWriteRequest(device *kotlin.Blue
 	// Used for enabling/disabling notifications - handle subscribe/unsubscribe
 	prefix := fmt.Sprintf("%s Android", d.android.hardwareUUID[:8])
 	logger.Debug(prefix, "📥 GATT server: Descriptor write from %s", device.Address[:8])
+}
+
+// ====================================================================================
+// Server-side message handlers (for incoming writes to our GATT server)
+// ====================================================================================
+
+// handleHandshakeMessageFromServer processes handshake from a central device
+func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byte) {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
+	// Unmarshal binary protobuf
+	var handshake proto.HandshakeMessage
+	if err := proto2.Unmarshal(data, &handshake); err != nil {
+		logger.Error(prefix, "❌ Failed to parse handshake from server: %v", err)
+		return
+	}
+
+	// Log as JSON with snake_case for debugging
+	marshaler := protojson.MarshalOptions{
+		UseProtoNames: true,
+	}
+	jsonData, _ := marshaler.Marshal(&handshake)
+	logger.Debug(prefix, "📥 RX Handshake from GATT server (binary protobuf, %d bytes): %s", len(data), string(jsonData))
+
+	// Map sender UUID to logical device ID
+	deviceID := handshake.DeviceId
+	a.mu.Lock()
+	a.remoteUUIDToDeviceID[senderUUID] = deviceID
+	a.mu.Unlock()
+
+	// Record handshake timestamp
+	a.mu.Lock()
+	a.lastHandshakeTime[deviceID] = time.Now()
+	a.mu.Unlock()
+
+	// Convert photo hashes from bytes to hex strings
+	txPhotoHash := hashBytesToString(handshake.TxPhotoHash)
+	rxPhotoHash := hashBytesToString(handshake.RxPhotoHash)
+
+	// Store their TX photo hash
+	if txPhotoHash != "" {
+		a.mu.Lock()
+		a.deviceIDToPhotoHash[deviceID] = txPhotoHash
+		a.mu.Unlock()
+	}
+
+	// Save first_name to device metadata
+	if handshake.FirstName != "" {
+		metadata, _ := a.cacheManager.LoadDeviceMetadata(deviceID)
+		if metadata == nil {
+			metadata = &phone.DeviceMetadata{
+				DeviceID: deviceID,
+			}
+		}
+		metadata.FirstName = handshake.FirstName
+		a.cacheManager.SaveDeviceMetadata(metadata)
+	}
+
+	logger.Info(prefix, "✅ Processed handshake from GATT server: deviceID=%s, firstName=%s", deviceID, handshake.FirstName)
+
+	// Check if they have a new photo for us
+	a.mu.RLock()
+	ourReceivedHash := a.receivedPhotoHashes[deviceID]
+	a.mu.RUnlock()
+
+	if txPhotoHash != "" && txPhotoHash != ourReceivedHash {
+		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), need to reply with handshake", truncateHash(txPhotoHash, 8))
+		// TODO: Send handshake back via wire.WriteCharacteristic to notify them
+	}
+
+	// Check if we need to send our photo
+	if rxPhotoHash != a.photoHash && a.photoHash != "" {
+		logger.Debug(prefix, "📸 Remote doesn't have our photo, need to send it")
+		// TODO: Send photo via wire.WriteCharacteristic
+	}
+
+	// Trigger discovery callback to update GUI
+	if a.discoveryCallback != nil {
+		name := deviceID[:8]
+		if handshake.FirstName != "" {
+			name = handshake.FirstName
+		}
+		a.discoveryCallback(phone.DiscoveredDevice{
+			DeviceID:  deviceID,
+			Name:      name,
+			RSSI:      -50,
+			Platform:  "unknown",
+			PhotoHash: txPhotoHash,
+		})
+	}
+}
+
+// handlePhotoMessageFromServer processes photo data from a central device
+func (a *Android) handlePhotoMessageFromServer(senderUUID string, data []byte) {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+	logger.Debug(prefix, "📥 Photo message from GATT server %s (%d bytes)", senderUUID[:8], len(data))
+	// TODO: Implement photo chunk handling for server-side
+}
+
+// handleProfileMessageFromServer processes profile data from a central device
+func (a *Android) handleProfileMessageFromServer(senderUUID string, data []byte) {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+	logger.Debug(prefix, "📥 Profile message from GATT server %s (%d bytes)", senderUUID[:8], len(data))
+	// TODO: Implement profile handling for server-side
 }
