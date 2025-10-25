@@ -502,6 +502,15 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 		a.deviceIDToPhotoHash[remoteUUID] = handshake.TxPhotoHash
 	}
 
+	// Check if they have a new photo for us
+	// If their TxPhotoHash differs from what we've received, reply with handshake to trigger them to send
+	if handshake.TxPhotoHash != "" && handshake.TxPhotoHash != a.receivedPhotoHashes[remoteUUID] {
+		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", handshake.TxPhotoHash[:8])
+		// Reply with a handshake that shows we don't have their new photo yet
+		// This will trigger them to send it to us
+		go a.sendHandshakeMessage(gatt)
+	}
+
 	// Check if we need to send our photo
 	if handshake.RxPhotoHash != a.photoHash {
 		logger.Debug(prefix, "📸 Remote doesn't have our photo, sending...")
