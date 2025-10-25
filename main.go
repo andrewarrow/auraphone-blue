@@ -931,8 +931,7 @@ func runStressTest() {
 	fmt.Println("=== Auraphone Blue - Stress Test Mode ===")
 	fmt.Println("Starting 2 iOS and 2 Android devices in headless mode...")
 
-	// Set log level to INFO for stress test to reduce noise
-	logger.SetLevel(logger.TRACE)
+	// Note: Log level is already set from CLI flag in main(), don't override it here
 
 	// Create device manager for hardware UUIDs
 	manager := phone.GetHardwareUUIDManager()
