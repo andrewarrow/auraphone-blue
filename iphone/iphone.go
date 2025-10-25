@@ -98,8 +98,8 @@ type iPhone struct {
 	receivedPhotoHashes   map[string]string              // deviceID -> RX hash (photos we got from them)
 	receivedProfileVersion map[string]int32               // deviceID -> their profile version
 	lastHandshakeTime     map[string]time.Time           // deviceID -> last handshake timestamp
-	photoSendInProgress   map[string]bool                // deviceID -> true if photo send in progress
-	photoReceiveState     *photoReceiveState
+	photoSendInProgress   map[string]bool                // peripheral UUID -> true if photo send in progress
+	photoReceiveState     map[string]*photoReceiveState  // peripheral UUID -> receive state (central mode)
 	photoReceiveStateServer map[string]*photoReceiveState // senderUUID -> receive state for peripheral mode
 	staleCheckDone        chan struct{} // Signal channel for stopping background checker
 }
@@ -127,9 +127,7 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		lastHandshakeTime:      make(map[string]time.Time),
 		photoSendInProgress:    make(map[string]bool),
 		staleCheckDone:         make(chan struct{}),
-		photoReceiveState: &photoReceiveState{
-			receivedChunks: make(map[uint16][]byte),
-		},
+		photoReceiveState:      make(map[string]*photoReceiveState),
 		photoReceiveStateServer: make(map[string]*photoReceiveState),
 	}
 
@@ -727,9 +725,14 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 	// Handshake is critical - use withResponse to ensure delivery
 	err = peripheral.WriteValue(data, textChar, swift.CBCharacteristicWriteWithResponse)
 	if err == nil {
-		// Record handshake timestamp on successful send
+		// Record handshake timestamp on successful send (indexed by deviceID, not UUID)
 		ip.mu.Lock()
-		ip.lastHandshakeTime[peripheral.UUID] = time.Now()
+		// Use deviceID if we have it, otherwise use peripheral UUID temporarily
+		if deviceID != "" {
+			ip.lastHandshakeTime[deviceID] = time.Now()
+		} else {
+			ip.lastHandshakeTime[peripheral.UUID] = time.Now()
+		}
 		ip.mu.Unlock()
 	}
 	return err
@@ -923,6 +926,17 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte) {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
+	// Get or create per-device receive state
+	ip.mu.Lock()
+	state, exists := ip.photoReceiveState[peripheral.UUID]
+	if !exists {
+		state = &photoReceiveState{
+			receivedChunks: make(map[uint16][]byte),
+		}
+		ip.photoReceiveState[peripheral.UUID] = state
+	}
+	ip.mu.Unlock()
+
 	// Try to decode metadata
 	if len(data) >= phototransfer.MetadataSize {
 		meta, remaining, err := phototransfer.DecodeMetadata(data)
@@ -931,70 +945,74 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 			logger.Info(prefix, "📸 Receiving photo from %s (size: %d, CRC: %08X, chunks: %d)",
 				peripheral.UUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
 
-			ip.photoReceiveState.isReceiving = true
-			ip.photoReceiveState.expectedSize = meta.TotalSize
-			ip.photoReceiveState.expectedCRC = meta.TotalCRC
-			ip.photoReceiveState.expectedChunks = meta.TotalChunks
-			ip.photoReceiveState.receivedChunks = make(map[uint16][]byte)
-			ip.photoReceiveState.senderDeviceID = peripheral.UUID
-			ip.photoReceiveState.buffer = remaining
+			state.isReceiving = true
+			state.expectedSize = meta.TotalSize
+			state.expectedCRC = meta.TotalCRC
+			state.expectedChunks = meta.TotalChunks
+			state.receivedChunks = make(map[uint16][]byte)
+			state.senderDeviceID = peripheral.UUID
+			state.buffer = remaining
 
 			if len(remaining) > 0 {
-				ip.processPhotoChunks()
+				ip.processPhotoChunks(peripheral.UUID, state)
 			}
 			return
 		}
 	}
 
 	// Regular chunk data
-	if ip.photoReceiveState.isReceiving {
-		ip.photoReceiveState.buffer = append(ip.photoReceiveState.buffer, data...)
-		ip.processPhotoChunks()
+	if state.isReceiving {
+		state.buffer = append(state.buffer, data...)
+		ip.processPhotoChunks(peripheral.UUID, state)
 	}
 }
 
 // processPhotoChunks processes buffered photo chunks
-func (ip *iPhone) processPhotoChunks() {
+func (ip *iPhone) processPhotoChunks(peripheralUUID string, state *photoReceiveState) {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	for {
-		if len(ip.photoReceiveState.buffer) < phototransfer.ChunkHeaderSize {
+		if len(state.buffer) < phototransfer.ChunkHeaderSize {
 			break
 		}
 
-		chunk, consumed, err := phototransfer.DecodeChunk(ip.photoReceiveState.buffer)
+		chunk, consumed, err := phototransfer.DecodeChunk(state.buffer)
 		if err != nil {
 			break
 		}
 
-		ip.photoReceiveState.receivedChunks[chunk.Index] = chunk.Data
-		ip.photoReceiveState.buffer = ip.photoReceiveState.buffer[consumed:]
+		state.receivedChunks[chunk.Index] = chunk.Data
+		state.buffer = state.buffer[consumed:]
 
-		if chunk.Index == 0 || chunk.Index == ip.photoReceiveState.expectedChunks-1 {
-			logger.Debug(prefix, "📥 Received chunk %d/%d",
-				len(ip.photoReceiveState.receivedChunks), ip.photoReceiveState.expectedChunks)
+		if chunk.Index == 0 || chunk.Index == state.expectedChunks-1 {
+			logger.Debug(prefix, "📥 Received chunk %d/%d from %s",
+				len(state.receivedChunks), state.expectedChunks, peripheralUUID[:8])
 		}
 
 		// Check if complete
-		if uint16(len(ip.photoReceiveState.receivedChunks)) == ip.photoReceiveState.expectedChunks {
-			ip.reassembleAndSavePhoto()
-			ip.photoReceiveState.isReceiving = false
+		if uint16(len(state.receivedChunks)) == state.expectedChunks {
+			ip.reassembleAndSavePhoto(peripheralUUID, state)
+			state.isReceiving = false
+			// Clean up state
+			ip.mu.Lock()
+			delete(ip.photoReceiveState, peripheralUUID)
+			ip.mu.Unlock()
 			break
 		}
 	}
 }
 
 // reassembleAndSavePhoto reassembles chunks and saves the photo
-func (ip *iPhone) reassembleAndSavePhoto() error {
+func (ip *iPhone) reassembleAndSavePhoto(peripheralUUID string, state *photoReceiveState) error {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	logger.Debug(prefix, "📸 Starting photo reassembly: expected chunks=%d, received=%d",
-		ip.photoReceiveState.expectedChunks, len(ip.photoReceiveState.receivedChunks))
+		state.expectedChunks, len(state.receivedChunks))
 
 	// Reassemble in order
 	var photoData []byte
-	for i := uint16(0); i < ip.photoReceiveState.expectedChunks; i++ {
-		chunk, exists := ip.photoReceiveState.receivedChunks[i]
+	for i := uint16(0); i < state.expectedChunks; i++ {
+		chunk, exists := state.receivedChunks[i]
 		if !exists {
 			logger.Error(prefix, "❌ Missing chunk %d during reassembly", i)
 			return fmt.Errorf("missing chunk %d", i)
@@ -1003,13 +1021,13 @@ func (ip *iPhone) reassembleAndSavePhoto() error {
 	}
 
 	logger.Debug(prefix, "   └─ Reassembled %d bytes from %d chunks",
-		len(photoData), ip.photoReceiveState.expectedChunks)
+		len(photoData), state.expectedChunks)
 
 	// Verify CRC
 	calculatedCRC := phototransfer.CalculateCRC32(photoData)
-	if calculatedCRC != ip.photoReceiveState.expectedCRC {
+	if calculatedCRC != state.expectedCRC {
 		logger.Error(prefix, "❌ Photo CRC mismatch: expected %08X, got %08X",
-			ip.photoReceiveState.expectedCRC, calculatedCRC)
+			state.expectedCRC, calculatedCRC)
 		return fmt.Errorf("CRC mismatch")
 	}
 	logger.Debug(prefix, "   └─ CRC verified: %08X", calculatedCRC)
@@ -1020,7 +1038,6 @@ func (ip *iPhone) reassembleAndSavePhoto() error {
 	logger.Debug(prefix, "   └─ Photo hash: %s", hashStr[:8])
 
 	// Get the logical deviceID from the peripheral UUID
-	peripheralUUID := ip.photoReceiveState.senderDeviceID
 	ip.mu.Lock()
 	deviceID := ip.peripheralToDeviceID[peripheralUUID]
 	ip.mu.Unlock()
@@ -1106,8 +1123,19 @@ func (ip *iPhone) checkStaleHandshakes() {
 	ip.mu.RUnlock()
 
 	for peripheralUUID, peripheral := range peripheralsToCheck {
+		// Look up deviceID for this peripheral (lastHandshakeTime is indexed by deviceID)
 		ip.mu.RLock()
-		lastHandshake, exists := ip.lastHandshakeTime[peripheralUUID]
+		deviceID := ip.peripheralToDeviceID[peripheralUUID]
+		ip.mu.RUnlock()
+
+		// If we don't have a deviceID yet, use peripheralUUID as fallback
+		lookupKey := deviceID
+		if lookupKey == "" {
+			lookupKey = peripheralUUID
+		}
+
+		ip.mu.RLock()
+		lastHandshake, exists := ip.lastHandshakeTime[lookupKey]
 		ip.mu.RUnlock()
 
 		// If no handshake record or handshake is stale
@@ -1117,8 +1145,8 @@ func (ip *iPhone) checkStaleHandshakes() {
 				timeSince = fmt.Sprintf("%.0fs ago", now.Sub(lastHandshake).Seconds())
 			}
 
-			logger.Debug(prefix, "🔄 [STALE-HANDSHAKE] Handshake stale for %s (last: %s), re-handshaking",
-				peripheralUUID[:8], timeSince)
+			logger.Debug(prefix, "🔄 [STALE-HANDSHAKE] Handshake stale for %s (deviceID: %s, last: %s), re-handshaking",
+				peripheralUUID[:8], lookupKey[:8], timeSince)
 
 			// Re-handshake in place (no need to reconnect, already connected)
 			go ip.sendHandshakeMessage(peripheral)

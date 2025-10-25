@@ -100,8 +100,8 @@ type Android struct {
 	receivedPhotoHashes    map[string]string                  // deviceID -> RX hash (photos we got from them)
 	receivedProfileVersion map[string]int32                   // deviceID -> their profile version
 	lastHandshakeTime      map[string]time.Time               // deviceID -> last handshake timestamp
-	photoSendInProgress    map[string]bool                    // deviceID -> true if photo send in progress
-	photoReceiveState    *photoReceiveState
+	photoSendInProgress    map[string]bool                    // remote UUID -> true if photo send in progress
+	photoReceiveState      map[string]*photoReceiveState      // remote UUID -> receive state (central mode)
 	photoReceiveStateServer map[string]*photoReceiveState     // senderUUID -> receive state for server mode
 	useAutoConnect       bool          // Whether to use autoConnect=true mode
 	staleCheckDone       chan struct{} // Signal channel for stopping background checker
@@ -132,9 +132,7 @@ func NewAndroid(hardwareUUID string) *Android {
 		lastHandshakeTime:      make(map[string]time.Time),
 		photoSendInProgress:    make(map[string]bool),
 		staleCheckDone:         make(chan struct{}),
-		photoReceiveState: &photoReceiveState{
-			receivedChunks: make(map[uint16][]byte),
-		},
+		photoReceiveState:      make(map[string]*photoReceiveState),
 		photoReceiveStateServer: make(map[string]*photoReceiveState),
 		useAutoConnect: false, // Default: manual reconnect (matches real Android apps)
 	}
@@ -939,6 +937,17 @@ func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	remoteUUID := gatt.GetRemoteUUID()
 
+	// Get or create per-device receive state
+	a.mu.Lock()
+	state, exists := a.photoReceiveState[remoteUUID]
+	if !exists {
+		state = &photoReceiveState{
+			receivedChunks: make(map[uint16][]byte),
+		}
+		a.photoReceiveState[remoteUUID] = state
+	}
+	a.mu.Unlock()
+
 	// Try to decode metadata
 	if len(data) >= phototransfer.MetadataSize {
 		meta, remaining, err := phototransfer.DecodeMetadata(data)
@@ -947,74 +956,83 @@ func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 			logger.Info(prefix, "📸 Receiving photo from %s (size: %d, CRC: %08X, chunks: %d)",
 				remoteUUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
 
-			a.photoReceiveState.isReceiving = true
-			a.photoReceiveState.expectedSize = meta.TotalSize
-			a.photoReceiveState.expectedCRC = meta.TotalCRC
-			a.photoReceiveState.expectedChunks = meta.TotalChunks
-			a.photoReceiveState.receivedChunks = make(map[uint16][]byte)
-			a.photoReceiveState.senderDeviceID = remoteUUID
-			a.photoReceiveState.buffer = remaining
+			state.isReceiving = true
+			state.expectedSize = meta.TotalSize
+			state.expectedCRC = meta.TotalCRC
+			state.expectedChunks = meta.TotalChunks
+			state.receivedChunks = make(map[uint16][]byte)
+			state.senderDeviceID = remoteUUID
+			state.buffer = remaining
 
 			if len(remaining) > 0 {
-				a.processPhotoChunks()
+				a.processPhotoChunks(remoteUUID, state)
 			}
 			return
 		}
 	}
 
 	// Regular chunk data
-	if a.photoReceiveState.isReceiving {
-		a.photoReceiveState.buffer = append(a.photoReceiveState.buffer, data...)
-		a.processPhotoChunks()
+	if state.isReceiving {
+		state.buffer = append(state.buffer, data...)
+		a.processPhotoChunks(remoteUUID, state)
 	}
 }
 
 // processPhotoChunks processes buffered photo chunks
-func (a *Android) processPhotoChunks() {
+func (a *Android) processPhotoChunks(remoteUUID string, state *photoReceiveState) {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 	for {
-		if len(a.photoReceiveState.buffer) < phototransfer.ChunkHeaderSize {
+		if len(state.buffer) < phototransfer.ChunkHeaderSize {
 			break
 		}
 
-		chunk, consumed, err := phototransfer.DecodeChunk(a.photoReceiveState.buffer)
+		chunk, consumed, err := phototransfer.DecodeChunk(state.buffer)
 		if err != nil {
 			break
 		}
 
-		a.photoReceiveState.receivedChunks[chunk.Index] = chunk.Data
-		a.photoReceiveState.buffer = a.photoReceiveState.buffer[consumed:]
+		state.receivedChunks[chunk.Index] = chunk.Data
+		state.buffer = state.buffer[consumed:]
 
-		if chunk.Index == 0 || chunk.Index == a.photoReceiveState.expectedChunks-1 {
-			logger.Debug(prefix, "📥 Received chunk %d/%d",
-				len(a.photoReceiveState.receivedChunks), a.photoReceiveState.expectedChunks)
+		if chunk.Index == 0 || chunk.Index == state.expectedChunks-1 {
+			logger.Debug(prefix, "📥 Received chunk %d/%d from %s",
+				len(state.receivedChunks), state.expectedChunks, remoteUUID[:8])
 		}
 
 		// Check if complete
-		if uint16(len(a.photoReceiveState.receivedChunks)) == a.photoReceiveState.expectedChunks {
-			a.reassembleAndSavePhoto()
-			a.photoReceiveState.isReceiving = false
+		if uint16(len(state.receivedChunks)) == state.expectedChunks {
+			a.reassembleAndSavePhoto(remoteUUID, state)
+			state.isReceiving = false
+			// Clean up state
+			a.mu.Lock()
+			delete(a.photoReceiveState, remoteUUID)
+			a.mu.Unlock()
 			break
 		}
 	}
 }
 
 // reassembleAndSavePhoto reassembles chunks and saves the photo
-func (a *Android) reassembleAndSavePhoto() error {
+func (a *Android) reassembleAndSavePhoto(remoteUUID string, state *photoReceiveState) error {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 	// Reassemble in order
 	var photoData []byte
-	for i := uint16(0); i < a.photoReceiveState.expectedChunks; i++ {
-		photoData = append(photoData, a.photoReceiveState.receivedChunks[i]...)
+	for i := uint16(0); i < state.expectedChunks; i++ {
+		chunk, exists := state.receivedChunks[i]
+		if !exists {
+			logger.Error(prefix, "❌ Missing chunk %d during reassembly", i)
+			return fmt.Errorf("missing chunk %d", i)
+		}
+		photoData = append(photoData, chunk...)
 	}
 
 	// Verify CRC
 	calculatedCRC := phototransfer.CalculateCRC32(photoData)
-	if calculatedCRC != a.photoReceiveState.expectedCRC {
+	if calculatedCRC != state.expectedCRC {
 		logger.Error(prefix, "❌ Photo CRC mismatch: expected %08X, got %08X",
-			a.photoReceiveState.expectedCRC, calculatedCRC)
+			state.expectedCRC, calculatedCRC)
 		return fmt.Errorf("CRC mismatch")
 	}
 
@@ -1023,7 +1041,6 @@ func (a *Android) reassembleAndSavePhoto() error {
 	hashStr := hex.EncodeToString(hash[:])
 
 	// Get the logical deviceID from the remote UUID
-	remoteUUID := a.photoReceiveState.senderDeviceID
 	a.mu.Lock()
 	deviceID := a.remoteUUIDToDeviceID[remoteUUID]
 	a.mu.Unlock()
@@ -1136,8 +1153,19 @@ func (a *Android) checkStaleHandshakes() {
 	a.mu.RUnlock()
 
 	for gattUUID, gatt := range gattsToCheck {
+		// Look up deviceID for this GATT connection (lastHandshakeTime is indexed by deviceID)
 		a.mu.RLock()
-		lastHandshake, exists := a.lastHandshakeTime[gattUUID]
+		deviceID := a.remoteUUIDToDeviceID[gattUUID]
+		a.mu.RUnlock()
+
+		// If we don't have a deviceID yet, use gattUUID as fallback
+		lookupKey := deviceID
+		if lookupKey == "" {
+			lookupKey = gattUUID
+		}
+
+		a.mu.RLock()
+		lastHandshake, exists := a.lastHandshakeTime[lookupKey]
 		a.mu.RUnlock()
 
 		// If no handshake record or handshake is stale
@@ -1147,8 +1175,8 @@ func (a *Android) checkStaleHandshakes() {
 				timeSince = fmt.Sprintf("%.0fs ago", now.Sub(lastHandshake).Seconds())
 			}
 
-			logger.Debug(prefix, "🔄 [STALE-HANDSHAKE] Handshake stale for %s (last: %s), re-handshaking",
-				gattUUID[:8], timeSince)
+			logger.Debug(prefix, "🔄 [STALE-HANDSHAKE] Handshake stale for %s (deviceID: %s, last: %s), re-handshaking",
+				gattUUID[:8], lookupKey[:8], timeSince)
 
 			// Re-handshake in place (no need to reconnect, already connected)
 			go a.sendHandshakeMessage(gatt)
