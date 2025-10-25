@@ -294,6 +294,18 @@ func (ip *iPhone) DidDiscoverCharacteristics(peripheral *swift.CBPeripheral, ser
 
 	logger.Debug(prefix, "🔍 Discovered %d characteristics", len(service.Characteristics))
 
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+
+	// Enable notifications for characteristics (matches real iOS behavior)
+	for _, char := range service.Characteristics {
+		if char.UUID == auraTextCharUUID || char.UUID == auraPhotoCharUUID {
+			if err := peripheral.SetNotifyValue(true, char); err != nil {
+				logger.Error(prefix, "❌ Failed to enable notifications for %s: %v", char.UUID[:8], err)
+			}
+		}
+	}
+
 	// Start listening for notifications
 	peripheral.StartListening()
 

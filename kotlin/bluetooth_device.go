@@ -22,8 +22,21 @@ func (d *BluetoothDevice) ConnectGatt(context interface{}, autoConnect bool, cal
 		remoteUUID: d.Address,
 	}
 
-	// Simulate connection success
-	callback.OnConnectionStateChange(gatt, 0, 2) // STATE_CONNECTED = 2
+	// Attempt realistic connection with timing and potential failure
+	go func() {
+		// STATE_CONNECTING = 1
+		callback.OnConnectionStateChange(gatt, 0, 1)
+
+		err := d.wire.Connect(d.Address)
+		if err != nil {
+			// Connection failed - STATE_DISCONNECTED = 0
+			callback.OnConnectionStateChange(gatt, 1, 0) // status=1 (GATT_FAILURE)
+			return
+		}
+
+		// Connection succeeded - STATE_CONNECTED = 2
+		callback.OnConnectionStateChange(gatt, 0, 2)
+	}()
 
 	return gatt
 }

@@ -66,10 +66,13 @@ func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map
 			deviceName = "Unknown Device"
 		}
 
+		// Get realistic RSSI from wire layer
+		rssi := float64(c.wire.GetRSSI())
+
 		c.Delegate.DidDiscoverPeripheral(*c, CBPeripheral{
 			Name: deviceName,
 			UUID: deviceUUID,
-		}, advertisementData, -50)
+		}, advertisementData, rssi)
 	})
 }
 
@@ -85,6 +88,16 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 	peripheral.wire = c.wire
 	peripheral.remoteUUID = peripheral.UUID
 
-	// Simulate successful connection
-	c.Delegate.DidConnectPeripheral(*c, *peripheral)
+	// Attempt realistic connection with timing and potential failure
+	go func() {
+		err := c.wire.Connect(peripheral.UUID)
+		if err != nil {
+			// Connection failed
+			c.Delegate.DidFailToConnectPeripheral(*c, *peripheral, err)
+			return
+		}
+
+		// Connection succeeded
+		c.Delegate.DidConnectPeripheral(*c, *peripheral)
+	}()
 }

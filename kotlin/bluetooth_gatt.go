@@ -53,11 +53,12 @@ type BluetoothGattCallback interface {
 }
 
 type BluetoothGatt struct {
-	callback   BluetoothGattCallback
-	wire       *wire.Wire
-	remoteUUID string
-	services   []*BluetoothGattService
-	stopChan   chan struct{}
+	callback                 BluetoothGattCallback
+	wire                     *wire.Wire
+	remoteUUID               string
+	services                 []*BluetoothGattService
+	stopChan                 chan struct{}
+	notifyingCharacteristics map[string]bool // characteristic UUID -> is notifying
 }
 
 func (g *BluetoothGatt) DiscoverServices() bool {
@@ -196,6 +197,27 @@ func (g *BluetoothGatt) GetCharacteristic(serviceUUID, charUUID string) *Bluetoo
 	return nil
 }
 
+// SetCharacteristicNotification enables or disables notifications for a characteristic
+// This matches real Android BLE API: gatt.setCharacteristicNotification(characteristic, enable)
+func (g *BluetoothGatt) SetCharacteristicNotification(characteristic *BluetoothGattCharacteristic, enable bool) bool {
+	if g.wire == nil {
+		return false
+	}
+	if characteristic == nil {
+		return false
+	}
+
+	if g.notifyingCharacteristics == nil {
+		g.notifyingCharacteristics = make(map[string]bool)
+	}
+
+	g.notifyingCharacteristics[characteristic.UUID] = enable
+
+	// In real Android, this would also write to the CCCD descriptor
+	// For our simulation, we just track the subscription state
+	return true
+}
+
 func (g *BluetoothGatt) StartListening() {
 	if g.wire == nil {
 		return
@@ -221,12 +243,14 @@ func (g *BluetoothGatt) StartListening() {
 					// Find the characteristic this message is for
 					char := g.GetCharacteristic(msg.ServiceUUID, msg.CharUUID)
 					if char != nil {
-						char.Value = msg.Data
+						// Only deliver updates if notifications are enabled for this characteristic
+						// This matches real Android behavior - you must call setCharacteristicNotification(true) first
+						if g.notifyingCharacteristics != nil && g.notifyingCharacteristics[char.UUID] {
+							char.Value = msg.Data
 
-						// Always call OnCharacteristicChanged for any incoming data
-						// This matches iOS behavior and properly handles write operations
-						if g.callback != nil {
-							g.callback.OnCharacteristicChanged(g, char)
+							if g.callback != nil {
+								g.callback.OnCharacteristicChanged(g, char)
+							}
 						}
 					}
 

@@ -30,13 +30,14 @@ type CBPeripheralDelegate interface {
 }
 
 type CBPeripheral struct {
-	Delegate   CBPeripheralDelegate
-	Name       string
-	UUID       string
-	Services   []*CBService
-	wire       *wire.Wire
-	remoteUUID string
-	stopChan   chan struct{}
+	Delegate              CBPeripheralDelegate
+	Name                  string
+	UUID                  string
+	Services              []*CBService
+	wire                  *wire.Wire
+	remoteUUID            string
+	stopChan              chan struct{}
+	notifyingCharacteristics map[string]bool // characteristic UUID -> is notifying
 }
 
 func (p *CBPeripheral) DiscoverServices(serviceUUIDs []string) {
@@ -138,6 +139,27 @@ func (p *CBPeripheral) ReadValue(characteristic *CBCharacteristic) error {
 	return p.wire.ReadCharacteristic(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
 }
 
+// SetNotifyValue enables or disables notifications for a characteristic
+// This matches real iOS CoreBluetooth API: peripheral.setNotifyValue(_:for:)
+func (p *CBPeripheral) SetNotifyValue(enabled bool, characteristic *CBCharacteristic) error {
+	if p.wire == nil {
+		return fmt.Errorf("peripheral not connected")
+	}
+	if characteristic == nil {
+		return fmt.Errorf("invalid characteristic")
+	}
+
+	if p.notifyingCharacteristics == nil {
+		p.notifyingCharacteristics = make(map[string]bool)
+	}
+
+	p.notifyingCharacteristics[characteristic.UUID] = enabled
+
+	// In real iOS, this would write to the CCCD descriptor
+	// For our simulation, we just track the subscription state
+	return nil
+}
+
 // GetCharacteristic finds a characteristic by UUID within the peripheral's services
 func (p *CBPeripheral) GetCharacteristic(serviceUUID, charUUID string) *CBCharacteristic {
 	for _, service := range p.Services {
@@ -177,10 +199,14 @@ func (p *CBPeripheral) StartListening() {
 					// Find the characteristic this message is for
 					char := p.GetCharacteristic(msg.ServiceUUID, msg.CharUUID)
 					if char != nil {
-						char.Value = msg.Data
+						// Only deliver updates if notifications are enabled for this characteristic
+						// This matches real iOS behavior - you must call setNotifyValue(true) first
+						if p.notifyingCharacteristics != nil && p.notifyingCharacteristics[char.UUID] {
+							char.Value = msg.Data
 
-						if p.Delegate != nil {
-							p.Delegate.DidUpdateValueForCharacteristic(p, char, nil)
+							if p.Delegate != nil {
+								p.Delegate.DidUpdateValueForCharacteristic(p, char, nil)
+							}
 						}
 					}
 
