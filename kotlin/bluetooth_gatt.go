@@ -63,6 +63,7 @@ type BluetoothGattCallback interface {
 
 type writeRequest struct {
 	characteristic *BluetoothGattCharacteristic
+	data           []byte // Copy of data to prevent race condition
 }
 
 type BluetoothGatt struct {
@@ -187,7 +188,8 @@ func (g *BluetoothGatt) StartWriteQueue() {
 					var err error
 					if r.characteristic.WriteType == WRITE_TYPE_NO_RESPONSE {
 						// Fire and forget - don't wait for ACK
-						err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.characteristic.Value)
+						// Use copied data to avoid race condition
+						err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.data)
 						// Callback comes immediately (doesn't wait for delivery)
 						if g.callback != nil {
 							if err != nil {
@@ -198,7 +200,8 @@ func (g *BluetoothGatt) StartWriteQueue() {
 						}
 					} else {
 						// With response - wait for ACK
-						err = g.wire.WriteCharacteristic(g.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.characteristic.Value)
+						// Use copied data to avoid race condition
+						err = g.wire.WriteCharacteristic(g.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.data)
 						if err != nil {
 							if g.callback != nil {
 								g.callback.OnCharacteristicWrite(g, r.characteristic, 1) // GATT_FAILURE = 1
@@ -239,8 +242,12 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 
 	// If write queue is active, queue the write (async like real Android)
 	if g.writeQueue != nil {
+		// Copy data to prevent race condition with incoming notifications
+		dataCopy := make([]byte, len(characteristic.Value))
+		copy(dataCopy, characteristic.Value)
+
 		select {
-		case g.writeQueue <- writeRequest{characteristic: characteristic}:
+		case g.writeQueue <- writeRequest{characteristic: characteristic, data: dataCopy}:
 			// Queued successfully - callback will come later
 			return true
 		default:
@@ -253,11 +260,15 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 	}
 
 	// Fallback: synchronous write (if queue not started)
+	// Copy data to prevent race condition with incoming notifications
+	dataCopy := make([]byte, len(characteristic.Value))
+	copy(dataCopy, characteristic.Value)
+
 	var err error
 	if characteristic.WriteType == WRITE_TYPE_NO_RESPONSE {
-		err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, characteristic.Value)
+		err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, dataCopy)
 	} else {
-		err = g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, characteristic.Value)
+		err = g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, dataCopy)
 	}
 
 	if err != nil {
