@@ -312,8 +312,11 @@ func (w *Wire) ReadAndReassemble(filename string) ([]byte, error) {
 
 	// Try reading the complete file first (no fragmentation)
 	completeFile := filepath.Join(inboxPath, filename)
-	if data, err := os.ReadFile(completeFile); err == nil {
-		return data, nil
+	// First check if file exists and is readable (avoids race with concurrent writes)
+	if stat, err := os.Stat(completeFile); err == nil && stat.Size() > 0 {
+		if data, err := os.ReadFile(completeFile); err == nil {
+			return data, nil
+		}
 	}
 
 	// File doesn't exist as single file, look for .part files
@@ -346,6 +349,7 @@ func (w *Wire) ReadAndReassemble(filename string) ([]byte, error) {
 
 // ListInbox lists all logical messages in this device's inbox
 // Returns base filenames without .part suffixes (simulates BLE stack behavior)
+// Only returns messages that have a .ready marker indicating complete transfer
 func (w *Wire) ListInbox() ([]string, error) {
 	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
 	files, err := os.ReadDir(inboxPath)
@@ -353,6 +357,21 @@ func (w *Wire) ListInbox() ([]string, error) {
 		return nil, err
 	}
 
+	// First pass: collect all .ready markers
+	readyMessages := make(map[string]bool)
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		name := file.Name()
+		if strings.HasSuffix(name, ".ready") {
+			// Remove .ready suffix to get the base message filename
+			baseName := strings.TrimSuffix(name, ".ready")
+			readyMessages[baseName] = true
+		}
+	}
+
+	// Second pass: collect message files that have .ready markers
 	seen := make(map[string]bool)
 	var filenames []string
 
@@ -363,16 +382,32 @@ func (w *Wire) ListInbox() ([]string, error) {
 
 		name := file.Name()
 
+		// Skip temporary files (being written)
+		if strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+
+		// Skip .ready marker files themselves
+		if strings.HasSuffix(name, ".ready") {
+			continue
+		}
+
 		// Strip .partN suffix if present
+		baseName := name
 		if strings.Contains(name, ".part") {
 			parts := strings.Split(name, ".part")
-			name = parts[0]
+			baseName = parts[0]
+		}
+
+		// Only include messages that have a .ready marker
+		if !readyMessages[baseName] {
+			continue
 		}
 
 		// Deduplicate (multiple .part files become one logical message)
-		if !seen[name] {
-			filenames = append(filenames, name)
-			seen[name] = true
+		if !seen[baseName] {
+			filenames = append(filenames, baseName)
+			seen[baseName] = true
 		}
 	}
 
@@ -575,18 +610,49 @@ func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) err
 				continue
 			}
 
-			// Write to target's inbox using atomic write (temp file + rename)
+			// Write to target's inbox using atomic write (temp file + sync + rename)
 			// This prevents readers from seeing incomplete files during write
 			fragmentPath := filepath.Join(targetInboxPath, fragmentFilename)
 			tempPath := fragmentPath + ".tmp"
-			if err := os.WriteFile(tempPath, fragment, 0644); err != nil {
+
+			// Write to temp file and sync to disk before renaming
+			f, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+			if err != nil {
 				lastErr = err
 				continue
 			}
+			if _, err := f.Write(fragment); err != nil {
+				f.Close()
+				os.Remove(tempPath)
+				lastErr = err
+				continue
+			}
+			// Sync to ensure data is on disk before rename
+			if err := f.Sync(); err != nil {
+				f.Close()
+				os.Remove(tempPath)
+				lastErr = err
+				continue
+			}
+			if err := f.Close(); err != nil {
+				os.Remove(tempPath)
+				lastErr = err
+				continue
+			}
+
+			// Now rename atomically
 			if err := os.Rename(tempPath, fragmentPath); err != nil {
 				os.Remove(tempPath) // Clean up temp file
 				lastErr = err
 				continue
+			}
+
+			// Sync the directory to ensure the rename is visible
+			// This is critical on some filesystems (APFS, ext4, etc.)
+			dir, err := os.Open(targetInboxPath)
+			if err == nil {
+				dir.Sync()
+				dir.Close()
 			}
 
 			// Success
@@ -599,17 +665,50 @@ func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) err
 		}
 	}
 
-	// Copy to our outbox_history using atomic write
+	// Write .ready marker file to signal that all fragments are complete
+	// This prevents readers from processing incomplete transfers
+	readyPath := filepath.Join(targetInboxPath, filename+".ready")
+	readyTempPath := readyPath + ".tmp"
+	if f, err := os.OpenFile(readyTempPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err == nil {
+		f.Sync()
+		f.Close()
+		if err := os.Rename(readyTempPath, readyPath); err != nil {
+			os.Remove(readyTempPath)
+			return fmt.Errorf("failed to write ready marker: %w", err)
+		}
+		// Sync directory to make marker visible
+		if dir, err := os.Open(targetInboxPath); err == nil {
+			dir.Sync()
+			dir.Close()
+		}
+	} else {
+		return fmt.Errorf("failed to create ready marker: %w", err)
+	}
+
+	// Copy to our outbox_history using atomic write with sync
 	historyPath := filepath.Join(w.basePath, w.localUUID, "outbox_history")
 	historyFilePath := filepath.Join(historyPath, filename)
 	tempHistoryPath := historyFilePath + ".tmp"
-	if err := os.WriteFile(tempHistoryPath, data, 0644); err == nil {
-		if err := os.Rename(tempHistoryPath, historyFilePath); err != nil {
+	if f, err := os.OpenFile(tempHistoryPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err == nil {
+		if _, writeErr := f.Write(data); writeErr == nil {
+			if syncErr := f.Sync(); syncErr == nil {
+				f.Close()
+				if err := os.Rename(tempHistoryPath, historyFilePath); err != nil {
+					os.Remove(tempHistoryPath)
+					fmt.Printf("Warning: failed to copy to outbox_history: %v\n", err)
+				}
+			} else {
+				f.Close()
+				os.Remove(tempHistoryPath)
+				fmt.Printf("Warning: failed to sync temp file for outbox_history: %v\n", syncErr)
+			}
+		} else {
+			f.Close()
 			os.Remove(tempHistoryPath)
-			fmt.Printf("Warning: failed to copy to outbox_history: %v\n", err)
+			fmt.Printf("Warning: failed to write temp file for outbox_history: %v\n", writeErr)
 		}
 	} else {
-		fmt.Printf("Warning: failed to write temp file for outbox_history: %v\n", err)
+		fmt.Printf("Warning: failed to open temp file for outbox_history: %v\n", err)
 	}
 
 	return nil
@@ -627,17 +726,36 @@ func (w *Wire) DeleteInboxFile(filename string) error {
 		return fmt.Errorf("failed to read inbox file: %w", err)
 	}
 
-	// Copy complete message to inbox_history using atomic write
+	// Copy complete message to inbox_history using atomic write with sync
 	historyPath := filepath.Join(w.basePath, w.localUUID, "inbox_history")
 	historyFilePath := filepath.Join(historyPath, filename)
 	tempHistoryPath := historyFilePath + ".tmp"
-	if err := os.WriteFile(tempHistoryPath, data, 0644); err != nil {
+	f, err := os.OpenFile(tempHistoryPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open temp file for inbox_history: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tempHistoryPath)
 		return fmt.Errorf("failed to write temp file for inbox_history: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tempHistoryPath)
+		return fmt.Errorf("failed to sync temp file for inbox_history: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tempHistoryPath)
+		return fmt.Errorf("failed to close temp file for inbox_history: %w", err)
 	}
 	if err := os.Rename(tempHistoryPath, historyFilePath); err != nil {
 		os.Remove(tempHistoryPath) // Clean up temp file
 		return fmt.Errorf("failed to copy to inbox_history: %w", err)
 	}
+
+	// Delete the .ready marker file first
+	readyFile := filepath.Join(inboxPath, filename+".ready")
+	os.Remove(readyFile) // Ignore errors, marker might not exist
 
 	// Delete the original file(s)
 	// Try deleting complete file first
