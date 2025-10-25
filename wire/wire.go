@@ -97,6 +97,7 @@ type Wire struct {
 	monitorStopChans     map[string]chan struct{} // Per-device stop channels for connection monitors
 	disconnectCallback   func(deviceUUID string) // Callback when connection drops
 	connMutex            sync.RWMutex // Protects connectionStates and monitorStopChans
+	inboxMutex           sync.Mutex   // Protects inbox operations to prevent duplicate processing
 }
 
 // NewWire creates a new wire instance for a device with default dual role
@@ -727,6 +728,10 @@ func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) err
 // and copies the complete reassembled message to inbox_history for record keeping
 // Handles both complete files and fragmented .part files
 func (w *Wire) DeleteInboxFile(filename string) error {
+	// Lock to coordinate with ReadCharacteristicMessages
+	w.inboxMutex.Lock()
+	defer w.inboxMutex.Unlock()
+
 	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
 
 	// Read and reassemble (handles .part files transparently)
@@ -1008,7 +1013,15 @@ func (w *Wire) sendCharacteristicMessage(targetUUID string, msg *CharacteristicM
 }
 
 // ReadCharacteristicMessages reads all characteristic messages from inbox
+// This function uses a mutex to prevent concurrent processing by multiple goroutines
+// (both central and peripheral mode poll the inbox simultaneously)
 func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
+	// Lock to prevent concurrent inbox reading - this ensures that when one goroutine
+	// gets a list of files, processes them, and deletes them, another goroutine won't
+	// try to process the same files before they're deleted
+	w.inboxMutex.Lock()
+	defer w.inboxMutex.Unlock()
+
 	files, err := w.ListInbox()
 	if err != nil {
 		return nil, err
