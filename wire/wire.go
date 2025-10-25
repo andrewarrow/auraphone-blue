@@ -1,15 +1,16 @@
 package wire
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/user/auraphone-blue/logger"
 )
 
@@ -83,55 +84,72 @@ const (
 	PlatformGeneric Platform = "generic"
 )
 
-// Wire manages the communication between fake devices
-// Now uses Unix Domain Sockets internally for reliable IPC
+// Wire implements BLE communication using Unix Domain Sockets
+// This eliminates filesystem race conditions while maintaining realistic BLE simulation
 type Wire struct {
 	localUUID            string
-	basePath             string
-	role                 DeviceRole
 	platform             Platform
-	deviceName           string  // Device name for role negotiation
+	deviceName           string
+	role                 DeviceRole
 	simulator            *Simulator
-	mtu                  int // Current MTU for this connection
-	connectionStates     map[string]ConnectionState // Per-device connection states
-	distance             float64 // Simulated distance in meters for RSSI calculation
-	monitorStopChans     map[string]chan struct{} // Per-device stop channels for connection monitors
-	disconnectCallback   func(deviceUUID string) // Callback when connection drops
-	connMutex            sync.RWMutex // Protects connectionStates and monitorStopChans
-	inboxMutex           sync.Mutex   // Protects inbox operations to prevent duplicate processing
+	mtu                  int
+	distance             float64
 
-	// Socket-based implementation (new)
-	socketWire           *SocketWire // If non-nil, delegates to socket implementation
+	// Socket infrastructure
+	socketPath           string
+	listener             net.Listener
+	connections          map[string]net.Conn // targetUUID -> connection
+	connMutex            sync.RWMutex
+
+	// Connection state tracking
+	connectionStates     map[string]ConnectionState
+	monitorStopChans     map[string]chan struct{}
+	disconnectCallback   func(deviceUUID string)
+
+	// Message handlers
+	messageHandlers      map[string]func(*CharacteristicMessage) // serviceUUID+charUUID -> handler
+	handlerMutex         sync.RWMutex
+
+	// Filesystem logging for debugging (optional)
+	debugLogPath         string
+	enableDebugLog       bool
+
+	// Message queue for polling compatibility with old Wire API
+	messageQueue         []*CharacteristicMessage
+	queueMutex           sync.Mutex
+
+	// Graceful shutdown
+	stopChan             chan struct{}
+	wg                   sync.WaitGroup
 }
 
-// NewWire creates a new wire instance for a device with default dual role
+// NewWire creates a new wire with default platform (generic)
 func NewWire(deviceUUID string) *Wire {
-	return NewWireWithPlatform(deviceUUID, PlatformGeneric, "", nil)
-}
-
-// NewWireWithRole creates a wire with specific role and simulation config (deprecated, use NewWireWithPlatform)
-func NewWireWithRole(deviceUUID string, role DeviceRole, config *SimulationConfig) *Wire {
-	if config == nil {
-		config = DefaultSimulationConfig()
-	}
-
-	return &Wire{
-		localUUID:        deviceUUID,
-		basePath:         "data/",
-		role:             role,
-		platform:         PlatformGeneric,
-		deviceName:       deviceUUID,
-		simulator:        NewSimulator(config),
-		mtu:              config.DefaultMTU,
-		connectionStates: make(map[string]ConnectionState),
-		monitorStopChans: make(map[string]chan struct{}),
-		distance:         1.0, // Default: 1 meter distance
-	}
+	w, _ := newWireInternal(deviceUUID, PlatformGeneric, "", nil)
+	return w
 }
 
 // NewWireWithPlatform creates a wire with platform-specific behavior
-// IMPORTANT: Now uses Unix Domain Sockets for IPC instead of filesystem
+// This is the main constructor used by iOS and Android implementations
 func NewWireWithPlatform(deviceUUID string, platform Platform, deviceName string, config *SimulationConfig) *Wire {
+	w, err := newWireInternal(deviceUUID, platform, deviceName, config)
+	if err != nil {
+		logger.Error(fmt.Sprintf("%s %s", deviceUUID[:8], platform),
+			"FATAL: Failed to create wire: %v", err)
+		panic(fmt.Sprintf("Failed to create wire: %v", err))
+	}
+	return w
+}
+
+// NewWireWithRole is deprecated but kept for compatibility
+func NewWireWithRole(deviceUUID string, role DeviceRole, config *SimulationConfig) *Wire {
+	w, _ := newWireInternal(deviceUUID, PlatformGeneric, "", config)
+	w.role = role
+	return w
+}
+
+// newWireInternal creates a new socket-based wire implementation
+func newWireInternal(deviceUUID string, platform Platform, deviceName string, config *SimulationConfig) (*Wire, error) {
 	if config == nil {
 		config = DefaultSimulationConfig()
 	}
@@ -140,65 +158,654 @@ func NewWireWithPlatform(deviceUUID string, platform Platform, deviceName string
 		deviceName = deviceUUID
 	}
 
-	// Use SocketWire implementation (new, reliable)
-	socketWire, err := NewSocketWire(deviceUUID, platform, deviceName, config)
+	// Create socket path in /tmp (portable across Unix systems)
+	socketPath := fmt.Sprintf("/tmp/auraphone-%s.sock", deviceUUID)
+
+	w := &Wire{
+		localUUID:        deviceUUID,
+		platform:         platform,
+		deviceName:       deviceName,
+		role:             RoleDual,
+		simulator:        NewSimulator(config),
+		mtu:              config.DefaultMTU,
+		distance:         1.0,
+		socketPath:       socketPath,
+		connections:      make(map[string]net.Conn),
+		connectionStates: make(map[string]ConnectionState),
+		monitorStopChans: make(map[string]chan struct{}),
+		messageHandlers:  make(map[string]func(*CharacteristicMessage)),
+		stopChan:         make(chan struct{}),
+		enableDebugLog:   true,
+		debugLogPath:     "data",
+	}
+
+	return w, nil
+}
+
+// InitializeDevice sets up the socket listener and debug log directories
+func (sw *Wire) InitializeDevice() error {
+	// Remove old socket if it exists
+	os.Remove(sw.socketPath)
+
+	// Create Unix domain socket listener
+	listener, err := net.Listen("unix", sw.socketPath)
 	if err != nil {
-		// Fallback to old implementation if socket creation fails
-		logger.Warn(fmt.Sprintf("%s %s", deviceUUID[:8], platform),
-			"Failed to create socket wire, falling back to filesystem: %v", err)
-		return &Wire{
-			localUUID:        deviceUUID,
-			basePath:         "data/",
-			role:             RoleDual,
-			platform:         platform,
-			deviceName:       deviceName,
-			simulator:        NewSimulator(config),
-			mtu:              config.DefaultMTU,
-			connectionStates: make(map[string]ConnectionState),
-			monitorStopChans: make(map[string]chan struct{}),
-			distance:         1.0,
+		return fmt.Errorf("failed to create socket listener: %w", err)
+	}
+	sw.listener = listener
+
+	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		"🔌 Socket listener created at %s", sw.socketPath)
+
+	// Start accepting connections
+	sw.wg.Add(1)
+	go sw.acceptLoop()
+
+	// Create debug log directories (optional, for inspection)
+	if sw.enableDebugLog {
+		devicePath := filepath.Join(sw.debugLogPath, sw.localUUID)
+		dirs := []string{
+			filepath.Join(devicePath, "sent_messages"),
+			filepath.Join(devicePath, "received_messages"),
+			filepath.Join(devicePath, "cache"),
+		}
+		for _, dir := range dirs {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+					"Failed to create debug log dir %s: %v", dir, err)
+			}
+		}
+
+		// Write GATT table and advertising data files for discovery
+		// (these still use filesystem for device discovery)
+		os.MkdirAll(devicePath, 0755)
+	}
+
+	return nil
+}
+
+// acceptLoop accepts incoming connections from other devices
+func (sw *Wire) acceptLoop() {
+	defer sw.wg.Done()
+
+	for {
+		select {
+		case <-sw.stopChan:
+			return
+		default:
+		}
+
+		// Set accept deadline to allow periodic stopChan checks
+		if tcpListener, ok := sw.listener.(*net.UnixListener); ok {
+			tcpListener.SetDeadline(time.Now().Add(1 * time.Second))
+		}
+
+		conn, err := sw.listener.Accept()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue // Check stopChan and try again
+			}
+			select {
+			case <-sw.stopChan:
+				return
+			default:
+				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+					"Accept error: %v", err)
+				continue
+			}
+		}
+
+		// Read remote UUID from first message
+		sw.wg.Add(1)
+		go sw.handleConnection(conn)
+	}
+}
+
+// handleConnection handles an incoming connection
+func (sw *Wire) handleConnection(conn net.Conn) {
+	defer sw.wg.Done()
+	defer conn.Close()
+
+	// Read the first 4 bytes to get the remote UUID length
+	var uuidLen uint32
+	if err := binary.Read(conn, binary.BigEndian, &uuidLen); err != nil {
+		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"Failed to read UUID length from incoming connection: %v", err)
+		return
+	}
+
+	// Read the remote UUID
+	uuidBytes := make([]byte, uuidLen)
+	if _, err := io.ReadFull(conn, uuidBytes); err != nil {
+		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"Failed to read UUID from incoming connection: %v", err)
+		return
+	}
+	remoteUUID := string(uuidBytes)
+
+	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		"📞 Accepted connection from %s", remoteUUID[:8])
+
+	// Store connection
+	sw.connMutex.Lock()
+	sw.connections[remoteUUID] = conn
+	sw.connectionStates[remoteUUID] = StateConnected
+	sw.connMutex.Unlock()
+
+	// Start connection monitoring
+	sw.startConnectionMonitoring(remoteUUID)
+
+	// Read messages from this connection
+	sw.readLoop(remoteUUID, conn)
+
+	// Connection closed
+	sw.connMutex.Lock()
+	delete(sw.connections, remoteUUID)
+	sw.connectionStates[remoteUUID] = StateDisconnected
+	sw.connMutex.Unlock()
+
+	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		"🔌 Connection closed from %s", remoteUUID[:8])
+
+	// Notify disconnect callback
+	if sw.disconnectCallback != nil {
+		sw.disconnectCallback(remoteUUID)
+	}
+}
+
+// readLoop reads messages from a connection
+func (sw *Wire) readLoop(remoteUUID string, conn net.Conn) {
+	for {
+		// Read message length
+		var msgLen uint32
+		if err := binary.Read(conn, binary.BigEndian, &msgLen); err != nil {
+			if err != io.EOF {
+				logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+					"Read error from %s: %v", remoteUUID[:8], err)
+			}
+			return
+		}
+
+		// Read message data
+		msgData := make([]byte, msgLen)
+		if _, err := io.ReadFull(conn, msgData); err != nil {
+			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+				"Failed to read message from %s: %v", remoteUUID[:8], err)
+			return
+		}
+
+		// Parse message
+		var msg CharacteristicMessage
+		if err := json.Unmarshal(msgData, &msg); err != nil {
+			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+				"Failed to parse message from %s: %v", remoteUUID[:8], err)
+			continue
+		}
+
+		// Log for debugging
+		if sw.enableDebugLog {
+			sw.logReceivedMessage(remoteUUID, &msg)
+		}
+
+		logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			fmt.Sprintf("📥 RX %s (from %s, svc=%s, char=%s, %d bytes)",
+				msg.Operation, remoteUUID[:8],
+				msg.ServiceUUID[len(msg.ServiceUUID)-4:],
+				msg.CharUUID[len(msg.CharUUID)-4:], len(msg.Data)), &msg)
+
+		// Dispatch to handler
+		sw.dispatchMessage(&msg)
+	}
+}
+
+// Connect establishes a connection to a remote device
+func (sw *Wire) Connect(targetUUID string) error {
+	sw.connMutex.Lock()
+	currentState := sw.connectionStates[targetUUID]
+	if currentState != StateDisconnected && currentState != 0 {
+		sw.connMutex.Unlock()
+		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"🔌 Connect attempt to %s BLOCKED (current state: %d)", targetUUID[:8], currentState)
+		return fmt.Errorf("already connected or connecting to %s", targetUUID[:8])
+	}
+	sw.connectionStates[targetUUID] = StateConnecting
+	sw.connMutex.Unlock()
+
+	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		"🔌 Connecting to %s (delay: simulated)", targetUUID[:8])
+
+	// Simulate connection delay
+	delay := sw.simulator.ConnectionDelay()
+	time.Sleep(delay)
+
+	// Check if connection succeeds
+	if !sw.simulator.ShouldConnectionSucceed() {
+		sw.connMutex.Lock()
+		sw.connectionStates[targetUUID] = StateDisconnected
+		sw.connMutex.Unlock()
+		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"❌ Connection to %s FAILED (simulated interference)", targetUUID[:8])
+		return fmt.Errorf("connection failed (timeout or interference)")
+	}
+
+	// Connect to target's socket
+	targetSocketPath := fmt.Sprintf("/tmp/auraphone-%s.sock", targetUUID)
+	conn, err := net.Dial("unix", targetSocketPath)
+	if err != nil {
+		sw.connMutex.Lock()
+		sw.connectionStates[targetUUID] = StateDisconnected
+		sw.connMutex.Unlock()
+		return fmt.Errorf("failed to dial %s: %w", targetUUID[:8], err)
+	}
+
+	// Send our UUID as first message (handshake)
+	uuidBytes := []byte(sw.localUUID)
+	if err := binary.Write(conn, binary.BigEndian, uint32(len(uuidBytes))); err != nil {
+		conn.Close()
+		sw.connMutex.Lock()
+		sw.connectionStates[targetUUID] = StateDisconnected
+		sw.connMutex.Unlock()
+		return fmt.Errorf("failed to send UUID length: %w", err)
+	}
+	if _, err := conn.Write(uuidBytes); err != nil {
+		conn.Close()
+		sw.connMutex.Lock()
+		sw.connectionStates[targetUUID] = StateDisconnected
+		sw.connMutex.Unlock()
+		return fmt.Errorf("failed to send UUID: %w", err)
+	}
+
+	// Store connection
+	sw.connMutex.Lock()
+	sw.connections[targetUUID] = conn
+	sw.connectionStates[targetUUID] = StateConnected
+	sw.connMutex.Unlock()
+
+	logger.Info(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		"✅ Connected to %s at wire level", targetUUID[:8])
+
+	// Start reading from this connection
+	sw.wg.Add(1)
+	go func() {
+		defer sw.wg.Done()
+		sw.readLoop(targetUUID, conn)
+
+		// Connection closed
+		sw.connMutex.Lock()
+		delete(sw.connections, targetUUID)
+		sw.connectionStates[targetUUID] = StateDisconnected
+		sw.connMutex.Unlock()
+
+		// Notify disconnect
+		if sw.disconnectCallback != nil {
+			sw.disconnectCallback(targetUUID)
+		}
+	}()
+
+	// Start connection monitoring
+	sw.startConnectionMonitoring(targetUUID)
+
+	return nil
+}
+
+// Disconnect closes connection to a device
+func (sw *Wire) Disconnect(targetUUID string) error {
+	sw.connMutex.Lock()
+	conn, exists := sw.connections[targetUUID]
+	if !exists || sw.connectionStates[targetUUID] != StateConnected {
+		sw.connMutex.Unlock()
+		return fmt.Errorf("not connected to %s", targetUUID[:8])
+	}
+
+	sw.connectionStates[targetUUID] = StateDisconnecting
+	sw.connMutex.Unlock()
+
+	// Stop monitoring
+	sw.stopConnectionMonitoring(targetUUID)
+
+	// Simulate disconnection delay
+	delay := sw.simulator.DisconnectDelay()
+	time.Sleep(delay)
+
+	// Close connection
+	conn.Close()
+
+	sw.connMutex.Lock()
+	delete(sw.connections, targetUUID)
+	sw.connectionStates[targetUUID] = StateDisconnected
+	sw.connMutex.Unlock()
+
+	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		"🔌 Disconnected from %s", targetUUID[:8])
+
+	return nil
+}
+
+// SendToDevice sends data to a target device via socket
+func (sw *Wire) SendToDevice(targetUUID string, data []byte) error {
+	sw.connMutex.RLock()
+	conn, exists := sw.connections[targetUUID]
+	sw.connMutex.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("not connected to %s", targetUUID[:8])
+	}
+
+	// Fragment data based on MTU
+	fragments := sw.simulator.FragmentData(data, sw.mtu)
+
+	for i, fragment := range fragments {
+		// Inter-packet delay (realistic BLE timing)
+		if i > 0 {
+			time.Sleep(2 * time.Millisecond)
+		}
+
+		// Simulate packet loss with retries
+		var lastErr error
+		for attempt := 0; attempt <= sw.simulator.config.MaxRetries; attempt++ {
+			if attempt > 0 {
+				time.Sleep(time.Duration(sw.simulator.config.RetryDelay) * time.Millisecond)
+				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+					"🔄 Retrying packet to %s (attempt %d/%d, fragment %d/%d)",
+					targetUUID[:8], attempt+1, sw.simulator.config.MaxRetries+1, i+1, len(fragments))
+			}
+
+			// Simulate packet loss
+			if !sw.simulator.ShouldPacketSucceed() && attempt < sw.simulator.config.MaxRetries {
+				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+					"📉 Simulated packet loss to %s (attempt %d/%d, fragment %d/%d)",
+					targetUUID[:8], attempt+1, sw.simulator.config.MaxRetries+1, i+1, len(fragments))
+				lastErr = fmt.Errorf("packet loss (attempt %d/%d)", attempt+1, sw.simulator.config.MaxRetries+1)
+				continue
+			}
+
+			// Write fragment length + fragment data
+			if err := binary.Write(conn, binary.BigEndian, uint32(len(fragment))); err != nil {
+				lastErr = fmt.Errorf("failed to write fragment length: %w", err)
+				continue
+			}
+			if _, err := conn.Write(fragment); err != nil {
+				lastErr = fmt.Errorf("failed to write fragment: %w", err)
+				continue
+			}
+
+			// Success
+			lastErr = nil
+			break
+		}
+
+		if lastErr != nil {
+			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+				"❌ Failed to send fragment %d/%d to %s after %d retries: %v",
+				i+1, len(fragments), targetUUID[:8], sw.simulator.config.MaxRetries, lastErr)
+			return lastErr
 		}
 	}
 
-	// Wrap SocketWire in Wire struct for compatibility
-	return &Wire{
-		localUUID:        deviceUUID,
-		basePath:         "data/",
-		role:             RoleDual,
-		platform:         platform,
-		deviceName:       deviceName,
-		simulator:        socketWire.GetSimulator(),
-		mtu:              config.DefaultMTU,
-		connectionStates: make(map[string]ConnectionState),
-		monitorStopChans: make(map[string]chan struct{}),
-		distance:         1.0,
-		socketWire:       socketWire, // Store socket wire for delegation
+	return nil
+}
+
+// WriteCharacteristic sends a write request to target device
+func (sw *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
+	msg := CharacteristicMessage{
+		Operation:   "write",
+		ServiceUUID: serviceUUID,
+		CharUUID:    charUUID,
+		Data:        data,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  sw.localUUID,
+	}
+
+	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		fmt.Sprintf("📤 TX Write WITH Response (to %s, svc=%s, char=%s, %d bytes)",
+			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
+
+	return sw.sendCharacteristicMessage(targetUUID, &msg)
+}
+
+// WriteCharacteristicNoResponse sends a write without waiting for response
+func (sw *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID string, data []byte) error {
+	msg := CharacteristicMessage{
+		Operation:   "write_no_response",
+		ServiceUUID: serviceUUID,
+		CharUUID:    charUUID,
+		Data:        data,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  sw.localUUID,
+	}
+
+	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		fmt.Sprintf("📤 TX Write NO Response (to %s, svc=%s, char=%s, %d bytes)",
+			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
+
+	// Send asynchronously (fire and forget)
+	go func() {
+		if err := sw.sendCharacteristicMessage(targetUUID, &msg); err != nil {
+			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+				"❌ Write NO Response transmission FAILED to %s: %v", targetUUID[:8], err)
+		}
+	}()
+
+	return nil
+}
+
+// sendCharacteristicMessage marshals and sends a message
+func (sw *Wire) sendCharacteristicMessage(targetUUID string, msg *CharacteristicMessage) error {
+	msgData, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	// Log for debugging
+	if sw.enableDebugLog {
+		sw.logSentMessage(targetUUID, msg)
+	}
+
+	return sw.SendToDevice(targetUUID, msgData)
+}
+
+// dispatchMessage routes incoming messages to handlers or queues them
+func (sw *Wire) dispatchMessage(msg *CharacteristicMessage) {
+	sw.handlerMutex.RLock()
+	handler, exists := sw.messageHandlers[msg.ServiceUUID+msg.CharUUID]
+	sw.handlerMutex.RUnlock()
+
+	if exists {
+		handler(msg)
+	} else {
+		// No specific handler, queue for polling
+		sw.queueMutex.Lock()
+		sw.messageQueue = append(sw.messageQueue, msg)
+		sw.queueMutex.Unlock()
 	}
 }
 
-// SetDistance sets the simulated distance for RSSI calculation
-func (w *Wire) SetDistance(meters float64) {
-	w.distance = meters
+// ReadAndConsumeCharacteristicMessages reads and consumes queued messages
+// This provides compatibility with the old Wire polling-based API
+func (sw *Wire) ReadAndConsumeCharacteristicMessages() ([]*CharacteristicMessage, error) {
+	sw.queueMutex.Lock()
+	defer sw.queueMutex.Unlock()
+
+	if len(sw.messageQueue) == 0 {
+		return nil, nil
+	}
+
+	// Return all queued messages and clear queue
+	messages := make([]*CharacteristicMessage, len(sw.messageQueue))
+	copy(messages, sw.messageQueue)
+	sw.messageQueue = nil
+
+	return messages, nil
 }
 
-// GetRSSI returns simulated RSSI based on current distance
-func (w *Wire) GetRSSI() int {
-	return w.simulator.GenerateRSSI(w.distance)
+// RegisterMessageHandler registers a handler for messages on a characteristic
+func (sw *Wire) RegisterMessageHandler(serviceUUID, charUUID string, handler func(*CharacteristicMessage)) {
+	sw.handlerMutex.Lock()
+	sw.messageHandlers[serviceUUID+charUUID] = handler
+	sw.handlerMutex.Unlock()
 }
 
-// GetRole returns the device's BLE role
-func (w *Wire) GetRole() DeviceRole {
-	return w.role
+// startConnectionMonitoring monitors connection health
+func (sw *Wire) startConnectionMonitoring(targetUUID string) {
+	sw.connMutex.Lock()
+	if sw.monitorStopChans[targetUUID] != nil {
+		sw.connMutex.Unlock()
+		return
+	}
+
+	stopChan := make(chan struct{})
+	sw.monitorStopChans[targetUUID] = stopChan
+	sw.connMutex.Unlock()
+
+	sw.wg.Add(1)
+	go func() {
+		defer sw.wg.Done()
+
+		interval := time.Duration(sw.simulator.config.ConnectionMonitorInterval) * time.Millisecond
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-sw.stopChan:
+				return
+			case <-ticker.C:
+				sw.connMutex.Lock()
+				if sw.connectionStates[targetUUID] == StateConnected && sw.simulator.ShouldRandomlyDisconnect() {
+					// Force disconnect
+					if conn, exists := sw.connections[targetUUID]; exists {
+						conn.Close()
+					}
+					delete(sw.connections, targetUUID)
+					sw.connectionStates[targetUUID] = StateDisconnected
+
+					callback := sw.disconnectCallback
+					sw.connMutex.Unlock()
+
+					if callback != nil {
+						callback(targetUUID)
+					}
+
+					// Stop monitoring
+					sw.stopConnectionMonitoring(targetUUID)
+					return
+				}
+				sw.connMutex.Unlock()
+			}
+		}
+	}()
 }
 
-// GetPlatform returns the device's platform
-func (w *Wire) GetPlatform() Platform {
-	return w.platform
+// stopConnectionMonitoring stops monitoring a connection
+func (sw *Wire) stopConnectionMonitoring(targetUUID string) {
+	sw.connMutex.Lock()
+	defer sw.connMutex.Unlock()
+
+	if ch, exists := sw.monitorStopChans[targetUUID]; exists {
+		close(ch)
+		delete(sw.monitorStopChans, targetUUID)
+	}
 }
 
-// GetDeviceName returns the device's name used for role negotiation
-func (w *Wire) GetDeviceName() string {
-	return w.deviceName
+// SetDisconnectCallback sets the callback for disconnections
+func (sw *Wire) SetDisconnectCallback(callback func(deviceUUID string)) {
+	sw.disconnectCallback = callback
+}
+
+// GetConnectionState returns the connection state for a device
+func (sw *Wire) GetConnectionState(targetUUID string) ConnectionState {
+	sw.connMutex.RLock()
+	defer sw.connMutex.RUnlock()
+	return sw.connectionStates[targetUUID]
+}
+
+// ShouldActAsCentral determines if this device should initiate connection
+func (sw *Wire) ShouldActAsCentral(targetUUID string) bool {
+	return sw.localUUID > targetUUID
+}
+
+// Cleanup closes all connections and stops the listener
+func (sw *Wire) Cleanup() {
+	// Signal shutdown
+	close(sw.stopChan)
+
+	// Close all connections
+	sw.connMutex.Lock()
+	for uuid, conn := range sw.connections {
+		conn.Close()
+		delete(sw.connections, uuid)
+	}
+	sw.connMutex.Unlock()
+
+	// Close listener
+	if sw.listener != nil {
+		sw.listener.Close()
+	}
+
+	// Wait for goroutines
+	sw.wg.Wait()
+
+	// Remove socket file
+	os.Remove(sw.socketPath)
+
+	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		"🧹 Cleaned up socket wire")
+}
+
+// logSentMessage logs a sent message to filesystem for debugging
+func (sw *Wire) logSentMessage(targetUUID string, msg *CharacteristicMessage) {
+	if !sw.enableDebugLog {
+		return
+	}
+
+	logDir := filepath.Join(sw.debugLogPath, sw.localUUID, "sent_messages")
+	filename := fmt.Sprintf("to_%s_msg_%d.json", targetUUID[:8], msg.Timestamp)
+	logPath := filepath.Join(logDir, filename)
+
+	data, _ := json.MarshalIndent(msg, "", "  ")
+	os.WriteFile(logPath, data, 0644)
+}
+
+// logReceivedMessage logs a received message to filesystem for debugging
+func (sw *Wire) logReceivedMessage(remoteUUID string, msg *CharacteristicMessage) {
+	if !sw.enableDebugLog {
+		return
+	}
+
+	logDir := filepath.Join(sw.debugLogPath, sw.localUUID, "received_messages")
+	filename := fmt.Sprintf("from_%s_msg_%d.json", remoteUUID[:8], msg.Timestamp)
+	logPath := filepath.Join(logDir, filename)
+
+	data, _ := json.MarshalIndent(msg, "", "  ")
+	os.WriteFile(logPath, data, 0644)
+}
+
+// Helper methods for compatibility with existing Wire interface
+
+func (sw *Wire) GetRole() DeviceRole {
+	return sw.role
+}
+
+func (sw *Wire) GetPlatform() Platform {
+	return sw.platform
+}
+
+func (sw *Wire) GetDeviceName() string {
+	return sw.deviceName
+}
+
+func (sw *Wire) GetRSSI() int {
+	return sw.simulator.GenerateRSSI(sw.distance)
+}
+
+func (sw *Wire) SetDistance(meters float64) {
+	sw.distance = meters
+}
+
+func (sw *Wire) GetSimulator() *Simulator {
+	return sw.simulator
 }
 
 // CanScan returns true if device can scan (Central role)
@@ -211,60 +818,12 @@ func (w *Wire) CanAdvertise() bool {
 	return w.role&RolePeripheralOnly != 0
 }
 
-// SetBasePath sets the base directory for device communication
-func (w *Wire) SetBasePath(path string) {
-	w.basePath = path
-}
-
-// InitializeDevice creates the necessary infrastructure for this device
-func (w *Wire) InitializeDevice() error {
-	// Delegate to SocketWire if available
-	if w.socketWire != nil {
-		return w.socketWire.InitializeDevice()
-	}
-
-	// Fallback to old filesystem implementation
-	devicePath := filepath.Join(w.basePath, w.localUUID)
-	inboxPath := filepath.Join(devicePath, "inbox")
-	outboxPath := filepath.Join(devicePath, "outbox")
-	inboxHistoryPath := filepath.Join(devicePath, "inbox_history")
-	outboxHistoryPath := filepath.Join(devicePath, "outbox_history")
-	centralInboxPath := filepath.Join(devicePath, "central_inbox")
-	peripheralInboxPath := filepath.Join(devicePath, "peripheral_inbox")
-	centralInboxHistoryPath := filepath.Join(devicePath, "central_inbox_history")
-	peripheralInboxHistoryPath := filepath.Join(devicePath, "peripheral_inbox_history")
-
-	if err := os.MkdirAll(inboxPath, 0755); err != nil {
-		return fmt.Errorf("failed to create inbox: %w", err)
-	}
-	if err := os.MkdirAll(outboxPath, 0755); err != nil {
-		return fmt.Errorf("failed to create outbox: %w", err)
-	}
-	if err := os.MkdirAll(inboxHistoryPath, 0755); err != nil {
-		return fmt.Errorf("failed to create inbox_history: %w", err)
-	}
-	if err := os.MkdirAll(outboxHistoryPath, 0755); err != nil {
-		return fmt.Errorf("failed to create outbox_history: %w", err)
-	}
-	if err := os.MkdirAll(centralInboxPath, 0755); err != nil {
-		return fmt.Errorf("failed to create central_inbox: %w", err)
-	}
-	if err := os.MkdirAll(peripheralInboxPath, 0755); err != nil {
-		return fmt.Errorf("failed to create peripheral_inbox: %w", err)
-	}
-	if err := os.MkdirAll(centralInboxHistoryPath, 0755); err != nil {
-		return fmt.Errorf("failed to create central_inbox_history: %w", err)
-	}
-	if err := os.MkdirAll(peripheralInboxHistoryPath, 0755); err != nil {
-		return fmt.Errorf("failed to create peripheral_inbox_history: %w", err)
-	}
-
-	return nil
-}
-
-// DiscoverDevices scans for other devices (UUID directories) in the base path
-func (w *Wire) DiscoverDevices() ([]string, error) {
-	files, err := os.ReadDir(w.basePath)
+// DiscoverDevices finds other devices by scanning for socket files
+func (sw *Wire) DiscoverDevices() ([]string, error) {
+	// For now, use filesystem-based discovery (scan data/ directory)
+	// This is still filesystem-based but only for discovery, not IPC
+	basePath := sw.debugLogPath
+	files, err := os.ReadDir(basePath)
 	if err != nil {
 		return nil, err
 	}
@@ -274,8 +833,10 @@ func (w *Wire) DiscoverDevices() ([]string, error) {
 		if file.IsDir() {
 			deviceName := file.Name()
 			// Check if it's a valid UUID and not our own device
-			if _, err := uuid.Parse(deviceName); err == nil {
-				if deviceName != w.localUUID {
+			if len(deviceName) > 8 && deviceName != sw.localUUID {
+				// Also check if socket exists
+				sockPath := fmt.Sprintf("/tmp/auraphone-%s.sock", deviceName)
+				if _, err := os.Stat(sockPath); err == nil {
 					devices = append(devices, deviceName)
 				}
 			}
@@ -285,19 +846,14 @@ func (w *Wire) DiscoverDevices() ([]string, error) {
 	return devices, nil
 }
 
-// StartDiscovery continuously scans for devices with realistic timing
-// Devices are discovered after a random delay (100ms-1s) to simulate advertising intervals
-func (w *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
+// StartDiscovery continuously scans for devices
+func (sw *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
 	stopChan := make(chan struct{})
 
-	if !w.CanScan() {
-		// Device cannot scan (e.g., Android peripheral-only mode)
-		// Return a closed channel immediately
-		close(stopChan)
-		return stopChan
-	}
-
+	sw.wg.Add(1)
 	go func() {
+		defer sw.wg.Done()
+
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 
@@ -307,26 +863,22 @@ func (w *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
 			select {
 			case <-stopChan:
 				return
+			case <-sw.stopChan:
+				return
 			case <-ticker.C:
-				devices, err := w.DiscoverDevices()
+				devices, err := sw.DiscoverDevices()
 				if err != nil {
 					continue
 				}
 
 				for _, deviceUUID := range devices {
-					// Check if device can be discovered (must be advertising)
-					targetWire := NewWire(deviceUUID)
-					targetWire.SetBasePath(w.basePath)
-
-					// Skip if not first discovery (already seen)
 					if discoveredDevices[deviceUUID] {
-						// Still call callback for periodic re-discovery
 						callback(deviceUUID)
 						continue
 					}
 
-					// Simulate realistic discovery delay
-					delay := w.simulator.DiscoveryDelay()
+					// Simulate discovery delay
+					delay := sw.simulator.DiscoveryDelay()
 					time.Sleep(delay)
 
 					discoveredDevices[deviceUUID] = true
@@ -339,559 +891,9 @@ func (w *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
 	return stopChan
 }
 
-// WriteData writes binary data to this device's outbox for another device to read
-func (w *Wire) WriteData(data []byte, filename string) error {
-	outboxPath := filepath.Join(w.basePath, w.localUUID, "outbox")
-	filePath := filepath.Join(outboxPath, filename)
-
-	return os.WriteFile(filePath, data, 0644)
-}
-
-// ReadData reads binary data from this device's inbox
-func (w *Wire) ReadData(filename string) ([]byte, error) {
-	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
-	filePath := filepath.Join(inboxPath, filename)
-
-	return os.ReadFile(filePath)
-}
-
-// ReadAndReassemble reads a message, handling fragmented .part files
-// This simulates how real BLE stacks reassemble fragmented packets transparently
-func (w *Wire) ReadAndReassemble(filename string) ([]byte, error) {
-	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
-
-	// Try reading the complete file first (no fragmentation)
-	completeFile := filepath.Join(inboxPath, filename)
-	// First check if file exists and is readable (avoids race with concurrent writes)
-	if stat, err := os.Stat(completeFile); err == nil && stat.Size() > 0 {
-		if data, err := os.ReadFile(completeFile); err == nil {
-			return data, nil
-		}
-	}
-
-	// File doesn't exist as single file, look for .part files
-	var fragments [][]byte
-	partIndex := 0
-
-	for {
-		partFile := filepath.Join(inboxPath, fmt.Sprintf("%s.part%d", filename, partIndex))
-		data, err := os.ReadFile(partFile)
-		if err != nil {
-			if partIndex == 0 {
-				// No fragments found either
-				return nil, fmt.Errorf("file not found: %s", filename)
-			}
-			// No more fragments
-			break
-		}
-		fragments = append(fragments, data)
-		partIndex++
-	}
-
-	// Reassemble fragments
-	var complete []byte
-	for _, frag := range fragments {
-		complete = append(complete, frag...)
-	}
-
-	return complete, nil
-}
-
-// ListInbox lists all logical messages in this device's inbox
-// Returns base filenames without .part suffixes (simulates BLE stack behavior)
-// Only returns messages that have a .ready marker indicating complete transfer
-func (w *Wire) ListInbox() ([]string, error) {
-	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
-	files, err := os.ReadDir(inboxPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// First pass: collect all .ready markers
-	readyMessages := make(map[string]bool)
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-		name := file.Name()
-		if strings.HasSuffix(name, ".ready") {
-			// Remove .ready suffix to get the base message filename
-			baseName := strings.TrimSuffix(name, ".ready")
-			readyMessages[baseName] = true
-		}
-	}
-
-	// Second pass: collect message files that have .ready markers
-	seen := make(map[string]bool)
-	var filenames []string
-
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-
-		name := file.Name()
-
-		// Skip temporary files (being written)
-		if strings.HasSuffix(name, ".tmp") {
-			continue
-		}
-
-		// Skip .ready marker files themselves
-		if strings.HasSuffix(name, ".ready") {
-			continue
-		}
-
-		// Strip .partN suffix if present
-		baseName := name
-		if strings.Contains(name, ".part") {
-			parts := strings.Split(name, ".part")
-			baseName = parts[0]
-		}
-
-		// Only include messages that have a .ready marker
-		if !readyMessages[baseName] {
-			continue
-		}
-
-		// Deduplicate (multiple .part files become one logical message)
-		if !seen[baseName] {
-			filenames = append(filenames, baseName)
-			seen[baseName] = true
-		}
-	}
-
-	return filenames, nil
-}
-
-// ListOutbox lists all files in this device's outbox
-func (w *Wire) ListOutbox() ([]string, error) {
-	outboxPath := filepath.Join(w.basePath, w.localUUID, "outbox")
-	files, err := os.ReadDir(outboxPath)
-	if err != nil {
-		return nil, err
-	}
-
-	var filenames []string
-	for _, file := range files {
-		if !file.IsDir() {
-			filenames = append(filenames, file.Name())
-		}
-	}
-
-	return filenames, nil
-}
-
-// Connect simulates BLE connection with realistic timing and failures
-// Returns error if connection fails (simulates ~1.6% failure rate)
-// Now supports multiple simultaneous connections
-func (w *Wire) Connect(targetUUID string) error {
-	// Delegate to SocketWire if available
-	if w.socketWire != nil {
-		return w.socketWire.Connect(targetUUID)
-	}
-
-	// Fallback to old implementation
-	w.connMutex.Lock()
-	currentState := w.connectionStates[targetUUID]
-	if currentState != StateDisconnected && currentState != 0 {
-		w.connMutex.Unlock()
-		logger.Debug(fmt.Sprintf("%s wire", w.localUUID[:8]), "🔌 Connect attempt to %s BLOCKED (current state: %d)", targetUUID[:8], currentState)
-		return fmt.Errorf("already connected or connecting to %s", targetUUID[:8])
-	}
-	w.connectionStates[targetUUID] = StateConnecting
-	w.connMutex.Unlock()
-
-	logger.Debug(fmt.Sprintf("%s wire", w.localUUID[:8]), "🔌 Connecting to %s (delay: simulated)", targetUUID[:8])
-
-	// Simulate connection delay
-	delay := w.simulator.ConnectionDelay()
-	time.Sleep(delay)
-
-	// Check if connection succeeds
-	if !w.simulator.ShouldConnectionSucceed() {
-		w.connMutex.Lock()
-		w.connectionStates[targetUUID] = StateDisconnected
-		w.connMutex.Unlock()
-		logger.Warn(fmt.Sprintf("%s wire", w.localUUID[:8]), "❌ Connection to %s FAILED (simulated interference)", targetUUID[:8])
-		return fmt.Errorf("connection failed (timeout or interference)")
-	}
-
-	w.connMutex.Lock()
-	w.connectionStates[targetUUID] = StateConnected
-	w.connMutex.Unlock()
-
-	logger.Info(fmt.Sprintf("%s wire", w.localUUID[:8]), "✅ Connected to %s at wire level", targetUUID[:8])
-
-	// Start connection monitoring for random disconnects
-	w.startConnectionMonitoring(targetUUID)
-
-	return nil
-}
-
-// SetDisconnectCallback sets the callback for when connection drops
-func (w *Wire) SetDisconnectCallback(callback func(deviceUUID string)) {
-	w.disconnectCallback = callback
-}
-
-// startConnectionMonitoring monitors connection health and randomly disconnects
-// Simulates real BLE behavior: interference, distance, battery, etc.
-// Now monitors per-device connection
-func (w *Wire) startConnectionMonitoring(targetUUID string) {
-	w.connMutex.Lock()
-	if w.monitorStopChans[targetUUID] != nil {
-		// Already monitoring this connection
-		w.connMutex.Unlock()
-		return
-	}
-
-	stopChan := make(chan struct{})
-	w.monitorStopChans[targetUUID] = stopChan
-	w.connMutex.Unlock()
-
-	go func() {
-		interval := time.Duration(w.simulator.config.ConnectionMonitorInterval) * time.Millisecond
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-stopChan:
-				return
-			case <-ticker.C:
-				// Check if connection should randomly drop
-				w.connMutex.Lock()
-				if w.connectionStates[targetUUID] == StateConnected && w.simulator.ShouldRandomlyDisconnect() {
-					// Force disconnect
-					w.connectionStates[targetUUID] = StateDisconnected
-
-					// Notify via callback
-					callback := w.disconnectCallback
-					w.connMutex.Unlock()
-
-					if callback != nil {
-						callback(targetUUID)
-					}
-
-					// Stop monitoring
-					w.connMutex.Lock()
-					if ch, exists := w.monitorStopChans[targetUUID]; exists {
-						close(ch)
-						delete(w.monitorStopChans, targetUUID)
-					}
-					w.connMutex.Unlock()
-					return
-				}
-				w.connMutex.Unlock()
-			}
-		}
-	}()
-}
-
-// stopConnectionMonitoring stops the connection monitor for a specific device
-func (w *Wire) stopConnectionMonitoring(targetUUID string) {
-	w.connMutex.Lock()
-	defer w.connMutex.Unlock()
-
-	if ch, exists := w.monitorStopChans[targetUUID]; exists {
-		close(ch)
-		delete(w.monitorStopChans, targetUUID)
-	}
-}
-
-// Disconnect simulates BLE disconnection from a specific device
-func (w *Wire) Disconnect(targetUUID string) error {
-	w.connMutex.Lock()
-	if w.connectionStates[targetUUID] != StateConnected {
-		w.connMutex.Unlock()
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
-	}
-
-	w.connectionStates[targetUUID] = StateDisconnecting
-	w.connMutex.Unlock()
-
-	// Stop monitoring
-	w.stopConnectionMonitoring(targetUUID)
-
-	// Simulate disconnection delay
-	delay := w.simulator.DisconnectDelay()
-	time.Sleep(delay)
-
-	w.connMutex.Lock()
-	w.connectionStates[targetUUID] = StateDisconnected
-	w.connMutex.Unlock()
-
-	return nil
-}
-
-// GetConnectionState returns the connection state for a specific device
-func (w *Wire) GetConnectionState(targetUUID string) ConnectionState {
-	w.connMutex.RLock()
-	defer w.connMutex.RUnlock()
-	return w.connectionStates[targetUUID]
-}
-
-// GetSimulator returns the simulator for accessing timing/delay functions
-func (w *Wire) GetSimulator() *Simulator {
-	return w.simulator
-}
-
-// ShouldActAsCentral determines if this device should act as Central to the target device
-// Rule: Device with LARGER UUID acts as Central (initiates connection)
-// This provides deterministic role assignment to prevent connection conflicts
-func (w *Wire) ShouldActAsCentral(targetUUID string) bool {
-	return w.localUUID > targetUUID
-}
-
-// getTargetInboxPath returns the correct inbox path based on role negotiation
-// When we act as Central → we write to target's peripheral_inbox (Central writes to Peripheral)
-// When we act as Peripheral → we write to target's central_inbox (Peripheral notifies Central)
-func (w *Wire) getTargetInboxPath(targetUUID string, operation string) string {
-	devicePath := filepath.Join(w.basePath, targetUUID)
-
-	// Determine which inbox to use based on our role relative to target
-	if w.ShouldActAsCentral(targetUUID) {
-		// We are Central, target is Peripheral
-		// Central writes/reads go to Peripheral's peripheral_inbox
-		return filepath.Join(devicePath, "peripheral_inbox")
-	} else {
-		// We are Peripheral, target is Central
-		// Peripheral notifications go to Central's central_inbox
-		return filepath.Join(devicePath, "central_inbox")
-	}
-}
-
-// SendToDevice writes data to the target device's inbox with realistic packet loss and retries
-// Simulates ~1.5% packet loss with automatic retries (3 attempts)
-// Overall success rate: ~98.4%
-// Routes to role-specific inbox: peripheral_inbox (if we're Central) or central_inbox (if we're Peripheral)
-func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) error {
-	targetInboxPath := w.getTargetInboxPath(targetUUID, "")
-
-	// Fragment data if it exceeds MTU
-	fragments := w.simulator.FragmentData(data, w.mtu)
-
-	// Send each fragment with retry logic
-	for i, fragment := range fragments {
-		// Add realistic inter-packet delay (2ms between fragments)
-		// Real BLE has connection intervals of 7.5-4000ms, we use 2ms for good throughput
-		if i > 0 {
-			time.Sleep(2 * time.Millisecond)
-		}
-
-		fragmentFilename := filename
-		if len(fragments) > 1 {
-			fragmentFilename = fmt.Sprintf("%s.part%d", filename, i)
-		}
-
-		var lastErr error
-		for attempt := 0; attempt <= w.simulator.config.MaxRetries; attempt++ {
-			// Simulate packet loss
-			if attempt > 0 {
-				// This is a retry, add delay
-				time.Sleep(time.Duration(w.simulator.config.RetryDelay) * time.Millisecond)
-				logger.Warn(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-					"🔄 Retrying packet to %s (attempt %d/%d, file: %s)",
-					targetUUID[:8], attempt+1, w.simulator.config.MaxRetries+1, fragmentFilename)
-			}
-
-			if !w.simulator.ShouldPacketSucceed() && attempt < w.simulator.config.MaxRetries {
-				// Packet lost, will retry
-				logger.Warn(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-					"📉 Simulated packet loss to %s (attempt %d/%d, file: %s)",
-					targetUUID[:8], attempt+1, w.simulator.config.MaxRetries+1, fragmentFilename)
-				lastErr = fmt.Errorf("packet loss (attempt %d/%d)", attempt+1, w.simulator.config.MaxRetries+1)
-				continue
-			}
-
-			// Write to target's inbox using atomic write (temp file + sync + rename)
-			// This prevents readers from seeing incomplete files during write
-			fragmentPath := filepath.Join(targetInboxPath, fragmentFilename)
-			tempPath := fragmentPath + ".tmp"
-
-			// Write to temp file and sync to disk before renaming
-			f, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if _, err := f.Write(fragment); err != nil {
-				f.Close()
-				os.Remove(tempPath)
-				lastErr = err
-				continue
-			}
-			// Sync to ensure data is on disk before rename
-			if err := f.Sync(); err != nil {
-				f.Close()
-				os.Remove(tempPath)
-				lastErr = err
-				continue
-			}
-			if err := f.Close(); err != nil {
-				os.Remove(tempPath)
-				lastErr = err
-				continue
-			}
-
-			// Now rename atomically
-			if err := os.Rename(tempPath, fragmentPath); err != nil {
-				os.Remove(tempPath) // Clean up temp file
-				lastErr = err
-				continue
-			}
-
-			// Sync the directory to ensure the rename is visible
-			// This is critical on some filesystems (APFS, ext4, etc.)
-			dir, err := os.Open(targetInboxPath)
-			if err == nil {
-				dir.Sync()
-				dir.Close()
-			}
-
-			// Success
-			lastErr = nil
-			break
-		}
-
-		if lastErr != nil {
-			logger.Warn(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-				"❌ Failed to send fragment %d/%d to %s after %d retries (file: %s): %v",
-				i+1, len(fragments), targetUUID[:8], w.simulator.config.MaxRetries, fragmentFilename, lastErr)
-			return fmt.Errorf("failed to send fragment %d after %d retries: %w", i, w.simulator.config.MaxRetries, lastErr)
-		}
-	}
-
-	// Write .ready marker file to signal that all fragments are complete
-	// This prevents readers from processing incomplete transfers
-	readyPath := filepath.Join(targetInboxPath, filename+".ready")
-	readyTempPath := readyPath + ".tmp"
-	if f, err := os.OpenFile(readyTempPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err == nil {
-		f.Sync()
-		f.Close()
-		if err := os.Rename(readyTempPath, readyPath); err != nil {
-			os.Remove(readyTempPath)
-			return fmt.Errorf("failed to write ready marker: %w", err)
-		}
-		// Sync directory to make marker visible
-		if dir, err := os.Open(targetInboxPath); err == nil {
-			dir.Sync()
-			dir.Close()
-		}
-		// Small delay to let filesystem caches settle (5ms)
-		// This is realistic - real BLE has notification delays
-		time.Sleep(5 * time.Millisecond)
-	} else {
-		return fmt.Errorf("failed to create ready marker: %w", err)
-	}
-
-	// Copy to our outbox_history using atomic write with sync
-	historyPath := filepath.Join(w.basePath, w.localUUID, "outbox_history")
-	historyFilePath := filepath.Join(historyPath, filename)
-	tempHistoryPath := historyFilePath + ".tmp"
-	if f, err := os.OpenFile(tempHistoryPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644); err == nil {
-		if _, writeErr := f.Write(data); writeErr == nil {
-			if syncErr := f.Sync(); syncErr == nil {
-				f.Close()
-				if err := os.Rename(tempHistoryPath, historyFilePath); err != nil {
-					os.Remove(tempHistoryPath)
-					fmt.Printf("Warning: failed to copy to outbox_history: %v\n", err)
-				}
-			} else {
-				f.Close()
-				os.Remove(tempHistoryPath)
-				fmt.Printf("Warning: failed to sync temp file for outbox_history: %v\n", syncErr)
-			}
-		} else {
-			f.Close()
-			os.Remove(tempHistoryPath)
-			fmt.Printf("Warning: failed to write temp file for outbox_history: %v\n", writeErr)
-		}
-	} else {
-		fmt.Printf("Warning: failed to open temp file for outbox_history: %v\n", err)
-	}
-
-	return nil
-}
-
-// DeleteInboxFile removes a file from this device's inbox (after processing)
-// and copies the complete reassembled message to inbox_history for record keeping
-// Handles both complete files and fragmented .part files
-func (w *Wire) DeleteInboxFile(filename string) error {
-	// Lock to coordinate with ReadCharacteristicMessages
-	w.inboxMutex.Lock()
-	defer w.inboxMutex.Unlock()
-
-	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
-
-	// Read and reassemble (handles .part files transparently)
-	data, err := w.ReadAndReassemble(filename)
-	if err != nil {
-		return fmt.Errorf("failed to read inbox file: %w", err)
-	}
-
-	// Copy complete message to inbox_history using atomic write with sync
-	historyPath := filepath.Join(w.basePath, w.localUUID, "inbox_history")
-	historyFilePath := filepath.Join(historyPath, filename)
-	tempHistoryPath := historyFilePath + ".tmp"
-	f, err := os.OpenFile(tempHistoryPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open temp file for inbox_history: %w", err)
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tempHistoryPath)
-		return fmt.Errorf("failed to write temp file for inbox_history: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tempHistoryPath)
-		return fmt.Errorf("failed to sync temp file for inbox_history: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tempHistoryPath)
-		return fmt.Errorf("failed to close temp file for inbox_history: %w", err)
-	}
-	if err := os.Rename(tempHistoryPath, historyFilePath); err != nil {
-		os.Remove(tempHistoryPath) // Clean up temp file
-		return fmt.Errorf("failed to copy to inbox_history: %w", err)
-	}
-
-	// Delete the .ready marker file first
-	readyFile := filepath.Join(inboxPath, filename+".ready")
-	os.Remove(readyFile) // Ignore errors, marker might not exist
-
-	// Delete the original file(s)
-	// Try deleting complete file first
-	completeFile := filepath.Join(inboxPath, filename)
-	if err := os.Remove(completeFile); err == nil {
-		return nil // Complete file deleted
-	}
-
-	// Delete all .part files
-	partIndex := 0
-	for {
-		partFile := filepath.Join(inboxPath, fmt.Sprintf("%s.part%d", filename, partIndex))
-		if err := os.Remove(partFile); err != nil {
-			break // No more parts
-		}
-		partIndex++
-	}
-
-	return nil
-}
-
-// DeleteOutboxFile removes a file from this device's outbox
-func (w *Wire) DeleteOutboxFile(filename string) error {
-	outboxPath := filepath.Join(w.basePath, w.localUUID, "outbox")
-	filePath := filepath.Join(outboxPath, filename)
-
-	return os.Remove(filePath)
-}
-
-// WriteGATTTable writes the GATT table to this device's gatt.json file
-func (w *Wire) WriteGATTTable(table *GATTTable) error {
-	devicePath := filepath.Join(w.basePath, w.localUUID)
+// WriteGATTTable writes the GATT table to filesystem (for discovery)
+func (sw *Wire) WriteGATTTable(table *GATTTable) error {
+	devicePath := filepath.Join(sw.debugLogPath, sw.localUUID)
 	gattPath := filepath.Join(devicePath, "gatt.json")
 
 	data, err := json.MarshalIndent(table, "", "  ")
@@ -902,9 +904,9 @@ func (w *Wire) WriteGATTTable(table *GATTTable) error {
 	return os.WriteFile(gattPath, data, 0644)
 }
 
-// ReadGATTTable reads the GATT table from a device's gatt.json file
-func (w *Wire) ReadGATTTable(deviceUUID string) (*GATTTable, error) {
-	devicePath := filepath.Join(w.basePath, deviceUUID)
+// ReadGATTTable reads GATT table from filesystem
+func (sw *Wire) ReadGATTTable(deviceUUID string) (*GATTTable, error) {
+	devicePath := filepath.Join(sw.debugLogPath, deviceUUID)
 	gattPath := filepath.Join(devicePath, "gatt.json")
 
 	data, err := os.ReadFile(gattPath)
@@ -920,9 +922,9 @@ func (w *Wire) ReadGATTTable(deviceUUID string) (*GATTTable, error) {
 	return &table, nil
 }
 
-// WriteAdvertisingData writes the advertising data to this device's advertising.json file
-func (w *Wire) WriteAdvertisingData(advData *AdvertisingData) error {
-	devicePath := filepath.Join(w.basePath, w.localUUID)
+// WriteAdvertisingData writes advertising data to filesystem
+func (sw *Wire) WriteAdvertisingData(advData *AdvertisingData) error {
+	devicePath := filepath.Join(sw.debugLogPath, sw.localUUID)
 	advPath := filepath.Join(devicePath, "advertising.json")
 
 	data, err := json.MarshalIndent(advData, "", "  ")
@@ -930,19 +932,19 @@ func (w *Wire) WriteAdvertisingData(advData *AdvertisingData) error {
 		return fmt.Errorf("failed to marshal advertising data: %w", err)
 	}
 
-	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform), "📡 TX Advertising Data", advData)
+	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		"📡 TX Advertising Data", advData)
 
 	return os.WriteFile(advPath, data, 0644)
 }
 
-// ReadAdvertisingData reads the advertising data from a device's advertising.json file
-func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) {
-	devicePath := filepath.Join(w.basePath, deviceUUID)
+// ReadAdvertisingData reads advertising data from filesystem
+func (sw *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) {
+	devicePath := filepath.Join(sw.debugLogPath, deviceUUID)
 	advPath := filepath.Join(devicePath, "advertising.json")
 
 	data, err := os.ReadFile(advPath)
 	if err != nil {
-		// If advertising.json doesn't exist, return default advertising data
 		if os.IsNotExist(err) {
 			return &AdvertisingData{
 				IsConnectable: true,
@@ -956,75 +958,83 @@ func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) 
 		return nil, fmt.Errorf("failed to unmarshal advertising data: %w", err)
 	}
 
-	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform), fmt.Sprintf("📡 RX Advertising Data (from %s)", deviceUUID[:8]), &advData)
+	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		fmt.Sprintf("📡 RX Advertising Data (from %s)", deviceUUID[:8]), &advData)
 
 	return &advData, nil
 }
 
-// WriteCharacteristic sends a characteristic write WITH response (waits for ACK)
-func (w *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
-	// Delegate to SocketWire if available
-	if w.socketWire != nil {
-		return w.socketWire.WriteCharacteristic(targetUUID, serviceUUID, charUUID, data)
-	}
-
-	// Fallback to old implementation
+// NotifyCharacteristic sends a notification
+func (sw *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
 	msg := CharacteristicMessage{
-		Operation:   "write",
+		Operation:   "notify",
 		ServiceUUID: serviceUUID,
 		CharUUID:    charUUID,
 		Data:        data,
 		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  w.localUUID,
+		SenderUUID:  sw.localUUID,
 	}
 
-	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-		fmt.Sprintf("📤 TX Write WITH Response (to %s, svc=%s, char=%s, %d bytes)",
-			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
+	// Simulate notification drops
+	if sw.simulator.ShouldNotificationDrop() {
+		logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"📉 Notification DROPPED (realistic BLE behavior, %d bytes lost)", len(data))
+		return nil
+	}
 
-	return w.sendCharacteristicMessage(targetUUID, &msg)
+	// Simulate notification latency
+	if sw.simulator.EnableNotificationReordering() {
+		delay := sw.simulator.NotificationDeliveryDelay()
+		go func() {
+			time.Sleep(delay)
+			sw.sendCharacteristicMessage(targetUUID, &msg)
+		}()
+		return nil
+	}
+
+	return sw.sendCharacteristicMessage(targetUUID, &msg)
 }
 
-// WriteCharacteristicNoResponse sends a characteristic write WITHOUT response (fire and forget)
-// Does not wait for ACK - faster but no delivery guarantee (matches real BLE)
-// Returns immediately like real BLE, but transmission happens asynchronously in background
-// IMPORTANT: Callback fires immediately on successful queue (NOT after transmission)
-// Transmission failures happen silently in background (matches real BLE behavior)
-func (w *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID string, data []byte) error {
-	// Delegate to SocketWire if available
-	if w.socketWire != nil {
-		return w.socketWire.WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID, data)
-	}
-
-	// Fallback to old implementation
+// SubscribeCharacteristic sends a subscription request
+func (sw *Wire) SubscribeCharacteristic(targetUUID, serviceUUID, charUUID string) error {
 	msg := CharacteristicMessage{
-		Operation:   "write_no_response",
+		Operation:   "subscribe",
 		ServiceUUID: serviceUUID,
 		CharUUID:    charUUID,
-		Data:        data,
 		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  w.localUUID,
+		SenderUUID:  sw.localUUID,
 	}
 
-	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-		fmt.Sprintf("📤 TX Write NO Response (to %s, svc=%s, char=%s, %d bytes)",
-			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
+	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		fmt.Sprintf("📤 TX Subscribe (to %s, svc=%s, char=%s)",
+			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
 
-	// Transmit asynchronously - failures are silent (matches real BLE)
-	go func() {
-		if err := w.sendCharacteristicMessage(targetUUID, &msg); err != nil {
-			// Real BLE: transmission failures are completely silent to the app
-			// App has no way to know if the packet was lost
-			logger.Warn(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-				"❌ Write NO Response transmission FAILED to %s (svc=%s, char=%s, %d bytes) - SILENTLY LOST (realistic BLE): %v",
-				targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data), err)
-		}
-	}()
-
-	return nil // Returns immediately (app callback can fire now)
+	return sw.sendCharacteristicMessage(targetUUID, &msg)
 }
 
-// ReadCharacteristic sends a read request to target device
+// UnsubscribeCharacteristic sends an unsubscription request
+func (sw *Wire) UnsubscribeCharacteristic(targetUUID, serviceUUID, charUUID string) error {
+	msg := CharacteristicMessage{
+		Operation:   "unsubscribe",
+		ServiceUUID: serviceUUID,
+		CharUUID:    charUUID,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  sw.localUUID,
+	}
+
+	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		fmt.Sprintf("📤 TX Unsubscribe (to %s, svc=%s, char=%s)",
+			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
+
+	return sw.sendCharacteristicMessage(targetUUID, &msg)
+}
+
+// SetBasePath sets the base path for debug logs and discovery
+func (sw *Wire) SetBasePath(path string) {
+	sw.debugLogPath = path
+}
+
+// ReadCharacteristic sends a read request to target device (not typically used in this implementation)
 func (w *Wire) ReadCharacteristic(targetUUID, serviceUUID, charUUID string) error {
 	msg := CharacteristicMessage{
 		Operation:   "read",
@@ -1034,415 +1044,23 @@ func (w *Wire) ReadCharacteristic(targetUUID, serviceUUID, charUUID string) erro
 		SenderUUID:  w.localUUID,
 	}
 
-	return w.sendCharacteristicMessage(targetUUID, &msg)
-}
-
-// NotifyCharacteristic sends a notification to target device with realistic delivery
-// Notifications may be dropped (~1%), arrive out-of-order, or be delayed (5-20ms)
-func (w *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
-	msg := CharacteristicMessage{
-		Operation:   "notify",
-		ServiceUUID: serviceUUID,
-		CharUUID:    charUUID,
-		Data:        data,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  w.localUUID,
-	}
-
-	// Simulate notification drops (1% under load)
-	if w.simulator.ShouldNotificationDrop() {
-		logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-			"📉 Notification DROPPED (realistic BLE behavior, %d bytes lost)", len(data))
-		return nil // Silently dropped (matches real BLE)
-	}
-
-	// Simulate realistic notification latency (5-20ms)
-	if w.simulator.EnableNotificationReordering() {
-		delay := w.simulator.NotificationDeliveryDelay()
-		go func() {
-			time.Sleep(delay)
-			w.sendCharacteristicMessage(targetUUID, &msg)
-		}()
-		return nil // Non-blocking like real BLE
-	}
-
-	// Synchronous delivery (deterministic mode)
-	return w.sendCharacteristicMessage(targetUUID, &msg)
-}
-
-// SubscribeCharacteristic sends a subscription request to target device
-func (w *Wire) SubscribeCharacteristic(targetUUID, serviceUUID, charUUID string) error {
-	msg := CharacteristicMessage{
-		Operation:   "subscribe",
-		ServiceUUID: serviceUUID,
-		CharUUID:    charUUID,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  w.localUUID,
-	}
-
 	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-		fmt.Sprintf("📤 TX Subscribe (to %s, svc=%s, char=%s)",
+		fmt.Sprintf("📤 TX Read Request (to %s, svc=%s, char=%s)",
 			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
 
 	return w.sendCharacteristicMessage(targetUUID, &msg)
 }
 
-// UnsubscribeCharacteristic sends an unsubscription request to target device
-func (w *Wire) UnsubscribeCharacteristic(targetUUID, serviceUUID, charUUID string) error {
-	msg := CharacteristicMessage{
-		Operation:   "unsubscribe",
-		ServiceUUID: serviceUUID,
-		CharUUID:    charUUID,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  w.localUUID,
-	}
-
-	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-		fmt.Sprintf("📤 TX Unsubscribe (to %s, svc=%s, char=%s)",
-			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
-
-	return w.sendCharacteristicMessage(targetUUID, &msg)
-}
-
-// sendCharacteristicMessage writes a characteristic message to target's inbox as JSON
-func (w *Wire) sendCharacteristicMessage(targetUUID string, msg *CharacteristicMessage) error {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-	return w.SendToDevice(targetUUID, data, filename)
-}
-
-// ReadCharacteristicMessages reads all characteristic messages from inbox
-// DEPRECATED: Use ReadAndConsumeCharacteristicMessages() instead to prevent message leaks
-// This function uses a mutex to prevent concurrent processing by multiple goroutines
-// (both central and peripheral mode poll the inbox simultaneously)
-func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
-	// Lock to prevent concurrent inbox reading - this ensures that when one goroutine
-	// gets a list of files, processes them, and deletes them, another goroutine won't
-	// try to process the same files before they're deleted
-	w.inboxMutex.Lock()
-	defer w.inboxMutex.Unlock()
-
-	files, err := w.ListInbox()
-	if err != nil {
-		return nil, err
-	}
-
-	// Log if we have pending messages
-	if len(files) > 0 {
-		logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-			"📬 Found %d message(s) in inbox", len(files))
-	}
-
-	var messages []*CharacteristicMessage
-	for _, filename := range files {
-		data, err := w.ReadAndReassemble(filename)
-		if err != nil {
-			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-				"⚠️  Failed to reassemble message %s: %v", filename, err)
-			continue
-		}
-
-		var msg CharacteristicMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			// Not a characteristic message, skip
-			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-				"⚠️  Failed to parse message %s: %v", filename, err)
-			continue
-		}
-
-		logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-			fmt.Sprintf("📥 RX %s Characteristic (from %s, svc=%s, char=%s, %d bytes)",
-				msg.Operation, msg.SenderUUID[:8],
-				msg.ServiceUUID[len(msg.ServiceUUID)-4:],
-				msg.CharUUID[len(msg.CharUUID)-4:], len(msg.Data)), &msg)
-
-		messages = append(messages, &msg)
-	}
-
-	return messages, nil
-}
-
-// ReadAndConsumeCharacteristicMessages reads all messages from inbox and DELETES them atomically
-// This matches real BLE behavior: messages are delivered once, not queued.
-// This prevents message leaks in dual-role architectures where multiple polling loops
-// compete for the same inbox (central mode + peripheral mode).
-func (w *Wire) ReadAndConsumeCharacteristicMessages() ([]*CharacteristicMessage, error) {
-	// Delegate to SocketWire if available
-	if w.socketWire != nil {
-		return w.socketWire.ReadAndConsumeCharacteristicMessages()
-	}
-
-	// Fallback to old filesystem implementation
-	w.inboxMutex.Lock()
-	defer w.inboxMutex.Unlock()
-
-	files, err := w.ListInbox()
-	if err != nil {
-		return nil, err
-	}
-
-	if len(files) > 0 {
-		logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-			"📬 Consuming %d message(s) from inbox", len(files))
-	}
-
-	var messages []*CharacteristicMessage
-	for _, filename := range files {
-		data, err := w.ReadAndReassemble(filename)
-		if err != nil {
-			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-				"⚠️  Failed to reassemble %s: %v", filename, err)
-			// Delete malformed message to prevent infinite loop
-			w.deleteInboxFileUnsafe(filename)
-			continue
-		}
-
-		var msg CharacteristicMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-				"⚠️  Failed to parse %s: %v", filename, err)
-			// Delete unparseable message
-			w.deleteInboxFileUnsafe(filename)
-			continue
-		}
-
-		logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-			fmt.Sprintf("📥 RX %s (from %s, svc=%s, char=%s, %d bytes)",
-				msg.Operation, msg.SenderUUID[:8],
-				msg.ServiceUUID[len(msg.ServiceUUID)-4:],
-				msg.CharUUID[len(msg.CharUUID)-4:], len(msg.Data)), &msg)
-
-		messages = append(messages, &msg)
-
-		// CRITICAL: Delete message immediately after reading
-		// This ensures exactly-once delivery semantics
-		w.deleteInboxFileUnsafe(filename)
-	}
-
-	return messages, nil
-}
-
-// ReadAndConsumeCharacteristicMessagesFromInbox reads and deletes messages from a specific inbox type
-// inboxType: "central_inbox" for Central mode, "peripheral_inbox" for Peripheral mode
+// ReadAndConsumeCharacteristicMessagesFromInbox reads messages from a specific inbox type
+// This provides compatibility with dual-role devices (iOS/Android) that have separate
+// central_inbox and peripheral_inbox for bidirectional communication
+//
+// In the socket implementation, there's only one message queue, so we just return all messages
+// regardless of the inbox type specified. The role-based separation was a filesystem artifact.
 func (w *Wire) ReadAndConsumeCharacteristicMessagesFromInbox(inboxType string) ([]*CharacteristicMessage, error) {
-	w.inboxMutex.Lock()
-	defer w.inboxMutex.Unlock()
-
-	files, err := w.listInboxByType(inboxType)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(files) > 0 {
-		logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-			"📬 Consuming %d message(s) from %s", len(files), inboxType)
-	}
-
-	var messages []*CharacteristicMessage
-	for _, filename := range files {
-		data, err := w.readAndReassembleFromInbox(inboxType, filename)
-		if err != nil {
-			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-				"⚠️  Failed to reassemble %s: %v", filename, err)
-			// Delete malformed message to prevent infinite loop
-			w.deleteInboxFileUnsafeByType(inboxType, filename)
-			continue
-		}
-
-		var msg CharacteristicMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-				"⚠️  Failed to parse %s: %v", filename, err)
-			// Delete unparseable message
-			w.deleteInboxFileUnsafeByType(inboxType, filename)
-			continue
-		}
-
-		logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-			fmt.Sprintf("📥 RX %s (from %s, svc=%s, char=%s, %d bytes)",
-				msg.Operation, msg.SenderUUID[:8],
-				msg.ServiceUUID[len(msg.ServiceUUID)-4:],
-				msg.CharUUID[len(msg.CharUUID)-4:], len(msg.Data)), &msg)
-
-		messages = append(messages, &msg)
-
-		// CRITICAL: Delete message immediately after reading
-		w.deleteInboxFileUnsafeByType(inboxType, filename)
-	}
-
-	return messages, nil
-}
-
-// listInboxByType lists messages in a specific inbox type
-func (w *Wire) listInboxByType(inboxType string) ([]string, error) {
-	inboxPath := filepath.Join(w.basePath, w.localUUID, inboxType)
-	files, err := os.ReadDir(inboxPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// First pass: collect all .ready markers
-	readyMessages := make(map[string]bool)
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-		name := file.Name()
-		if strings.HasSuffix(name, ".ready") {
-			baseName := strings.TrimSuffix(name, ".ready")
-			readyMessages[baseName] = true
-		}
-	}
-
-	// Second pass: collect message files that have .ready markers
-	seen := make(map[string]bool)
-	var filenames []string
-
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-
-		name := file.Name()
-
-		if strings.HasSuffix(name, ".tmp") {
-			continue
-		}
-
-		if strings.HasSuffix(name, ".ready") {
-			continue
-		}
-
-		baseName := name
-		if strings.Contains(name, ".part") {
-			parts := strings.Split(name, ".part")
-			baseName = parts[0]
-		}
-
-		if !readyMessages[baseName] {
-			continue
-		}
-
-		if !seen[baseName] {
-			filenames = append(filenames, baseName)
-			seen[baseName] = true
-		}
-	}
-
-	return filenames, nil
-}
-
-// readAndReassembleFromInbox reads from a specific inbox type
-func (w *Wire) readAndReassembleFromInbox(inboxType string, filename string) ([]byte, error) {
-	inboxPath := filepath.Join(w.basePath, w.localUUID, inboxType)
-
-	// Try reading the complete file first
-	completeFile := filepath.Join(inboxPath, filename)
-	if stat, err := os.Stat(completeFile); err == nil && stat.Size() > 0 {
-		if data, err := os.ReadFile(completeFile); err == nil {
-			return data, nil
-		}
-	}
-
-	// Look for .part files
-	var fragments [][]byte
-	partIndex := 0
-
-	for {
-		partFile := filepath.Join(inboxPath, fmt.Sprintf("%s.part%d", filename, partIndex))
-		data, err := os.ReadFile(partFile)
-		if err != nil {
-			if partIndex == 0 {
-				return nil, fmt.Errorf("file not found: %s", filename)
-			}
-			break
-		}
-		fragments = append(fragments, data)
-		partIndex++
-	}
-
-	// Reassemble fragments
-	var complete []byte
-	for _, frag := range fragments {
-		complete = append(complete, frag...)
-	}
-
-	return complete, nil
-}
-
-// deleteInboxFileUnsafeByType deletes from specific inbox type WITHOUT locking
-func (w *Wire) deleteInboxFileUnsafeByType(inboxType string, filename string) error {
-	inboxPath := filepath.Join(w.basePath, w.localUUID, inboxType)
-
-	// Read for history BEFORE deleting (best effort)
-	data, err := w.readAndReassembleFromInbox(inboxType, filename)
-	if err == nil {
-		// Copy to history
-		historyPath := filepath.Join(w.basePath, w.localUUID, inboxType+"_history")
-		historyFilePath := filepath.Join(historyPath, filename)
-		os.WriteFile(historyFilePath, data, 0644) // Best effort, ignore errors
-	}
-
-	// Delete .ready marker first
-	readyFile := filepath.Join(inboxPath, filename+".ready")
-	os.Remove(readyFile)
-
-	// Try deleting complete file first
-	completeFile := filepath.Join(inboxPath, filename)
-	if err := os.Remove(completeFile); err == nil {
-		return nil
-	}
-
-	// Delete all .part files
-	partIndex := 0
-	for {
-		partFile := filepath.Join(inboxPath, fmt.Sprintf("%s.part%d", filename, partIndex))
-		if err := os.Remove(partFile); err != nil {
-			break
-		}
-		partIndex++
-	}
-
-	return nil
-}
-
-// deleteInboxFileUnsafe deletes a message file WITHOUT locking (caller must hold inboxMutex)
-// This is used internally by ReadAndConsumeCharacteristicMessages to atomically consume messages
-func (w *Wire) deleteInboxFileUnsafe(filename string) error {
-	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
-
-	// Read for history BEFORE deleting (best effort)
-	data, err := w.ReadAndReassemble(filename)
-	if err == nil {
-		// Copy complete message to inbox_history
-		historyPath := filepath.Join(w.basePath, w.localUUID, "inbox_history")
-		historyFilePath := filepath.Join(historyPath, filename)
-		os.WriteFile(historyFilePath, data, 0644) // Best effort, ignore errors
-	}
-
-	// Delete .ready marker first
-	readyFile := filepath.Join(inboxPath, filename+".ready")
-	os.Remove(readyFile) // Ignore errors
-
-	// Try deleting complete file first
-	completeFile := filepath.Join(inboxPath, filename)
-	if err := os.Remove(completeFile); err == nil {
-		return nil // Complete file deleted successfully
-	}
-
-	// Delete all .part files
-	partIndex := 0
-	for {
-		partFile := filepath.Join(inboxPath, fmt.Sprintf("%s.part%d", filename, partIndex))
-		if err := os.Remove(partFile); err != nil {
-			break // No more parts
-		}
-		partIndex++
-	}
-
-	return nil
+	// In socket implementation, we don't have separate inboxes
+	// All messages go to the same queue, so just return them all
+	logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+		"📬 Reading from %s (socket impl: unified queue)", inboxType)
+	return w.ReadAndConsumeCharacteristicMessages()
 }
