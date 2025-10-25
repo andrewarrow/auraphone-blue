@@ -396,11 +396,16 @@ func (pm *CBPeripheralManager) startListeningForRequests() {
 				}
 
 				for _, msg := range messages {
-					pm.handleCharacteristicMessage(msg)
+					// Only process messages that are GATT writes/requests TO our server
+					// Skip messages that are responses FROM a remote peripheral (those are for CBPeripheral to handle)
+					processed := pm.handleCharacteristicMessage(msg)
 
-					// Delete message after processing
-					filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-					pm.wire.DeleteInboxFile(filename)
+					// Only delete message if we processed it
+					// This prevents conflicts with CBPeripheral polling the same inbox
+					if processed {
+						filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
+						pm.wire.DeleteInboxFile(filename)
+					}
 				}
 			}
 		}
@@ -408,7 +413,8 @@ func (pm *CBPeripheralManager) startListeningForRequests() {
 }
 
 // handleCharacteristicMessage processes incoming GATT messages
-func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.CharacteristicMessage) {
+// Returns true if the message was processed (and should be deleted), false otherwise
+func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.CharacteristicMessage) bool {
 	// Find the characteristic
 	var targetChar *CBMutableCharacteristic
 	for _, service := range pm.services {
@@ -426,8 +432,9 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 	}
 
 	if targetChar == nil {
-		logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("⚠️  Received request for unknown characteristic %s", msg.CharUUID))
-		return
+		// Characteristic not in our GATT table - this message is not for us
+		// Don't delete it, let CBPeripheral handle it
+		return false
 	}
 
 	// Get or create central
@@ -481,6 +488,9 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 			pm.Delegate.CentralDidUnsubscribe(pm, central, targetChar)
 		}
 	}
+
+	// Message was processed successfully
+	return true
 }
 
 // GetCharacteristic finds a characteristic by service and characteristic UUID

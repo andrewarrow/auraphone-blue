@@ -311,6 +311,12 @@ func (p *CBPeripheral) StartListening() {
 				// Process each notification synchronously to avoid race conditions
 				// where messages are deleted before being fully read
 				for _, msg := range messages {
+					// IMPORTANT: Only process messages from the peripheral we're connected to
+					// This prevents conflicts with CBPeripheralManager polling the same inbox
+					if msg.SenderUUID != p.remoteUUID {
+						continue // Skip messages from other senders, don't delete them
+					}
+
 					// Find the characteristic this message is for
 					char := p.GetCharacteristic(msg.ServiceUUID, msg.CharUUID)
 					if char != nil {
@@ -335,14 +341,23 @@ func (p *CBPeripheral) StartListening() {
 							if p.Delegate != nil {
 								// Deliver callback synchronously to ensure processing completes
 								// before message is deleted
-								p.Delegate.DidUpdateValueForCharacteristic(p, char, nil)
+								// IMPORTANT: Make a copy of the characteristic to avoid race conditions
+								// where the characteristic object might be modified by another goroutine
+								charCopy := &CBCharacteristic{
+									UUID:       char.UUID,
+									Properties: char.Properties,
+									Service:    char.Service,
+									Value:      dataCopy,
+								}
+								p.Delegate.DidUpdateValueForCharacteristic(p, charCopy, nil)
 							}
 						}
-					}
 
-					// Delete message after processing completes
-					filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-					p.wire.DeleteInboxFile(filename)
+						// Delete message after processing completes
+						// Only delete if this message was from our connected peripheral
+						filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
+						p.wire.DeleteInboxFile(filename)
+					}
 				}
 			}
 		}
