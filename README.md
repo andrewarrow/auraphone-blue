@@ -16,6 +16,8 @@ This simulator lets you:
 - ✅ Convert real app logs into replayable test cases
 - ✅ Iterate rapidly without deploying to devices
 
+![screenshot](https://i.imgur.com/Io3OZ5x.png)
+
 ## Architecture
 
 ### Packages

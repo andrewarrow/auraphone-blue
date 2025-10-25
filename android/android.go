@@ -1432,11 +1432,15 @@ func (d *androidGattServerDelegate) OnCharacteristicWriteRequest(device *kotlin.
 		// Handshake message
 		d.android.handleHandshakeMessageFromServer(senderUUID, value)
 	case auraPhotoCharUUID:
-		// Photo chunk
-		go d.android.handlePhotoMessageFromServer(senderUUID, value)
+		// Photo chunk - copy data before passing to goroutine to avoid race condition
+		dataCopy := make([]byte, len(value))
+		copy(dataCopy, value)
+		go d.android.handlePhotoMessageFromServer(senderUUID, dataCopy)
 	case auraProfileCharUUID:
-		// Profile message
-		go d.android.handleProfileMessageFromServer(senderUUID, value)
+		// Profile message - copy data before passing to goroutine
+		dataCopy := make([]byte, len(value))
+		copy(dataCopy, value)
+		go d.android.handleProfileMessageFromServer(senderUUID, dataCopy)
 	}
 }
 

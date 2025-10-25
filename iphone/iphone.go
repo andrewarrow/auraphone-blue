@@ -1369,11 +1369,15 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 				}
 			}
 		case auraPhotoCharUUID:
-			// Photo chunk
-			go d.iphone.handlePhotoMessageFromUUID(senderUUID, request.Value)
+			// Photo chunk - copy data before passing to goroutine to avoid race condition
+			dataCopy := make([]byte, len(request.Value))
+			copy(dataCopy, request.Value)
+			go d.iphone.handlePhotoMessageFromUUID(senderUUID, dataCopy)
 		case auraProfileCharUUID:
-			// Profile message
-			go d.iphone.handleProfileMessageFromUUID(senderUUID, request.Value)
+			// Profile message - copy data before passing to goroutine
+			dataCopy := make([]byte, len(request.Value))
+			copy(dataCopy, request.Value)
+			go d.iphone.handleProfileMessageFromUUID(senderUUID, dataCopy)
 		}
 	}
 
