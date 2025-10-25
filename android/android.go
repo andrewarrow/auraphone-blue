@@ -91,8 +91,9 @@ type Android struct {
 	photoHash            string
 	photoData            []byte
 	localProfile         *LocalProfile                      // Our local profile data
-	mu                   sync.RWMutex                       // Protects all maps below
-	connectedGatts       map[string]*kotlin.BluetoothGatt   // remote UUID -> GATT connection
+	mu                     sync.RWMutex                       // Protects all maps below
+	connectedGatts         map[string]*kotlin.BluetoothGatt   // remote UUID -> GATT connection (devices we connected to as Central)
+	connectedCentrals      map[string]bool                    // remote UUID -> true (devices that connected to us as Peripheral)
 	discoveredDevices      map[string]*kotlin.BluetoothDevice // remote UUID -> discovered device (for reconnect)
 	remoteUUIDToDeviceID   map[string]string                  // remote UUID -> logical device ID
 	deviceIDToPhotoHash    map[string]string                  // deviceID -> their TX photo hash
@@ -121,6 +122,7 @@ func NewAndroid(hardwareUUID string) *Android {
 		deviceID:               deviceID,
 		deviceName:             deviceName,
 		connectedGatts:         make(map[string]*kotlin.BluetoothGatt),
+		connectedCentrals:      make(map[string]bool),
 		discoveredDevices:      make(map[string]*kotlin.BluetoothDevice),
 		remoteUUIDToDeviceID:   make(map[string]string),
 		deviceIDToPhotoHash:    make(map[string]string),
@@ -1175,24 +1177,84 @@ func (a *Android) UpdateProfile(profile *LocalProfile) error {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	logger.Info(prefix, "📝 Updated local profile (version %d)", profile.ProfileVersion)
 
-	// Always send updated handshake (includes first_name and profile_version)
-	// Make a safe copy of connected gatts while holding lock
+	// Send updated handshake to all connected devices
+	// This includes both:
+	// 1. Devices we connected TO (as Central) - via GATT
+	// 2. Devices that connected TO US (as Peripheral) - via wire.WriteCharacteristic
+
 	a.mu.RLock()
 	gattsCopy := make([]*kotlin.BluetoothGatt, 0, len(a.connectedGatts))
 	for _, g := range a.connectedGatts {
 		gattsCopy = append(gattsCopy, g)
 	}
+	centralsCopy := make([]string, 0, len(a.connectedCentrals))
+	for uuid := range a.connectedCentrals {
+		centralsCopy = append(centralsCopy, uuid)
+	}
 	a.mu.RUnlock()
 
-	logger.Debug(prefix, "📤 Sending updated handshake to %d connected device(s)", len(gattsCopy))
+	totalConnections := len(gattsCopy) + len(centralsCopy)
+	logger.Debug(prefix, "📤 Sending updated handshake to %d connected device(s) (%d as Central, %d as Peripheral)",
+		totalConnections, len(gattsCopy), len(centralsCopy))
+
+	// Send via GATT (for devices we connected to as Central)
 	for _, gatt := range gattsCopy {
 		go a.sendHandshakeMessage(gatt)
+		go a.sendProfileMessage(gatt)
 	}
 
-	// Always send ProfileMessage to sync all profile fields
-	logger.Debug(prefix, "📤 Sending ProfileMessage to %d connected device(s)", len(gattsCopy))
-	for _, gatt := range gattsCopy {
-		go a.sendProfileMessage(gatt)
+	// Send via wire (for devices that connected to us as Peripheral)
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
+
+	firstName := profile.FirstName
+	if firstName == "" {
+		firstName = "Android"
+	}
+
+	for _, centralUUID := range centralsCopy {
+		// Send handshake
+		go func(uuid string) {
+			msg := &proto.HandshakeMessage{
+				DeviceId:        a.deviceID,
+				FirstName:       firstName,
+				ProtocolVersion: 1,
+				TxPhotoHash:     hashStringToBytes(a.photoHash),
+				ProfileVersion:  profile.ProfileVersion,
+			}
+			data, _ := proto2.Marshal(msg)
+			if err := a.wire.WriteCharacteristic(uuid, auraServiceUUID, auraTextCharUUID, data); err != nil {
+				logger.Error(prefix, "❌ Failed to send handshake to central %s: %v", uuid[:8], err)
+			} else {
+				logger.Debug(prefix, "📤 Sent handshake to central %s", uuid[:8])
+			}
+		}(centralUUID)
+
+		// Send profile message
+		go func(uuid string) {
+			profileMsg := &proto.ProfileMessage{
+				DeviceId:    a.deviceID,
+				LastName:    profile.LastName,
+				PhoneNumber: "", // Not in LocalProfile struct
+				Tagline:     profile.Tagline,
+				Insta:       profile.Insta,
+				Linkedin:    profile.LinkedIn,
+				Youtube:     profile.YouTube,
+				Tiktok:      profile.TikTok,
+				Gmail:       profile.Gmail,
+				Imessage:    profile.IMessage,
+				Whatsapp:    profile.WhatsApp,
+				Signal:      profile.Signal,
+				Telegram:    profile.Telegram,
+			}
+			data, _ := proto2.Marshal(profileMsg)
+			if err := a.wire.WriteCharacteristic(uuid, auraServiceUUID, auraProfileCharUUID, data); err != nil {
+				logger.Error(prefix, "❌ Failed to send profile to central %s: %v", uuid[:8], err)
+			} else {
+				logger.Debug(prefix, "📤 Sent profile to central %s", uuid[:8])
+			}
+		}(centralUUID)
 	}
 
 	return nil
@@ -1326,8 +1388,16 @@ func (d *androidGattServerDelegate) OnConnectionStateChange(device *kotlin.Bluet
 	prefix := fmt.Sprintf("%s Android", d.android.hardwareUUID[:8])
 	if newState == kotlin.STATE_CONNECTED {
 		logger.Debug(prefix, "📥 GATT server: Central %s connected", device.Address[:8])
+		// Track this central connection
+		d.android.mu.Lock()
+		d.android.connectedCentrals[device.Address] = true
+		d.android.mu.Unlock()
 	} else if newState == kotlin.STATE_DISCONNECTED {
 		logger.Debug(prefix, "📥 GATT server: Central %s disconnected", device.Address[:8])
+		// Remove from connected centrals
+		d.android.mu.Lock()
+		delete(d.android.connectedCentrals, device.Address)
+		d.android.mu.Unlock()
 	}
 }
 
