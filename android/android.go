@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -89,6 +90,7 @@ type Android struct {
 	photoHash            string
 	photoData            []byte
 	localProfile         *LocalProfile                      // Our local profile data
+	mu                   sync.RWMutex                       // Protects all maps below
 	connectedGatts       map[string]*kotlin.BluetoothGatt   // UUID -> GATT connection
 	discoveredDevices      map[string]*kotlin.BluetoothDevice // UUID -> discovered device (for reconnect)
 	deviceIDToPhotoHash    map[string]string                  // deviceID -> their TX photo hash
@@ -312,7 +314,10 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 	logger.Debug(prefix, "   └─ RSSI: %.0f dBm", rssi)
 
 	// Store discovered device for potential reconnect
+	a.mu.Lock()
 	a.discoveredDevices[result.Device.Address] = result.Device
+	_, alreadyConnected := a.connectedGatts[result.Device.Address]
+	a.mu.Unlock()
 
 	if a.discoveryCallback != nil {
 		a.discoveryCallback(phone.DiscoveredDevice{
@@ -325,10 +330,12 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 	}
 
 	// Auto-connect if not already connected
-	if _, exists := a.connectedGatts[result.Device.Address]; !exists {
+	if !alreadyConnected {
 		logger.Debug(prefix, "🔌 Connecting to %s (autoConnect=%v)", result.Device.Address[:8], a.useAutoConnect)
 		gatt := result.Device.ConnectGatt(nil, a.useAutoConnect, a)
+		a.mu.Lock()
 		a.connectedGatts[result.Device.Address] = gatt
+		a.mu.Unlock()
 	}
 }
 
@@ -428,7 +435,9 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 		logger.Info(prefix, "✅ Connected to device")
 
 		// Re-add to connected list (might have been removed on disconnect)
+		a.mu.Lock()
 		a.connectedGatts[remoteUUID] = gatt
+		a.mu.Unlock()
 
 		// Discover services
 		gatt.DiscoverServices()
@@ -444,9 +453,11 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 		gatt.StopWriteQueue()
 
 		// Remove from connected list
+		a.mu.Lock()
 		if _, exists := a.connectedGatts[remoteUUID]; exists {
 			delete(a.connectedGatts, remoteUUID)
 		}
+		a.mu.Unlock()
 
 		// Android reconnect behavior depends on autoConnect parameter:
 		// - If autoConnect=true: BluetoothGatt will retry automatically in background
@@ -555,12 +566,16 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 		firstName = "Android" // Default if not set
 	}
 
+	a.mu.RLock()
+	rxPhotoHash := a.receivedPhotoHashes[gatt.GetRemoteUUID()]
+	a.mu.RUnlock()
+
 	msg := &proto.HandshakeMessage{
 		DeviceId:        a.deviceUUID,
 		FirstName:       firstName,
 		ProtocolVersion: 1,
 		TxPhotoHash:     hashStringToBytes(a.photoHash),
-		RxPhotoHash:     hashStringToBytes(a.receivedPhotoHashes[gatt.GetRemoteUUID()]),
+		RxPhotoHash:     hashStringToBytes(rxPhotoHash),
 		ProfileVersion:  a.localProfile.ProfileVersion,
 	}
 
@@ -583,7 +598,9 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 	success := gatt.WriteCharacteristic(textChar)
 	if success {
 		// Record handshake timestamp on successful send
+		a.mu.Lock()
 		a.lastHandshakeTime[gatt.GetRemoteUUID()] = time.Now()
+		a.mu.Unlock()
 	}
 	return nil
 }
@@ -609,7 +626,9 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	remoteUUID := gatt.GetRemoteUUID()
 
 	// Record handshake timestamp when received
+	a.mu.Lock()
 	a.lastHandshakeTime[remoteUUID] = time.Now()
+	a.mu.Unlock()
 
 	// Convert photo hashes from bytes to hex strings
 	txPhotoHash := hashBytesToString(handshake.TxPhotoHash)
@@ -617,7 +636,9 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 
 	// Store their TX photo hash
 	if txPhotoHash != "" {
+		a.mu.Lock()
 		a.deviceIDToPhotoHash[remoteUUID] = txPhotoHash
+		a.mu.Unlock()
 	}
 
 	// Save first_name to device metadata
@@ -634,7 +655,11 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 
 	// Check if they have a new photo for us
 	// If their TxPhotoHash differs from what we've received, reply with handshake to trigger them to send
-	if txPhotoHash != "" && txPhotoHash != a.receivedPhotoHashes[remoteUUID] {
+	a.mu.RLock()
+	ourReceivedHash := a.receivedPhotoHashes[remoteUUID]
+	a.mu.RUnlock()
+
+	if txPhotoHash != "" && txPhotoHash != ourReceivedHash {
 		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", truncateHash(txPhotoHash, 8))
 		// Reply with a handshake that shows we don't have their new photo yet
 		// This will trigger them to send it to us
@@ -651,11 +676,15 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 
 	// Check if they have a new profile version
 	// If their ProfileVersion differs from what we've received, request ProfileMessage
+	a.mu.RLock()
 	lastProfileVersion := a.receivedProfileVersion[remoteUUID]
+	a.mu.RUnlock()
 	if handshake.ProfileVersion > lastProfileVersion {
 		logger.Debug(prefix, "📝 Remote has new profile (version %d > %d), requesting ProfileMessage",
 			handshake.ProfileVersion, lastProfileVersion)
+		a.mu.Lock()
 		a.receivedProfileVersion[remoteUUID] = handshake.ProfileVersion
+		a.mu.Unlock()
 		// Request their profile by sending handshake back (they'll see we need it)
 		go a.sendHandshakeMessage(gatt)
 	}
@@ -673,16 +702,21 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 	}
 
 	// Check if a photo send is already in progress to this device
+	a.mu.Lock()
 	if a.photoSendInProgress[remoteUUID] {
+		a.mu.Unlock()
 		logger.Debug(prefix, "⏭️  Photo send already in progress to %s, skipping duplicate", remoteUUID[:8])
 		return nil
 	}
 
 	// Mark photo send as in progress
 	a.photoSendInProgress[remoteUUID] = true
+	a.mu.Unlock()
 	defer func() {
 		// Clear flag when done
+		a.mu.Lock()
 		delete(a.photoSendInProgress, remoteUUID)
+		a.mu.Unlock()
 	}()
 
 	// Load our cached photo
@@ -835,12 +869,17 @@ func (a *Android) reassembleAndSavePhoto() error {
 		a.photoReceiveState.senderDeviceID[:8], hashStr[:8], len(photoData))
 
 	// Update in-memory mapping
+	a.mu.Lock()
 	a.receivedPhotoHashes[a.photoReceiveState.senderDeviceID] = hashStr
+	a.mu.Unlock()
 
 	// Notify GUI about the new photo by re-triggering discovery callback
 	if a.discoveryCallback != nil {
 		senderID := a.photoReceiveState.senderDeviceID
-		if _, exists := a.connectedGatts[senderID]; exists {
+		a.mu.RLock()
+		_, exists := a.connectedGatts[senderID]
+		a.mu.RUnlock()
+		if exists {
 			// Get device name from advertising data or use UUID
 			name := senderID[:8]
 			if advData, err := a.wire.ReadAdvertisingData(senderID); err == nil && advData != nil {
@@ -873,14 +912,18 @@ func (a *Android) manualReconnect(deviceUUID string) {
 	time.Sleep(3 * time.Second)
 
 	// Check if we have the device in our discovered list
+	a.mu.RLock()
 	device, exists := a.discoveredDevices[deviceUUID]
+	_, alreadyConnected := a.connectedGatts[deviceUUID]
+	a.mu.RUnlock()
+
 	if !exists {
 		logger.Debug(prefix, "⚠️  Cannot reconnect to %s: device not in discovered list", deviceUUID[:8])
 		return
 	}
 
 	// Check if already reconnected
-	if _, exists := a.connectedGatts[deviceUUID]; exists {
+	if alreadyConnected {
 		logger.Debug(prefix, "⏭️  Already reconnected to %s", deviceUUID[:8])
 		return
 	}
@@ -888,7 +931,9 @@ func (a *Android) manualReconnect(deviceUUID string) {
 	// Manually call connectGatt() again (Android requires this!)
 	logger.Info(prefix, "🔄 Manually calling connectGatt() for %s", deviceUUID[:8])
 	gatt := device.ConnectGatt(nil, a.useAutoConnect, a)
+	a.mu.Lock()
 	a.connectedGatts[deviceUUID] = gatt
+	a.mu.Unlock()
 }
 
 // startStaleHandshakeChecker runs a background task to check for stale handshakes
@@ -914,8 +959,18 @@ func (a *Android) checkStaleHandshakes() {
 	now := time.Now()
 	staleThreshold := 60 * time.Second
 
+	// Create a snapshot of connected gatts to avoid holding lock during iteration
+	a.mu.RLock()
+	gattsToCheck := make(map[string]*kotlin.BluetoothGatt)
 	for gattUUID, gatt := range a.connectedGatts {
+		gattsToCheck[gattUUID] = gatt
+	}
+	a.mu.RUnlock()
+
+	for gattUUID, gatt := range gattsToCheck {
+		a.mu.RLock()
 		lastHandshake, exists := a.lastHandshakeTime[gattUUID]
+		a.mu.RUnlock()
 
 		// If no handshake record or handshake is stale
 		if !exists || now.Sub(lastHandshake) > staleThreshold {
