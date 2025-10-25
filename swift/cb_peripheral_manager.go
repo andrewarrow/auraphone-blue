@@ -148,7 +148,7 @@ func (pm *CBPeripheralManager) AddService(service *CBMutableService) error {
 		return fmt.Errorf("failed to write GATT table: %w", err)
 	}
 
-	logger.DebugJSON(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📋 Added Service to GATT", service)
+	logger.Info(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📋 Added Service to GATT: %s", service.UUID)
 
 	return nil
 }
@@ -227,7 +227,7 @@ func (pm *CBPeripheralManager) StartAdvertising(advertisementData map[string]int
 	pm.IsAdvertising = true
 	pm.stopAdvertising = make(chan struct{})
 
-	logger.DebugJSON(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📡 Started Advertising", advData)
+	logger.Info(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📡 Started Advertising")
 
 	// Start listening for incoming requests
 	pm.startListeningForRequests()
@@ -263,7 +263,7 @@ func (pm *CBPeripheralManager) StopAdvertising() {
 
 	pm.IsAdvertising = false
 
-	logger.Debug(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📡 Stopped Advertising")
+	logger.Info(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📡 Stopped Advertising")
 }
 
 // UpdateValue sends a notification/indication to subscribed centrals
@@ -298,10 +298,10 @@ func (pm *CBPeripheralManager) UpdateValue(value []byte, characteristic *CBMutab
 
 		err := pm.wire.NotifyCharacteristic(central.UUID, characteristic.Service.UUID, characteristic.UUID, value)
 		if err != nil {
-			logger.Debug(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("⚠️  Failed to notify central %s: %v", central.UUID[:8], err))
+			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("⚠️  Failed to notify central %s: %v", central.UUID[:8], err))
 			success = false
 		} else {
-			logger.Debug(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("📤 Sent notification to central %s (%d bytes)", central.UUID[:8], len(value)))
+			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("📤 Sent notification to central %s (%d bytes)", central.UUID[:8], len(value)))
 		}
 	}
 
@@ -313,7 +313,7 @@ func (pm *CBPeripheralManager) UpdateValue(value []byte, characteristic *CBMutab
 func (pm *CBPeripheralManager) RespondToRequest(request *CBATTRequest, result int) {
 	// In the simulator, we handle requests synchronously
 	// Real iOS would send ATT response packets back to the central
-	logger.Debug(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("📨 Responded to request from central %s (result=%d)", request.Central.UUID[:8], result))
+	logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("📨 Responded to request from central %s (result=%d)", request.Central.UUID[:8], result))
 }
 
 // buildGATTTable converts services to wire.GATTTable format
@@ -426,7 +426,7 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 	}
 
 	if targetChar == nil {
-		logger.Debug(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("⚠️  Received request for unknown characteristic %s", msg.CharUUID))
+		logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("⚠️  Received request for unknown characteristic %s", msg.CharUUID))
 		return
 	}
 

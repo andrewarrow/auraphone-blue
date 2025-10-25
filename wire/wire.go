@@ -691,7 +691,7 @@ func (w *Wire) WriteAdvertisingData(advData *AdvertisingData) error {
 		return fmt.Errorf("failed to marshal advertising data: %w", err)
 	}
 
-	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform), "📡 TX Advertising Data", advData)
+	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform), "📡 TX Advertising Data", advData)
 
 	return os.WriteFile(advPath, data, 0644)
 }
@@ -717,7 +717,7 @@ func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) 
 		return nil, fmt.Errorf("failed to unmarshal advertising data: %w", err)
 	}
 
-	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform), fmt.Sprintf("📡 RX Advertising Data (from %s)", deviceUUID[:8]), &advData)
+	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform), fmt.Sprintf("📡 RX Advertising Data (from %s)", deviceUUID[:8]), &advData)
 
 	return &advData, nil
 }
@@ -733,7 +733,7 @@ func (w *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, dat
 		SenderUUID:  w.localUUID,
 	}
 
-	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
 		fmt.Sprintf("📤 TX Write WITH Response (to %s, svc=%s, char=%s, %d bytes)",
 			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
 
@@ -755,7 +755,7 @@ func (w *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID s
 		SenderUUID:  w.localUUID,
 	}
 
-	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
 		fmt.Sprintf("📤 TX Write NO Response (to %s, svc=%s, char=%s, %d bytes)",
 			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
 
@@ -764,7 +764,7 @@ func (w *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID s
 		if err := w.sendCharacteristicMessage(targetUUID, &msg); err != nil {
 			// Real BLE: transmission failures are completely silent to the app
 			// App has no way to know if the packet was lost
-			logger.Debug(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
 				"📉 Write NO Response transmission failed silently (realistic BLE behavior): %v", err)
 		}
 	}()
@@ -799,7 +799,7 @@ func (w *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, da
 
 	// Simulate notification drops (1% under load)
 	if w.simulator.ShouldNotificationDrop() {
-		logger.Debug(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+		logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
 			"📉 Notification DROPPED (realistic BLE behavior, %d bytes lost)", len(data))
 		return nil // Silently dropped (matches real BLE)
 	}
@@ -828,7 +828,7 @@ func (w *Wire) SubscribeCharacteristic(targetUUID, serviceUUID, charUUID string)
 		SenderUUID:  w.localUUID,
 	}
 
-	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
 		fmt.Sprintf("📤 TX Subscribe (to %s, svc=%s, char=%s)",
 			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
 
@@ -845,7 +845,7 @@ func (w *Wire) UnsubscribeCharacteristic(targetUUID, serviceUUID, charUUID strin
 		SenderUUID:  w.localUUID,
 	}
 
-	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
 		fmt.Sprintf("📤 TX Unsubscribe (to %s, svc=%s, char=%s)",
 			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
 
@@ -872,7 +872,7 @@ func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
 
 	// Log if we have pending messages
 	if len(files) > 0 {
-		logger.Debug(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+		logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
 			"📬 Found %d message(s) in inbox", len(files))
 	}
 
@@ -880,7 +880,7 @@ func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
 	for _, filename := range files {
 		data, err := w.ReadAndReassemble(filename)
 		if err != nil {
-			logger.Debug(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
 				"⚠️  Failed to reassemble message %s: %v", filename, err)
 			continue
 		}
@@ -888,12 +888,12 @@ func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
 		var msg CharacteristicMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			// Not a characteristic message, skip
-			logger.Debug(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
 				"⚠️  Failed to parse message %s: %v", filename, err)
 			continue
 		}
 
-		logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+		logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
 			fmt.Sprintf("📥 RX %s Characteristic (from %s, svc=%s, char=%s, %d bytes)",
 				msg.Operation, msg.SenderUUID[:8],
 				msg.ServiceUUID[len(msg.ServiceUUID)-4:],

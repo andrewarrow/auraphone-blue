@@ -15,10 +15,11 @@ import (
 type LogLevel int
 
 const (
-	DEBUG LogLevel = iota
-	INFO
-	WARN
-	ERROR
+	TRACE LogLevel = iota // Low-level polling, wire protocol details
+	DEBUG                 // Application protocol messages (PB JSON)
+	INFO                  // High-level events (connections, transfers)
+	WARN                  // Warnings
+	ERROR                 // Errors
 )
 
 var (
@@ -43,6 +44,8 @@ func GetLevel() LogLevel {
 // ParseLevel converts a string to a LogLevel
 func ParseLevel(level string) LogLevel {
 	switch strings.ToUpper(level) {
+	case "TRACE":
+		return TRACE
 	case "DEBUG":
 		return DEBUG
 	case "INFO":
@@ -63,6 +66,8 @@ func log(level LogLevel, prefix, format string, args ...interface{}) {
 
 	var levelStr string
 	switch level {
+	case TRACE:
+		levelStr = "TRACE"
 	case DEBUG:
 		levelStr = "DEBUG"
 	case INFO:
@@ -81,12 +86,17 @@ func log(level LogLevel, prefix, format string, args ...interface{}) {
 	}
 }
 
-// Debug logs a debug message
+// Trace logs a trace message (low-level polling, wire protocol details)
+func Trace(prefix, format string, args ...interface{}) {
+	log(TRACE, prefix, format, args...)
+}
+
+// Debug logs a debug message (application protocol messages, PB JSON)
 func Debug(prefix, format string, args ...interface{}) {
 	log(DEBUG, prefix, format, args...)
 }
 
-// Info logs an info message
+// Info logs an info message (high-level events)
 func Info(prefix, format string, args ...interface{}) {
 	log(INFO, prefix, format, args...)
 }
@@ -124,6 +134,15 @@ func ToJSON(v interface{}) string {
 		return fmt.Sprintf("<error: %v>", err)
 	}
 	return string(jsonBytes)
+}
+
+// TraceJSON logs a trace message with a JSON representation
+func TraceJSON(prefix, label string, v interface{}) {
+	if GetLevel() > TRACE {
+		return
+	}
+	jsonStr := ToJSON(v)
+	log(TRACE, prefix, "%s:\n%s", label, jsonStr)
 }
 
 // DebugJSON logs a debug message with a JSON representation
