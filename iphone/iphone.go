@@ -634,6 +634,10 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 
 	// IMPORTANT: Map peripheral.UUID to the logical device_id from handshake
 	deviceID := handshake.DeviceId
+	if deviceID == "" {
+		logger.Error(prefix, "❌ Handshake missing device_id, using peripheral UUID as fallback")
+		deviceID = peripheral.UUID
+	}
 	ip.mu.Lock()
 	ip.peripheralToDeviceID[peripheral.UUID] = deviceID
 	ip.mu.Unlock()

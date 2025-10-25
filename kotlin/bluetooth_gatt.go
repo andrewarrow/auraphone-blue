@@ -370,9 +370,19 @@ func (g *BluetoothGatt) StartListening() {
 					// Find the characteristic this message is for
 					char := g.GetCharacteristic(msg.ServiceUUID, msg.CharUUID)
 					if char != nil {
-						// Only deliver updates if notifications are enabled for this characteristic
-						// This matches real Android behavior - you must call setCharacteristicNotification(true) first
-						if g.notifyingCharacteristics != nil && g.notifyingCharacteristics[char.UUID] {
+						// Deliver the message data
+						// - For "write" operations from remote, we receive the data
+						// - For "notify" operations, only deliver if notifications are enabled
+						shouldDeliver := false
+						if msg.Operation == "write" {
+							// Always deliver incoming writes (remote wrote to our characteristic)
+							shouldDeliver = true
+						} else if msg.Operation == "notify" || msg.Operation == "indicate" {
+							// Only deliver notifications/indications if we subscribed
+							shouldDeliver = g.notifyingCharacteristics != nil && g.notifyingCharacteristics[char.UUID]
+						}
+
+						if shouldDeliver {
 							char.Value = msg.Data
 
 							if g.callback != nil {
