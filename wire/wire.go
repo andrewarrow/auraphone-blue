@@ -844,16 +844,26 @@ func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
 		return nil, err
 	}
 
+	// Log if we have pending messages
+	if len(files) > 0 {
+		logger.Debug(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+			"📬 Found %d message(s) in inbox", len(files))
+	}
+
 	var messages []*CharacteristicMessage
 	for _, filename := range files {
 		data, err := w.ReadAndReassemble(filename)
 		if err != nil {
+			logger.Debug(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+				"⚠️  Failed to reassemble message %s: %v", filename, err)
 			continue
 		}
 
 		var msg CharacteristicMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			// Not a characteristic message, skip
+			logger.Debug(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+				"⚠️  Failed to parse message %s: %v", filename, err)
 			continue
 		}
 

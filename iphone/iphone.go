@@ -263,16 +263,24 @@ func (ip *iPhone) loadReceivedPhotoMappings() {
 
 // Start begins BLE advertising and scanning
 func (ip *iPhone) Start() {
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+
 	// Start scanning for peripherals
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		ip.manager.ScanForPeripherals(nil, nil)
-		logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Started scanning for peripherals")
+		logger.Info(prefix, "Started scanning for peripherals")
 	}()
+
+	// TODO: Start CBPeripheralManager for peripheral mode
+	// Currently iOS only runs in Central mode (scanner/connector)
+	// It cannot receive incoming connections because no PeripheralManager is running
+	logger.Info(prefix, "⚠️  Peripheral mode NOT started - cannot receive incoming connections")
+	logger.Info(prefix, "   iOS is only running as Central (scanner/connector)")
 
 	// Start periodic stale handshake checker
 	ip.startStaleHandshakeChecker()
-	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Started stale handshake checker (60s threshold, 30s interval)")
+	logger.Debug(prefix, "Started stale handshake checker (60s threshold, 30s interval)")
 }
 
 // Stop stops BLE operations and cleans up resources

@@ -267,17 +267,25 @@ func (a *Android) loadReceivedPhotoMappings() {
 
 // Start begins BLE advertising and scanning
 func (a *Android) Start() {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
 	// Start scanning for devices
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		scanner := a.manager.Adapter.GetBluetoothLeScanner()
 		scanner.StartScan(a)
-		logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Started scanning for devices")
+		logger.Info(prefix, "Started scanning for devices")
 	}()
+
+	// TODO: Start GATT server for peripheral mode
+	// Currently Android only runs in Central mode (scanner/connector)
+	// It cannot receive incoming connections because no GattServer is running
+	logger.Info(prefix, "⚠️  Peripheral mode NOT started - cannot receive incoming connections")
+	logger.Info(prefix, "   Android is only running as Central (scanner/connector)")
 
 	// Start periodic stale handshake checker
 	a.startStaleHandshakeChecker()
-	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Started stale handshake checker (60s threshold, 30s interval)")
+	logger.Debug(prefix, "Started stale handshake checker (60s threshold, 30s interval)")
 }
 
 // Stop stops BLE operations and cleans up resources
