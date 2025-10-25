@@ -535,24 +535,33 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	pw.devicesMutex.Lock()
 	defer pw.devicesMutex.Unlock()
 
+	prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+	logger.Debug(prefix, "📱 onDeviceDiscovered: deviceID=%s, name=%s, photoHash=%s, photoDataLen=%d",
+		device.DeviceID[:8], device.Name, truncateHash(device.PhotoHash, 8), len(device.PhotoData))
+
 	// Add or update device in map (deduplicates by ID)
 	pw.devicesMap[device.DeviceID] = device
 
 	// If device has photo data (actually received via BLE), load it into memory
 	if device.PhotoData != nil && len(device.PhotoData) > 0 {
 		pw.devicePhotoHashes[device.DeviceID] = device.PhotoHash
+		logger.Debug(prefix, "   └─ Photo data present, decoding image...")
 		// Decode the photo data directly from the callback
 		img, _, err := image.Decode(bytes.NewReader(device.PhotoData))
 		if err == nil {
 			pw.deviceImages[device.PhotoHash] = img
-			prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
 			logger.Info(prefix, "📷 Received photo from %s via BLE (%d bytes)", device.DeviceID[:8], len(device.PhotoData))
+		} else {
+			logger.Error(prefix, "❌ Failed to decode photo from %s: %v", device.DeviceID[:8], err)
 		}
 	} else if device.PhotoHash != "" {
 		// Device advertises a photo hash, but we haven't received it yet
 		pw.devicePhotoHashes[device.DeviceID] = device.PhotoHash
+		logger.Debug(prefix, "   └─ Photo hash present but no data, trying to load from cache...")
 		// Try to load from disk cache (from previous session)
 		pw.loadDevicePhoto(device.PhotoHash)
+	} else {
+		logger.Debug(prefix, "   └─ No photo hash or data for %s", device.DeviceID[:8])
 	}
 
 	// Load first_name from device metadata cache
@@ -574,18 +583,39 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 
 // loadDevicePhoto loads a cached photo by hash from disk
 func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
+	prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+	logger.Debug(prefix, "📸 loadDevicePhoto: hash=%s", truncateHash(photoHash, 8))
+
 	// Check if we already have this image cached in memory
 	if _, exists := pw.deviceImages[photoHash]; exists {
+		logger.Debug(prefix, "   └─ Photo already in memory cache")
 		return
 	}
 
 	// Try to load from disk cache using photo hash as filename
 	cachePath := fmt.Sprintf("data/%s/cache/photos/%s.jpg", pw.phone.GetDeviceUUID(), photoHash)
+	logger.Debug(prefix, "   └─ Attempting to load from: %s", cachePath)
+
+	// Check if file exists first
+	if stat, err := os.Stat(cachePath); err != nil {
+		if os.IsNotExist(err) {
+			logger.Debug(prefix, "   └─ Photo not in cache yet (will be received via BLE)")
+		} else {
+			logger.Error(prefix, "   └─ Error checking cache file: %v", err)
+		}
+		return
+	} else {
+		logger.Debug(prefix, "   └─ Cache file exists: %d bytes", stat.Size())
+	}
+
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
+		logger.Error(prefix, "❌ Failed to read cache file: %v", err)
 		// Photo not in cache yet - it will be received via BLE photo transfer
 		return
 	}
+
+	logger.Debug(prefix, "   └─ Read %d bytes from cache, verifying hash...", len(data))
 
 	// Verify hash matches (content-addressed storage check)
 	hash := sha256.Sum256(data)
@@ -594,10 +624,12 @@ func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
 	if hashStr != photoHash {
 		// Cached photo is corrupted, delete it
 		os.Remove(cachePath)
-		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
-		logger.Warn(prefix, "⚠️  Cached photo %s has wrong hash, deleted", truncateHash(photoHash, 8))
+		logger.Warn(prefix, "⚠️  Cached photo %s has wrong hash (expected %s, got %s), deleted",
+			truncateHash(photoHash, 8), truncateHash(photoHash, 8), truncateHash(hashStr, 8))
 		return
 	}
+
+	logger.Debug(prefix, "   └─ Hash verified, decoding image...")
 
 	// Load image into memory
 	img, _, err := image.Decode(bytes.NewReader(data))

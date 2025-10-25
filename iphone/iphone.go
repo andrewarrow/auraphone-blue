@@ -973,11 +973,22 @@ func (ip *iPhone) processPhotoChunks() {
 func (ip *iPhone) reassembleAndSavePhoto() error {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
+	logger.Debug(prefix, "📸 Starting photo reassembly: expected chunks=%d, received=%d",
+		ip.photoReceiveState.expectedChunks, len(ip.photoReceiveState.receivedChunks))
+
 	// Reassemble in order
 	var photoData []byte
 	for i := uint16(0); i < ip.photoReceiveState.expectedChunks; i++ {
-		photoData = append(photoData, ip.photoReceiveState.receivedChunks[i]...)
+		chunk, exists := ip.photoReceiveState.receivedChunks[i]
+		if !exists {
+			logger.Error(prefix, "❌ Missing chunk %d during reassembly", i)
+			return fmt.Errorf("missing chunk %d", i)
+		}
+		photoData = append(photoData, chunk...)
 	}
+
+	logger.Debug(prefix, "   └─ Reassembled %d bytes from %d chunks",
+		len(photoData), ip.photoReceiveState.expectedChunks)
 
 	// Verify CRC
 	calculatedCRC := phototransfer.CalculateCRC32(photoData)
@@ -986,16 +997,20 @@ func (ip *iPhone) reassembleAndSavePhoto() error {
 			ip.photoReceiveState.expectedCRC, calculatedCRC)
 		return fmt.Errorf("CRC mismatch")
 	}
+	logger.Debug(prefix, "   └─ CRC verified: %08X", calculatedCRC)
 
 	// Calculate hash
 	hash := sha256.Sum256(photoData)
 	hashStr := hex.EncodeToString(hash[:])
+	logger.Debug(prefix, "   └─ Photo hash: %s", hashStr[:8])
 
 	// Get the logical deviceID from the peripheral UUID
 	peripheralUUID := ip.photoReceiveState.senderDeviceID
 	ip.mu.Lock()
 	deviceID := ip.peripheralToDeviceID[peripheralUUID]
 	ip.mu.Unlock()
+
+	logger.Debug(prefix, "   └─ Saving for deviceID=%s (peripheralUUID=%s)", deviceID[:8], peripheralUUID[:8])
 
 	// Save photo using cache manager (persists deviceID -> photoHash mapping)
 	if err := ip.cacheManager.SaveDevicePhoto(deviceID, photoData, hashStr); err != nil {
@@ -1034,7 +1049,11 @@ func (ip *iPhone) reassembleAndSavePhoto() error {
 				PhotoData: photoData,
 			})
 			logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", peripheral.UUID[:8])
+		} else {
+			logger.Warn(prefix, "⚠️  No discovery callback or peripheral not found to notify GUI")
 		}
+	} else {
+		logger.Warn(prefix, "⚠️  No discovery callback registered, GUI not notified")
 	}
 
 	return nil
@@ -1575,11 +1594,22 @@ func (ip *iPhone) processPhotoChunksFromServer(senderUUID string, state *photoRe
 func (ip *iPhone) reassembleAndSavePhotoFromServer(senderUUID string, state *photoReceiveState) error {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
+	logger.Debug(prefix, "📸 Starting photo reassembly from server: expected chunks=%d, received=%d",
+		state.expectedChunks, len(state.receivedChunks))
+
 	// Reassemble in order
 	var photoData []byte
 	for i := uint16(0); i < state.expectedChunks; i++ {
-		photoData = append(photoData, state.receivedChunks[i]...)
+		chunk, exists := state.receivedChunks[i]
+		if !exists {
+			logger.Error(prefix, "❌ Missing chunk %d during reassembly from %s", i, senderUUID[:8])
+			return fmt.Errorf("missing chunk %d", i)
+		}
+		photoData = append(photoData, chunk...)
 	}
+
+	logger.Debug(prefix, "   └─ Reassembled %d bytes from %d chunks",
+		len(photoData), state.expectedChunks)
 
 	// Verify CRC
 	calculatedCRC := phototransfer.CalculateCRC32(photoData)
@@ -1588,10 +1618,12 @@ func (ip *iPhone) reassembleAndSavePhotoFromServer(senderUUID string, state *pho
 			senderUUID[:8], state.expectedCRC, calculatedCRC)
 		return fmt.Errorf("CRC mismatch")
 	}
+	logger.Debug(prefix, "   └─ CRC verified: %08X", calculatedCRC)
 
 	// Calculate hash
 	hash := sha256.Sum256(photoData)
 	hashStr := hex.EncodeToString(hash[:])
+	logger.Debug(prefix, "   └─ Photo hash: %s", hashStr[:8])
 
 	// Get the logical deviceID from the sender UUID
 	// For peripheral mode, we need to look this up from our cached handshakes
@@ -1600,14 +1632,18 @@ func (ip *iPhone) reassembleAndSavePhotoFromServer(senderUUID string, state *pho
 	// First try peripheralToDeviceID mapping (if they connected to us as central)
 	if id, exists := ip.peripheralToDeviceID[senderUUID]; exists {
 		deviceID = id
+		logger.Debug(prefix, "   └─ Found deviceID from peripheralToDeviceID: %s", deviceID[:8])
 	} else {
 		// If not found, scan through lastHandshakeTime to find the device that matches this UUID
 		// This happens when we're the peripheral and they're the central writing to us
 		// In this case, we should have received a handshake from them via write request
 		// For now, use senderUUID as fallback (will be mapped later on next handshake)
 		deviceID = senderUUID // Temporary until we get proper device ID from handshake
+		logger.Warn(prefix, "   └─ DeviceID not found for %s, using UUID as fallback", senderUUID[:8])
 	}
 	ip.mu.Unlock()
+
+	logger.Debug(prefix, "   └─ Saving for deviceID=%s (senderUUID=%s)", deviceID[:8], senderUUID[:8])
 
 	// Save photo using cache manager (persists deviceID -> photoHash mapping)
 	if err := ip.cacheManager.SaveDevicePhoto(deviceID, photoData, hashStr); err != nil {
@@ -1643,6 +1679,9 @@ func (ip *iPhone) reassembleAndSavePhotoFromServer(senderUUID string, state *pho
 			PhotoData: photoData,
 		})
 		logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", senderUUID[:8])
+	} else {
+		logger.Warn(prefix, "⚠️  Cannot notify GUI: discoveryCallback=%v, deviceID=%s",
+			ip.discoveryCallback != nil, deviceID[:8])
 	}
 
 	return nil

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/user/auraphone-blue/logger"
 )
 
 // DeviceCacheManager manages persistent storage for device data and photos
@@ -37,9 +39,9 @@ type DeviceMetadata struct {
 
 // LocalUserMetadata stores metadata about our local photo
 type LocalUserMetadata struct {
-	PhotoHash      string            `json:"photo_hash"`
-	LastUpdated    int64             `json:"last_updated"`
-	SentVersions   map[string]string `json:"sent_versions,omitempty"` // deviceID -> photoHash we sent
+	PhotoHash    string            `json:"photo_hash"`
+	LastUpdated  int64             `json:"last_updated"`
+	SentVersions map[string]string `json:"sent_versions,omitempty"` // deviceID -> photoHash we sent
 }
 
 // NewDeviceCacheManager creates a new cache manager for a device
@@ -175,27 +177,48 @@ func (m *DeviceCacheManager) GetDevicePhotoHash(deviceID string) (string, error)
 
 // SaveDevicePhoto saves a remote device's photo
 func (m *DeviceCacheManager) SaveDevicePhoto(deviceID string, photoData []byte, photoHash string) error {
+	prefix := "cache"
+	logger.Debug(prefix, "📸 SaveDevicePhoto called: deviceID=%s, photoSize=%d, photoHash=%s",
+		deviceID[:8], len(photoData), photoHash[:8])
+
 	if err := m.InitializeCache(); err != nil {
+		logger.Error(prefix, "❌ InitializeCache failed: %v", err)
 		return err
 	}
 
 	// If hash not provided, calculate it
 	if photoHash == "" {
 		photoHash = m.CalculatePhotoHash(photoData)
+		logger.Debug(prefix, "   └─ Calculated hash: %s", photoHash[:8])
 	}
 
 	// Save photo file named by hash
 	photoPath := filepath.Join(m.baseDir, "photos", fmt.Sprintf("%s.jpg", photoHash))
+	logger.Debug(prefix, "   └─ Saving photo to: %s", photoPath)
+
 	if err := os.WriteFile(photoPath, photoData, 0644); err != nil {
+		logger.Error(prefix, "❌ Failed to write photo file: %v", err)
 		return fmt.Errorf("failed to save device photo: %w", err)
+	}
+
+	// Verify the file was written
+	if stat, err := os.Stat(photoPath); err == nil {
+		logger.Info(prefix, "✅ Photo file written successfully: %s (%d bytes)", photoPath, stat.Size())
+	} else {
+		logger.Error(prefix, "❌ Photo file verification failed: %v", err)
 	}
 
 	// Load existing metadata or create new
 	var metadata DeviceMetadata
 	metadataPath := filepath.Join(m.baseDir, fmt.Sprintf("%s_metadata.json", deviceID))
+	logger.Debug(prefix, "   └─ Metadata path: %s", metadataPath)
+
 	existingData, err := os.ReadFile(metadataPath)
 	if err == nil {
 		json.Unmarshal(existingData, &metadata)
+		logger.Debug(prefix, "   └─ Loaded existing metadata")
+	} else {
+		logger.Debug(prefix, "   └─ No existing metadata, creating new")
 	}
 
 	// Update photo hash
@@ -203,40 +226,69 @@ func (m *DeviceCacheManager) SaveDevicePhoto(deviceID string, photoData []byte, 
 	metadata.PhotoHash = photoHash
 	metadata.LastUpdated = getCurrentTimestamp()
 
+	logger.Debug(prefix, "   └─ Updated metadata: deviceID=%s, photoHash=%s", deviceID[:8], photoHash[:8])
+
 	// Save metadata
 	metadataJSON, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
+		logger.Error(prefix, "❌ Failed to marshal metadata: %v", err)
 		return err
 	}
 
 	if err := os.WriteFile(metadataPath, metadataJSON, 0644); err != nil {
+		logger.Error(prefix, "❌ Failed to write metadata: %v", err)
 		return fmt.Errorf("failed to save device metadata: %w", err)
 	}
+
+	logger.Info(prefix, "✅ Metadata saved: %s", metadataPath)
 
 	return nil
 }
 
 // LoadDevicePhoto loads a remote device's cached photo
 func (m *DeviceCacheManager) LoadDevicePhoto(deviceID string) ([]byte, error) {
+	prefix := "cache"
+	logger.Debug(prefix, "📸 LoadDevicePhoto called for deviceID=%s", deviceID[:8])
+
 	// First get the hash from metadata
 	photoHash, err := m.GetDevicePhotoHash(deviceID)
 	if err != nil {
+		logger.Error(prefix, "❌ Failed to get photo hash for %s: %v", deviceID[:8], err)
 		return nil, err
 	}
 	if photoHash == "" {
+		logger.Debug(prefix, "   └─ No photo hash in metadata for %s", deviceID[:8])
 		return nil, nil // No photo cached
 	}
 
+	logger.Debug(prefix, "   └─ Photo hash from metadata: %s", photoHash[:8])
+
 	// Load photo by hash
 	photoPath := filepath.Join(m.baseDir, "photos", fmt.Sprintf("%s.jpg", photoHash))
+	logger.Debug(prefix, "   └─ Loading photo from: %s", photoPath)
+
+	// Check if file exists
+	if stat, err := os.Stat(photoPath); err != nil {
+		if os.IsNotExist(err) {
+			logger.Warn(prefix, "⚠️  Photo file not found: %s", photoPath)
+			return nil, nil
+		}
+		logger.Error(prefix, "❌ Error stating photo file: %v", err)
+	} else {
+		logger.Debug(prefix, "   └─ Photo file exists: %s (%d bytes)", photoPath, stat.Size())
+	}
+
 	data, err := os.ReadFile(photoPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			logger.Warn(prefix, "⚠️  Photo file disappeared during read: %s", photoPath)
 			return nil, nil
 		}
+		logger.Error(prefix, "❌ Failed to read photo file: %v", err)
 		return nil, err
 	}
 
+	logger.Info(prefix, "✅ Successfully loaded photo for %s: %d bytes", deviceID[:8], len(data))
 	return data, nil
 }
 
