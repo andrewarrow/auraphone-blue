@@ -190,5 +190,5 @@ func (c *CBCentralManager) CancelPeripheralConnection(peripheral *CBPeripheral) 
 	delete(c.pendingPeripherals, peripheral.UUID)
 
 	// Disconnect if currently connected
-	c.wire.Disconnect()
+	c.wire.Disconnect(peripheral.UUID)
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -91,11 +92,11 @@ type Wire struct {
 	deviceName           string  // Device name for role negotiation
 	simulator            *Simulator
 	mtu                  int // Current MTU for this connection
-	connState            ConnectionState
+	connectionStates     map[string]ConnectionState // Per-device connection states
 	distance             float64 // Simulated distance in meters for RSSI calculation
-	connectedDeviceUUID  string // UUID of currently connected device
-	monitorStopChan      chan struct{} // Stop channel for connection monitor
+	monitorStopChans     map[string]chan struct{} // Per-device stop channels for connection monitors
 	disconnectCallback   func(deviceUUID string) // Callback when connection drops
+	connMutex            sync.RWMutex // Protects connectionStates and monitorStopChans
 }
 
 // NewWire creates a new wire instance for a device with default dual role
@@ -110,15 +111,16 @@ func NewWireWithRole(deviceUUID string, role DeviceRole, config *SimulationConfi
 	}
 
 	return &Wire{
-		localUUID:  deviceUUID,
-		basePath:   "data/",
-		role:       role,
-		platform:   PlatformGeneric,
-		deviceName: deviceUUID,
-		simulator:  NewSimulator(config),
-		mtu:        config.DefaultMTU,
-		connState:  StateDisconnected,
-		distance:   1.0, // Default: 1 meter distance
+		localUUID:        deviceUUID,
+		basePath:         "data/",
+		role:             role,
+		platform:         PlatformGeneric,
+		deviceName:       deviceUUID,
+		simulator:        NewSimulator(config),
+		mtu:              config.DefaultMTU,
+		connectionStates: make(map[string]ConnectionState),
+		monitorStopChans: make(map[string]chan struct{}),
+		distance:         1.0, // Default: 1 meter distance
 	}
 }
 
@@ -133,15 +135,16 @@ func NewWireWithPlatform(deviceUUID string, platform Platform, deviceName string
 	}
 
 	return &Wire{
-		localUUID:  deviceUUID,
-		basePath:   "data/",
-		role:       RoleDual, // Both iOS and Android support dual role
-		platform:   platform,
-		deviceName: deviceName,
-		simulator:  NewSimulator(config),
-		mtu:        config.DefaultMTU,
-		connState:  StateDisconnected,
-		distance:   1.0,
+		localUUID:        deviceUUID,
+		basePath:         "data/",
+		role:             RoleDual, // Both iOS and Android support dual role
+		platform:         platform,
+		deviceName:       deviceName,
+		simulator:        NewSimulator(config),
+		mtu:              config.DefaultMTU,
+		connectionStates: make(map[string]ConnectionState),
+		monitorStopChans: make(map[string]chan struct{}),
+		distance:         1.0,
 	}
 }
 
@@ -396,12 +399,16 @@ func (w *Wire) ListOutbox() ([]string, error) {
 
 // Connect simulates BLE connection with realistic timing and failures
 // Returns error if connection fails (simulates ~1.6% failure rate)
+// Now supports multiple simultaneous connections
 func (w *Wire) Connect(targetUUID string) error {
-	if w.connState != StateDisconnected {
-		return fmt.Errorf("already connected or connecting")
+	w.connMutex.Lock()
+	currentState := w.connectionStates[targetUUID]
+	if currentState != StateDisconnected && currentState != 0 {
+		w.connMutex.Unlock()
+		return fmt.Errorf("already connected or connecting to %s", targetUUID[:8])
 	}
-
-	w.connState = StateConnecting
+	w.connectionStates[targetUUID] = StateConnecting
+	w.connMutex.Unlock()
 
 	// Simulate connection delay
 	delay := w.simulator.ConnectionDelay()
@@ -409,15 +416,18 @@ func (w *Wire) Connect(targetUUID string) error {
 
 	// Check if connection succeeds
 	if !w.simulator.ShouldConnectionSucceed() {
-		w.connState = StateDisconnected
+		w.connMutex.Lock()
+		w.connectionStates[targetUUID] = StateDisconnected
+		w.connMutex.Unlock()
 		return fmt.Errorf("connection failed (timeout or interference)")
 	}
 
-	w.connState = StateConnected
-	w.connectedDeviceUUID = targetUUID
+	w.connMutex.Lock()
+	w.connectionStates[targetUUID] = StateConnected
+	w.connMutex.Unlock()
 
 	// Start connection monitoring for random disconnects
-	w.startConnectionMonitoring()
+	w.startConnectionMonitoring(targetUUID)
 
 	return nil
 }
@@ -429,13 +439,18 @@ func (w *Wire) SetDisconnectCallback(callback func(deviceUUID string)) {
 
 // startConnectionMonitoring monitors connection health and randomly disconnects
 // Simulates real BLE behavior: interference, distance, battery, etc.
-func (w *Wire) startConnectionMonitoring() {
-	if w.monitorStopChan != nil {
-		// Already monitoring
+// Now monitors per-device connection
+func (w *Wire) startConnectionMonitoring(targetUUID string) {
+	w.connMutex.Lock()
+	if w.monitorStopChans[targetUUID] != nil {
+		// Already monitoring this connection
+		w.connMutex.Unlock()
 		return
 	}
 
-	w.monitorStopChan = make(chan struct{})
+	stopChan := make(chan struct{})
+	w.monitorStopChans[targetUUID] = stopChan
+	w.connMutex.Unlock()
 
 	go func() {
 		interval := time.Duration(w.simulator.config.ConnectionMonitorInterval) * time.Millisecond
@@ -444,62 +459,79 @@ func (w *Wire) startConnectionMonitoring() {
 
 		for {
 			select {
-			case <-w.monitorStopChan:
+			case <-stopChan:
 				return
 			case <-ticker.C:
 				// Check if connection should randomly drop
-				if w.connState == StateConnected && w.simulator.ShouldRandomlyDisconnect() {
+				w.connMutex.Lock()
+				if w.connectionStates[targetUUID] == StateConnected && w.simulator.ShouldRandomlyDisconnect() {
 					// Force disconnect
-					w.connState = StateDisconnected
-					deviceUUID := w.connectedDeviceUUID
-					w.connectedDeviceUUID = ""
+					w.connectionStates[targetUUID] = StateDisconnected
 
 					// Notify via callback
-					if w.disconnectCallback != nil {
-						w.disconnectCallback(deviceUUID)
+					callback := w.disconnectCallback
+					w.connMutex.Unlock()
+
+					if callback != nil {
+						callback(targetUUID)
 					}
 
 					// Stop monitoring
-					close(w.monitorStopChan)
-					w.monitorStopChan = nil
+					w.connMutex.Lock()
+					if ch, exists := w.monitorStopChans[targetUUID]; exists {
+						close(ch)
+						delete(w.monitorStopChans, targetUUID)
+					}
+					w.connMutex.Unlock()
 					return
 				}
+				w.connMutex.Unlock()
 			}
 		}
 	}()
 }
 
-// stopConnectionMonitoring stops the connection monitor
-func (w *Wire) stopConnectionMonitoring() {
-	if w.monitorStopChan != nil {
-		close(w.monitorStopChan)
-		w.monitorStopChan = nil
+// stopConnectionMonitoring stops the connection monitor for a specific device
+func (w *Wire) stopConnectionMonitoring(targetUUID string) {
+	w.connMutex.Lock()
+	defer w.connMutex.Unlock()
+
+	if ch, exists := w.monitorStopChans[targetUUID]; exists {
+		close(ch)
+		delete(w.monitorStopChans, targetUUID)
 	}
 }
 
-// Disconnect simulates BLE disconnection
-func (w *Wire) Disconnect() error {
-	if w.connState != StateConnected {
-		return fmt.Errorf("not connected")
+// Disconnect simulates BLE disconnection from a specific device
+func (w *Wire) Disconnect(targetUUID string) error {
+	w.connMutex.Lock()
+	if w.connectionStates[targetUUID] != StateConnected {
+		w.connMutex.Unlock()
+		return fmt.Errorf("not connected to %s", targetUUID[:8])
 	}
 
-	w.connState = StateDisconnecting
+	w.connectionStates[targetUUID] = StateDisconnecting
+	w.connMutex.Unlock()
 
 	// Stop monitoring
-	w.stopConnectionMonitoring()
+	w.stopConnectionMonitoring(targetUUID)
 
 	// Simulate disconnection delay
 	delay := w.simulator.DisconnectDelay()
 	time.Sleep(delay)
 
-	w.connState = StateDisconnected
-	w.connectedDeviceUUID = ""
+	w.connMutex.Lock()
+	w.connectionStates[targetUUID] = StateDisconnected
+	w.connMutex.Unlock()
+
 	return nil
 }
 
-// GetConnectionState returns the current connection state
-func (w *Wire) GetConnectionState() ConnectionState {
-	return w.connState
+// GetConnectionState returns the connection state for a specific device
+func (w *Wire) GetConnectionState(targetUUID string) ConnectionState {
+	w.connMutex.RLock()
+	defer w.connMutex.RUnlock()
+	return w.connectionStates[targetUUID]
 }
 
 // GetSimulator returns the simulator for accessing timing/delay functions
