@@ -441,9 +441,10 @@ func (a *Android) shouldActAsCentral(remoteUUID, remoteName string) bool {
 		return false
 	}
 
-	// Android → Android: Device with larger name acts as Central
+	// Android → Android: Use hardware UUID comparison (like iOS does)
+	// Device names are not unique ("Android Device"), so we use hardware UUID
 	if isRemoteAndroid {
-		return a.deviceName > remoteName
+		return a.hardwareUUID > remoteUUID
 	}
 
 	// Unknown platform: use hardware UUID comparison as fallback
