@@ -1572,9 +1572,79 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 
 	// Check if we need to send our photo
 	if rxPhotoHash != a.photoHash && a.photoHash != "" {
-		logger.Debug(prefix, "📸 Remote doesn't have our photo, need to send it")
-		// TODO: Send photo via wire.WriteCharacteristic
+		logger.Debug(prefix, "📸 Remote doesn't have our photo, sending it via server mode...")
+		go a.sendPhotoToDevice(senderUUID, rxPhotoHash)
 	}
+}
+
+// sendPhotoToDevice sends our photo to a device via wire layer (server/peripheral mode)
+func (a *Android) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string) error {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
+	// Check if they already have our photo
+	if remoteRxPhotoHash == a.photoHash {
+		logger.Debug(prefix, "⏭️  Remote already has our photo, skipping")
+		return nil
+	}
+
+	// Check if a photo send is already in progress to this device
+	a.mu.Lock()
+	if a.photoSendInProgress[targetUUID] {
+		a.mu.Unlock()
+		logger.Debug(prefix, "⏭️  Photo send already in progress to %s, skipping duplicate", targetUUID[:8])
+		return nil
+	}
+
+	// Mark photo send as in progress
+	a.photoSendInProgress[targetUUID] = true
+	a.mu.Unlock()
+	defer func() {
+		// Clear flag when done
+		a.mu.Lock()
+		delete(a.photoSendInProgress, targetUUID)
+		a.mu.Unlock()
+	}()
+
+	// Load our cached photo
+	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.hardwareUUID)
+	photoData, err := os.ReadFile(cachePath)
+	if err != nil {
+		return fmt.Errorf("failed to load photo: %w", err)
+	}
+
+	// Calculate total CRC
+	totalCRC := phototransfer.CalculateCRC32(photoData)
+
+	// Split into chunks
+	chunks := phototransfer.SplitIntoChunks(photoData, phototransfer.DefaultChunkSize)
+
+	logger.Info(prefix, "📸 Sending photo to %s via server mode (%d bytes, %d chunks, CRC: %08X)",
+		targetUUID[:8], len(photoData), len(chunks), totalCRC)
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+
+	// Send metadata packet
+	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
+	if err := a.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, metadata); err != nil {
+		return fmt.Errorf("failed to send metadata: %w", err)
+	}
+
+	// Send chunks
+	for i, chunk := range chunks {
+		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
+		if err := a.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, chunkPacket); err != nil {
+			return fmt.Errorf("failed to send chunk %d: %w", i, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+
+		if i == 0 || i == len(chunks)-1 {
+			logger.Debug(prefix, "📤 Sent chunk %d/%d via server mode", i+1, len(chunks))
+		}
+	}
+
+	logger.Info(prefix, "✅ Photo send complete to %s via server mode", targetUUID[:8])
+	return nil
 }
 
 // handlePhotoMessageFromServer processes photo data from a central device
