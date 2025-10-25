@@ -14,6 +14,18 @@ const (
 	MagicByte2     = 0xBE
 	MagicByte3     = 0xEF
 	DefaultChunkSize = 502 // Matches iOS implementation
+
+	// Acknowledgment magic bytes
+	AckMagicByte0 = 0xAC
+	AckMagicByte1 = 0xCE
+	AckMagicByte2 = 0x55
+	AckMagicByte3 = 0xED
+
+	// Retransmit request magic bytes
+	RetransMagicByte0 = 0x7E
+	RetransMagicByte1 = 0x7F
+	RetransMagicByte2 = 0x12
+	RetransMagicByte3 = 0x34
 )
 
 // MetadataPacket represents the initial photo transfer metadata
@@ -154,4 +166,71 @@ func SplitIntoChunks(data []byte, chunkSize int) [][]byte {
 	}
 
 	return chunks
+}
+
+// EncodeAck creates a transfer completion acknowledgment
+// Format: [AC CE 55 ED] [CRC32:4bytes]
+func EncodeAck(totalCRC uint32) []byte {
+	packet := make([]byte, 8)
+	packet[0] = AckMagicByte0
+	packet[1] = AckMagicByte1
+	packet[2] = AckMagicByte2
+	packet[3] = AckMagicByte3
+	binary.LittleEndian.PutUint32(packet[4:8], totalCRC)
+	return packet
+}
+
+// DecodeAck parses an acknowledgment packet
+func DecodeAck(data []byte) (uint32, error) {
+	if len(data) < 8 {
+		return 0, fmt.Errorf("data too short for ack: %d bytes", len(data))
+	}
+	if data[0] != AckMagicByte0 || data[1] != AckMagicByte1 ||
+		data[2] != AckMagicByte2 || data[3] != AckMagicByte3 {
+		return 0, fmt.Errorf("invalid ack magic bytes")
+	}
+	crc := binary.LittleEndian.Uint32(data[4:8])
+	return crc, nil
+}
+
+// EncodeRetransmitRequest creates a request for missing chunks
+// Format: [7E 7F 12 34] [ChunkCount:2bytes] [ChunkIndex:2bytes] [ChunkIndex:2bytes] ...
+func EncodeRetransmitRequest(missingChunks []uint16) []byte {
+	packet := make([]byte, 6+len(missingChunks)*2)
+	packet[0] = RetransMagicByte0
+	packet[1] = RetransMagicByte1
+	packet[2] = RetransMagicByte2
+	packet[3] = RetransMagicByte3
+	binary.LittleEndian.PutUint16(packet[4:6], uint16(len(missingChunks)))
+
+	for i, chunkIdx := range missingChunks {
+		offset := 6 + i*2
+		binary.LittleEndian.PutUint16(packet[offset:offset+2], chunkIdx)
+	}
+	return packet
+}
+
+// DecodeRetransmitRequest parses a retransmit request packet
+func DecodeRetransmitRequest(data []byte) ([]uint16, error) {
+	if len(data) < 6 {
+		return nil, fmt.Errorf("data too short for retransmit request: %d bytes", len(data))
+	}
+	if data[0] != RetransMagicByte0 || data[1] != RetransMagicByte1 ||
+		data[2] != RetransMagicByte2 || data[3] != RetransMagicByte3 {
+		return nil, fmt.Errorf("invalid retransmit request magic bytes")
+	}
+
+	chunkCount := binary.LittleEndian.Uint16(data[4:6])
+	expectedLen := 6 + int(chunkCount)*2
+	if len(data) < expectedLen {
+		return nil, fmt.Errorf("data too short for chunk indices: have %d, need %d", len(data), expectedLen)
+	}
+
+	missingChunks := make([]uint16, chunkCount)
+	for i := 0; i < int(chunkCount); i++ {
+		offset := 6 + i*2
+		missingChunks[i] = binary.LittleEndian.Uint16(data[offset : offset+2])
+	}
+
+	return missingChunks, nil
 }

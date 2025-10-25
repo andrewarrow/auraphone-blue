@@ -59,6 +59,8 @@ type photoReceiveState struct {
 	receivedChunks  map[uint16][]byte
 	senderDeviceID  string
 	buffer          []byte
+	lastChunkTime   time.Time  // Time of last chunk received (for timeout detection)
+	retransmitCount int        // Number of retransmit requests sent
 }
 
 // LocalProfile stores our local profile information
@@ -332,6 +334,10 @@ func (ip *iPhone) Start() {
 	// Start periodic stale handshake checker
 	ip.startStaleHandshakeChecker()
 	logger.Debug(prefix, "Started stale handshake checker (60s threshold, 30s interval)")
+
+	// Start periodic stale photo transfer checker
+	ip.startStalePhotoTransferChecker()
+	logger.Debug(prefix, "Started stale photo transfer checker (5s timeout, 2s interval)")
 }
 
 // Stop stops BLE operations and cleans up resources
@@ -910,6 +916,45 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 	return nil
 }
 
+// handleRetransmitRequest handles a request to retransmit missing chunks
+func (ip *iPhone) handleRetransmitRequest(peripheral *swift.CBPeripheral, missingChunks []uint16) error {
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+
+	// Load our cached photo
+	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.hardwareUUID)
+	photoData, err := os.ReadFile(cachePath)
+	if err != nil {
+		return fmt.Errorf("failed to load photo for retransmit: %w", err)
+	}
+
+	// Split into chunks
+	chunks := phototransfer.SplitIntoChunks(photoData, phototransfer.DefaultChunkSize)
+
+	logger.Info(prefix, "🔄 Retransmitting %d chunks to %s", len(missingChunks), peripheral.UUID[:8])
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	photoChar := peripheral.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+	if photoChar == nil {
+		return fmt.Errorf("photo characteristic not found")
+	}
+
+	// Retransmit only the missing chunks
+	for _, chunkIdx := range missingChunks {
+		if int(chunkIdx) >= len(chunks) {
+			continue // Invalid chunk index
+		}
+		chunkPacket := phototransfer.EncodeChunk(chunkIdx, chunks[chunkIdx])
+		if err := peripheral.WriteValue(chunkPacket, photoChar, swift.CBCharacteristicWriteWithoutResponse); err != nil {
+			logger.Warn(prefix, "Failed to retransmit chunk %d: %v", chunkIdx, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	logger.Info(prefix, "✅ Retransmit complete to %s", peripheral.UUID[:8])
+	return nil
+}
+
 // handlePhotoMessage processes incoming photo data
 func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte) {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
@@ -924,6 +969,29 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 		ip.photoReceiveState[peripheral.UUID] = state
 	}
 	ip.mu.Unlock()
+
+	// Check for retransmit request
+	if len(data) >= 6 {
+		if missingChunks, err := phototransfer.DecodeRetransmitRequest(data); err == nil {
+			logger.Info(prefix, "🔄 Received retransmit request from %s for %d chunks",
+				peripheral.UUID[:8], len(missingChunks))
+			go ip.handleRetransmitRequest(peripheral, missingChunks)
+			return
+		}
+	}
+
+	// Check for acknowledgment
+	if len(data) >= 8 {
+		if crc, err := phototransfer.DecodeAck(data); err == nil {
+			logger.Info(prefix, "✅ Received transfer acknowledgment from %s (CRC: %08X)",
+				peripheral.UUID[:8], crc)
+			// Clear photoSendInProgress flag
+			ip.mu.Lock()
+			delete(ip.photoSendInProgress, peripheral.UUID)
+			ip.mu.Unlock()
+			return
+		}
+	}
 
 	// Try to decode metadata
 	if len(data) >= phototransfer.MetadataSize {
@@ -941,6 +1009,8 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 			state.receivedChunks = make(map[uint16][]byte)
 			state.senderDeviceID = peripheral.UUID
 			state.buffer = remaining
+			state.lastChunkTime = time.Now() // Initialize timeout tracking
+			state.retransmitCount = 0
 			state.mu.Unlock()
 
 			if len(remaining) > 0 {
@@ -982,6 +1052,7 @@ func (ip *iPhone) processPhotoChunks(peripheralUUID string, state *photoReceiveS
 
 		state.receivedChunks[chunk.Index] = chunk.Data
 		state.buffer = state.buffer[consumed:]
+		state.lastChunkTime = time.Now() // Update last chunk time
 
 		if chunk.Index == 0 || chunk.Index == state.expectedChunks-1 {
 			logger.Debug(prefix, "📥 Received chunk %d/%d from %s",
@@ -990,6 +1061,24 @@ func (ip *iPhone) processPhotoChunks(peripheralUUID string, state *photoReceiveS
 
 		// Check if complete
 		if uint16(len(state.receivedChunks)) == state.expectedChunks {
+			// Send acknowledgment before cleanup
+			const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+			const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+			ackPacket := phototransfer.EncodeAck(state.expectedCRC)
+
+			ip.mu.RLock()
+			peripheral := ip.connectedPeripherals[peripheralUUID]
+			ip.mu.RUnlock()
+
+			if peripheral != nil {
+				go func() {
+					photoChar := peripheral.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+					if photoChar != nil {
+						peripheral.WriteValue(ackPacket, photoChar, swift.CBCharacteristicWriteWithResponse)
+					}
+				}()
+			}
+
 			ip.reassembleAndSavePhoto(peripheralUUID, state)
 			state.isReceiving = false
 			// Clean up state
@@ -1152,6 +1241,148 @@ func (ip *iPhone) checkStaleHandshakes() {
 			go ip.sendHandshakeMessage(peripheral)
 		}
 	}
+}
+
+// startStalePhotoTransferChecker runs a background task to check for stale photo transfers
+func (ip *iPhone) startStalePhotoTransferChecker() {
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				ip.checkStalePhotoTransfers()
+			case <-ip.staleCheckDone:
+				return
+			}
+		}
+	}()
+}
+
+// checkStalePhotoTransfers checks for stale photo transfers and requests retransmission
+func (ip *iPhone) checkStalePhotoTransfers() {
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+	now := time.Now()
+	staleTimeout := 5 * time.Second
+	maxRetransmits := 3
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+
+	// Check central mode transfers (receiving from peripherals)
+	ip.mu.Lock()
+	for peripheralUUID, state := range ip.photoReceiveState {
+		state.mu.Lock()
+		if !state.isReceiving || state.lastChunkTime.IsZero() {
+			state.mu.Unlock()
+			continue
+		}
+
+		timeSinceLastChunk := now.Sub(state.lastChunkTime)
+		if timeSinceLastChunk > staleTimeout {
+			// Transfer is stale
+			if state.retransmitCount >= maxRetransmits {
+				// Give up after max retries
+				logger.Warn(prefix, "❌ Photo transfer from %s timed out after %d retransmit attempts, giving up",
+					peripheralUUID[:8], state.retransmitCount)
+				state.isReceiving = false
+				state.mu.Unlock()
+				delete(ip.photoReceiveState, peripheralUUID)
+				continue
+			}
+
+			// Find missing chunks
+			missingChunks := []uint16{}
+			for i := uint16(0); i < state.expectedChunks; i++ {
+				if _, exists := state.receivedChunks[i]; !exists {
+					missingChunks = append(missingChunks, i)
+				}
+			}
+
+			if len(missingChunks) == 0 {
+				// No missing chunks, shouldn't happen
+				state.mu.Unlock()
+				continue
+			}
+
+			state.retransmitCount++
+			state.lastChunkTime = now // Reset timeout for next attempt
+			state.mu.Unlock()
+
+			logger.Info(prefix, "🔄 Photo transfer from %s stalled, requesting %d missing chunks (attempt %d/%d)",
+				peripheralUUID[:8], len(missingChunks), state.retransmitCount, maxRetransmits)
+
+			// Send retransmit request
+			go func(pUUID string, chunks []uint16) {
+				retransReq := phototransfer.EncodeRetransmitRequest(chunks)
+				peripheral := ip.connectedPeripherals[pUUID]
+				if peripheral != nil {
+					photoChar := peripheral.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+					if photoChar != nil {
+						peripheral.WriteValue(retransReq, photoChar, swift.CBCharacteristicWriteWithResponse)
+					}
+				}
+			}(peripheralUUID, missingChunks)
+		} else {
+			state.mu.Unlock()
+		}
+	}
+	ip.mu.Unlock()
+
+	// Check server mode transfers (receiving from centrals)
+	ip.mu.Lock()
+	for senderUUID, state := range ip.photoReceiveStateServer {
+		state.mu.Lock()
+		if !state.isReceiving || state.lastChunkTime.IsZero() {
+			state.mu.Unlock()
+			continue
+		}
+
+		timeSinceLastChunk := now.Sub(state.lastChunkTime)
+		if timeSinceLastChunk > staleTimeout {
+			// Transfer is stale
+			if state.retransmitCount >= maxRetransmits {
+				// Give up after max retries
+				logger.Warn(prefix, "❌ Photo transfer from %s (server mode) timed out after %d retransmit attempts, giving up",
+					senderUUID[:8], state.retransmitCount)
+				state.isReceiving = false
+				state.mu.Unlock()
+				delete(ip.photoReceiveStateServer, senderUUID)
+				continue
+			}
+
+			// Find missing chunks
+			missingChunks := []uint16{}
+			for i := uint16(0); i < state.expectedChunks; i++ {
+				if _, exists := state.receivedChunks[i]; !exists {
+					missingChunks = append(missingChunks, i)
+				}
+			}
+
+			if len(missingChunks) == 0 {
+				// No missing chunks, shouldn't happen
+				state.mu.Unlock()
+				continue
+			}
+
+			state.retransmitCount++
+			state.lastChunkTime = now // Reset timeout for next attempt
+			state.mu.Unlock()
+
+			logger.Info(prefix, "🔄 Photo transfer from %s (server mode) stalled, requesting %d missing chunks (attempt %d/%d)",
+				senderUUID[:8], len(missingChunks), state.retransmitCount, maxRetransmits)
+
+			// Send retransmit request via wire (server mode)
+			go func(sUUID string, chunks []uint16) {
+				retransReq := phototransfer.EncodeRetransmitRequest(chunks)
+				ip.wire.WriteCharacteristic(sUUID, auraServiceUUID, auraPhotoCharUUID, retransReq)
+			}(senderUUID, missingChunks)
+		} else {
+			state.mu.Unlock()
+		}
+	}
+	ip.mu.Unlock()
 }
 
 // loadLocalProfile loads our profile from disk cache
@@ -1570,6 +1801,41 @@ func (ip *iPhone) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 	return nil
 }
 
+// handleRetransmitRequestServer handles a request to retransmit missing chunks in server mode
+func (ip *iPhone) handleRetransmitRequestServer(targetUUID string, missingChunks []uint16) error {
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+
+	// Load our cached photo
+	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.hardwareUUID)
+	photoData, err := os.ReadFile(cachePath)
+	if err != nil {
+		return fmt.Errorf("failed to load photo for retransmit: %w", err)
+	}
+
+	// Split into chunks
+	chunks := phototransfer.SplitIntoChunks(photoData, phototransfer.DefaultChunkSize)
+
+	logger.Info(prefix, "🔄 Retransmitting %d chunks to %s (server mode)", len(missingChunks), targetUUID[:8])
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+
+	// Retransmit only the missing chunks
+	for _, chunkIdx := range missingChunks {
+		if int(chunkIdx) >= len(chunks) {
+			continue // Invalid chunk index
+		}
+		chunkPacket := phototransfer.EncodeChunk(chunkIdx, chunks[chunkIdx])
+		if err := ip.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, chunkPacket); err != nil {
+			logger.Warn(prefix, "Failed to retransmit chunk %d: %v", chunkIdx, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	logger.Info(prefix, "✅ Retransmit complete to %s (server mode)", targetUUID[:8])
+	return nil
+}
+
 func (ip *iPhone) handlePhotoMessageFromUUID(senderUUID string, data []byte) {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	logger.Debug(prefix, "📥 Photo message from GATT server %s (%d bytes)", senderUUID[:8], len(data))
@@ -1584,6 +1850,29 @@ func (ip *iPhone) handlePhotoMessageFromUUID(senderUUID string, data []byte) {
 		ip.photoReceiveStateServer[senderUUID] = state
 	}
 	ip.mu.Unlock()
+
+	// Check for retransmit request
+	if len(data) >= 6 {
+		if missingChunks, err := phototransfer.DecodeRetransmitRequest(data); err == nil {
+			logger.Info(prefix, "🔄 Received retransmit request from %s for %d chunks (server mode)",
+				senderUUID[:8], len(missingChunks))
+			go ip.handleRetransmitRequestServer(senderUUID, missingChunks)
+			return
+		}
+	}
+
+	// Check for acknowledgment
+	if len(data) >= 8 {
+		if crc, err := phototransfer.DecodeAck(data); err == nil {
+			logger.Info(prefix, "✅ Received transfer acknowledgment from %s (CRC: %08X, server mode)",
+				senderUUID[:8], crc)
+			// Clear photoSendInProgress flag
+			ip.mu.Lock()
+			delete(ip.photoSendInProgress, senderUUID)
+			ip.mu.Unlock()
+			return
+		}
+	}
 
 	// Try to decode metadata
 	if len(data) >= phototransfer.MetadataSize {
@@ -1601,6 +1890,8 @@ func (ip *iPhone) handlePhotoMessageFromUUID(senderUUID string, data []byte) {
 			state.receivedChunks = make(map[uint16][]byte)
 			state.senderDeviceID = senderUUID
 			state.buffer = remaining
+			state.lastChunkTime = time.Now() // Initialize timeout tracking
+			state.retransmitCount = 0
 			state.mu.Unlock()
 
 			if len(remaining) > 0 {
@@ -1642,6 +1933,7 @@ func (ip *iPhone) processPhotoChunksFromServer(senderUUID string, state *photoRe
 
 		state.receivedChunks[chunk.Index] = chunk.Data
 		state.buffer = state.buffer[consumed:]
+		state.lastChunkTime = time.Now() // Update last chunk time
 
 		if chunk.Index == 0 || chunk.Index == state.expectedChunks-1 {
 			logger.Debug(prefix, "📥 Received chunk %d/%d from %s",
@@ -1650,6 +1942,15 @@ func (ip *iPhone) processPhotoChunksFromServer(senderUUID string, state *photoRe
 
 		// Check if complete
 		if uint16(len(state.receivedChunks)) == state.expectedChunks {
+			// Send acknowledgment before cleanup
+			const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+			const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+			ackPacket := phototransfer.EncodeAck(state.expectedCRC)
+
+			go func() {
+				ip.wire.WriteCharacteristic(senderUUID, auraServiceUUID, auraPhotoCharUUID, ackPacket)
+			}()
+
 			ip.reassembleAndSavePhotoFromServer(senderUUID, state)
 			state.isReceiving = false
 			// Clean up state

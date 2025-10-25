@@ -59,6 +59,8 @@ type photoReceiveState struct {
 	receivedChunks  map[uint16][]byte
 	senderDeviceID  string
 	buffer          []byte
+	lastChunkTime   time.Time  // Time of last chunk received (for timeout detection)
+	retransmitCount int        // Number of retransmit requests sent
 }
 
 // LocalProfile stores our local profile information
@@ -349,6 +351,10 @@ func (a *Android) Start() {
 	// Start periodic stale handshake checker
 	a.startStaleHandshakeChecker()
 	logger.Debug(prefix, "Started stale handshake checker (60s threshold, 30s interval)")
+
+	// Start periodic stale photo transfer checker
+	a.startStalePhotoTransferChecker()
+	logger.Debug(prefix, "Started stale photo transfer checker (5s timeout, 2s interval)")
 }
 
 // Stop stops BLE operations and cleans up resources
@@ -1187,6 +1193,150 @@ func (a *Android) checkStaleHandshakes() {
 			go a.sendHandshakeMessage(gatt)
 		}
 	}
+}
+
+// startStalePhotoTransferChecker runs a background task to check for stale photo transfers
+func (a *Android) startStalePhotoTransferChecker() {
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				a.checkStalePhotoTransfers()
+			case <-a.staleCheckDone:
+				return
+			}
+		}
+	}()
+}
+
+// checkStalePhotoTransfers checks for stale photo transfers and requests retransmission
+func (a *Android) checkStalePhotoTransfers() {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+	now := time.Now()
+	staleTimeout := 5 * time.Second
+	maxRetransmits := 3
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+
+	// Check central mode transfers (receiving from remote GATT servers)
+	a.mu.Lock()
+	for remoteUUID, state := range a.photoReceiveState {
+		state.mu.Lock()
+		if !state.isReceiving || state.lastChunkTime.IsZero() {
+			state.mu.Unlock()
+			continue
+		}
+
+		timeSinceLastChunk := now.Sub(state.lastChunkTime)
+		if timeSinceLastChunk > staleTimeout {
+			// Transfer is stale
+			if state.retransmitCount >= maxRetransmits {
+				// Give up after max retries
+				logger.Warn(prefix, "❌ Photo transfer from %s timed out after %d retransmit attempts, giving up",
+					remoteUUID[:8], state.retransmitCount)
+				state.isReceiving = false
+				state.mu.Unlock()
+				delete(a.photoReceiveState, remoteUUID)
+				continue
+			}
+
+			// Find missing chunks
+			missingChunks := []uint16{}
+			for i := uint16(0); i < state.expectedChunks; i++ {
+				if _, exists := state.receivedChunks[i]; !exists {
+					missingChunks = append(missingChunks, i)
+				}
+			}
+
+			if len(missingChunks) == 0 {
+				// No missing chunks, shouldn't happen
+				state.mu.Unlock()
+				continue
+			}
+
+			state.retransmitCount++
+			state.lastChunkTime = now // Reset timeout for next attempt
+			state.mu.Unlock()
+
+			logger.Info(prefix, "🔄 Photo transfer from %s stalled, requesting %d missing chunks (attempt %d/%d)",
+				remoteUUID[:8], len(missingChunks), state.retransmitCount, maxRetransmits)
+
+			// Send retransmit request
+			go func(rUUID string, chunks []uint16) {
+				retransReq := phototransfer.EncodeRetransmitRequest(chunks)
+				gatt := a.connectedGatts[rUUID]
+				if gatt != nil {
+					char := gatt.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+					if char != nil {
+						gatt.WriteCharacteristic(char)
+						char.Value = retransReq
+						gatt.WriteCharacteristic(char)
+					}
+				}
+			}(remoteUUID, missingChunks)
+		} else {
+			state.mu.Unlock()
+		}
+	}
+	a.mu.Unlock()
+
+	// Check server mode transfers (receiving from centrals)
+	a.mu.Lock()
+	for senderUUID, state := range a.photoReceiveStateServer {
+		state.mu.Lock()
+		if !state.isReceiving || state.lastChunkTime.IsZero() {
+			state.mu.Unlock()
+			continue
+		}
+
+		timeSinceLastChunk := now.Sub(state.lastChunkTime)
+		if timeSinceLastChunk > staleTimeout {
+			// Transfer is stale
+			if state.retransmitCount >= maxRetransmits {
+				// Give up after max retries
+				logger.Warn(prefix, "❌ Photo transfer from %s (server mode) timed out after %d retransmit attempts, giving up",
+					senderUUID[:8], state.retransmitCount)
+				state.isReceiving = false
+				state.mu.Unlock()
+				delete(a.photoReceiveStateServer, senderUUID)
+				continue
+			}
+
+			// Find missing chunks
+			missingChunks := []uint16{}
+			for i := uint16(0); i < state.expectedChunks; i++ {
+				if _, exists := state.receivedChunks[i]; !exists {
+					missingChunks = append(missingChunks, i)
+				}
+			}
+
+			if len(missingChunks) == 0 {
+				// No missing chunks, shouldn't happen
+				state.mu.Unlock()
+				continue
+			}
+
+			state.retransmitCount++
+			state.lastChunkTime = now // Reset timeout for next attempt
+			state.mu.Unlock()
+
+			logger.Info(prefix, "🔄 Photo transfer from %s (server mode) stalled, requesting %d missing chunks (attempt %d/%d)",
+				senderUUID[:8], len(missingChunks), state.retransmitCount, maxRetransmits)
+
+			// Send retransmit request via wire (server mode)
+			go func(sUUID string, chunks []uint16) {
+				retransReq := phototransfer.EncodeRetransmitRequest(chunks)
+				a.wire.WriteCharacteristic(sUUID, auraServiceUUID, auraPhotoCharUUID, retransReq)
+			}(senderUUID, missingChunks)
+		} else {
+			state.mu.Unlock()
+		}
+	}
+	a.mu.Unlock()
 }
 
 // loadLocalProfile loads our profile from disk cache
