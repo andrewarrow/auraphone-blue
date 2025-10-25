@@ -59,6 +59,7 @@ This simulator lets you:
 ## Quick Start
 
 ```bash
+go mod tidy
 go run main.go
 ```
 
