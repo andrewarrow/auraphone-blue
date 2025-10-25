@@ -102,6 +102,7 @@ type Android struct {
 	lastHandshakeTime      map[string]time.Time               // deviceID -> last handshake timestamp
 	photoSendInProgress    map[string]bool                    // deviceID -> true if photo send in progress
 	photoReceiveState    *photoReceiveState
+	photoReceiveStateServer map[string]*photoReceiveState     // senderUUID -> receive state for server mode
 	useAutoConnect       bool          // Whether to use autoConnect=true mode
 	staleCheckDone       chan struct{} // Signal channel for stopping background checker
 }
@@ -134,6 +135,7 @@ func NewAndroid(hardwareUUID string) *Android {
 		photoReceiveState: &photoReceiveState{
 			receivedChunks: make(map[uint16][]byte),
 		},
+		photoReceiveStateServer: make(map[string]*photoReceiveState),
 		useAutoConnect: false, // Default: manual reconnect (matches real Android apps)
 	}
 
@@ -1579,7 +1581,158 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 func (a *Android) handlePhotoMessageFromServer(senderUUID string, data []byte) {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	logger.Debug(prefix, "📥 Photo message from GATT server %s (%d bytes)", senderUUID[:8], len(data))
-	// TODO: Implement photo chunk handling for server-side
+
+	// Get or create photo receive state for this sender
+	a.mu.Lock()
+	state, exists := a.photoReceiveStateServer[senderUUID]
+	if !exists {
+		state = &photoReceiveState{
+			receivedChunks: make(map[uint16][]byte),
+		}
+		a.photoReceiveStateServer[senderUUID] = state
+	}
+	a.mu.Unlock()
+
+	// Try to decode metadata
+	if len(data) >= phototransfer.MetadataSize {
+		meta, remaining, err := phototransfer.DecodeMetadata(data)
+		if err == nil {
+			// Metadata packet received
+			logger.Info(prefix, "📸 Receiving photo from %s (size: %d, CRC: %08X, chunks: %d)",
+				senderUUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
+
+			state.isReceiving = true
+			state.expectedSize = meta.TotalSize
+			state.expectedCRC = meta.TotalCRC
+			state.expectedChunks = meta.TotalChunks
+			state.receivedChunks = make(map[uint16][]byte)
+			state.senderDeviceID = senderUUID
+			state.buffer = remaining
+
+			if len(remaining) > 0 {
+				a.processPhotoChunksFromServer(senderUUID, state)
+			}
+			return
+		}
+	}
+
+	// Regular chunk data
+	if state.isReceiving {
+		state.buffer = append(state.buffer, data...)
+		a.processPhotoChunksFromServer(senderUUID, state)
+	}
+}
+
+// processPhotoChunksFromServer processes buffered photo chunks from server mode
+func (a *Android) processPhotoChunksFromServer(senderUUID string, state *photoReceiveState) {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
+	for {
+		if len(state.buffer) < phototransfer.ChunkHeaderSize {
+			break
+		}
+
+		chunk, consumed, err := phototransfer.DecodeChunk(state.buffer)
+		if err != nil {
+			break
+		}
+
+		state.receivedChunks[chunk.Index] = chunk.Data
+		state.buffer = state.buffer[consumed:]
+
+		if chunk.Index == 0 || chunk.Index == state.expectedChunks-1 {
+			logger.Debug(prefix, "📥 Received chunk %d/%d from %s",
+				len(state.receivedChunks), state.expectedChunks, senderUUID[:8])
+		}
+
+		// Check if complete
+		if uint16(len(state.receivedChunks)) == state.expectedChunks {
+			a.reassembleAndSavePhotoFromServer(senderUUID, state)
+			state.isReceiving = false
+			// Clean up state
+			a.mu.Lock()
+			delete(a.photoReceiveStateServer, senderUUID)
+			a.mu.Unlock()
+			break
+		}
+	}
+}
+
+// reassembleAndSavePhotoFromServer reassembles chunks and saves the photo from server mode
+func (a *Android) reassembleAndSavePhotoFromServer(senderUUID string, state *photoReceiveState) error {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
+	// Reassemble in order
+	var photoData []byte
+	for i := uint16(0); i < state.expectedChunks; i++ {
+		photoData = append(photoData, state.receivedChunks[i]...)
+	}
+
+	// Verify CRC
+	calculatedCRC := phototransfer.CalculateCRC32(photoData)
+	if calculatedCRC != state.expectedCRC {
+		logger.Error(prefix, "❌ Photo CRC mismatch from %s: expected %08X, got %08X",
+			senderUUID[:8], state.expectedCRC, calculatedCRC)
+		return fmt.Errorf("CRC mismatch")
+	}
+
+	// Calculate hash
+	hash := sha256.Sum256(photoData)
+	hashStr := hex.EncodeToString(hash[:])
+
+	// Get the logical deviceID from the sender UUID
+	// For server mode, we need to look this up from our cached handshakes
+	a.mu.Lock()
+	deviceID := ""
+	// First try remoteUUIDToDeviceID mapping (if they connected to us as central)
+	if id, exists := a.remoteUUIDToDeviceID[senderUUID]; exists {
+		deviceID = id
+	} else {
+		// If not found, scan through lastHandshakeTime to find the device that matches this UUID
+		// This happens when we're the server and they're the central writing to us
+		// In this case, we should have received a handshake from them via write request
+		// For now, use senderUUID as fallback (will be mapped later on next handshake)
+		deviceID = senderUUID // Temporary until we get proper device ID from handshake
+	}
+	a.mu.Unlock()
+
+	// Save photo using cache manager (persists deviceID -> photoHash mapping)
+	if err := a.cacheManager.SaveDevicePhoto(deviceID, photoData, hashStr); err != nil {
+		logger.Error(prefix, "❌ Failed to save photo from %s: %v", senderUUID[:8], err)
+		return err
+	}
+
+	// Update in-memory mapping
+	a.mu.Lock()
+	a.receivedPhotoHashes[deviceID] = hashStr
+	a.mu.Unlock()
+
+	logger.Info(prefix, "✅ Photo saved from %s (hash: %s, size: %d bytes)",
+		senderUUID[:8], hashStr[:8], len(photoData))
+
+	// Notify GUI about the new photo by re-triggering discovery callback
+	if a.discoveryCallback != nil && deviceID != "" {
+		// Get device name from advertising data or use device ID
+		name := deviceID[:8]
+		if len(deviceID) == 8 { // It's a proper device ID
+			// Try to get first name from metadata
+			if metadata, err := a.cacheManager.LoadDeviceMetadata(deviceID); err == nil && metadata != nil && metadata.FirstName != "" {
+				name = metadata.FirstName
+			}
+		}
+
+		a.discoveryCallback(phone.DiscoveredDevice{
+			DeviceID:  deviceID,
+			Name:      name,
+			RSSI:      -50, // Default RSSI, actual value not critical for photo update
+			Platform:  "unknown",
+			PhotoHash: hashStr,
+			PhotoData: photoData,
+		})
+		logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", senderUUID[:8])
+	}
+
+	return nil
 }
 
 // handleProfileMessageFromServer processes profile data from a central device

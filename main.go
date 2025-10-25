@@ -808,11 +808,11 @@ func (l *Launcher) buildUI() fyne.CanvasObject {
 
 	// Log level selector
 	logLevelLabel := widget.NewLabel("Log Level:")
-	logLevelSelect := widget.NewSelect([]string{"ERROR", "WARN", "INFO", "DEBUG"}, func(selected string) {
+	logLevelSelect := widget.NewSelect([]string{"ERROR", "WARN", "INFO", "DEBUG", "TRACE"}, func(selected string) {
 		logger.SetLevel(logger.ParseLevel(selected))
 		fmt.Printf("Log level set to: %s\n", selected)
 	})
-	logLevelSelect.SetSelected("DEBUG") // Default level
+	logLevelSelect.SetSelected("TRACE") // Default level
 
 	// Start iOS button
 	iosBtn := widget.NewButton("Start iOS Device", func() {

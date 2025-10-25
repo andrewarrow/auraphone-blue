@@ -100,6 +100,7 @@ type iPhone struct {
 	lastHandshakeTime     map[string]time.Time           // deviceID -> last handshake timestamp
 	photoSendInProgress   map[string]bool                // deviceID -> true if photo send in progress
 	photoReceiveState     *photoReceiveState
+	photoReceiveStateServer map[string]*photoReceiveState // senderUUID -> receive state for peripheral mode
 	staleCheckDone        chan struct{} // Signal channel for stopping background checker
 }
 
@@ -129,6 +130,7 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		photoReceiveState: &photoReceiveState{
 			receivedChunks: make(map[uint16][]byte),
 		},
+		photoReceiveStateServer: make(map[string]*photoReceiveState),
 	}
 
 	// Initialize wire with hardware UUID
@@ -1399,10 +1401,160 @@ func (ip *iPhone) sendHandshakeToDevice(targetUUID string) {
 }
 
 func (ip *iPhone) handlePhotoMessageFromUUID(senderUUID string, data []byte) {
-	// Reuse existing photo handling logic - simplified
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
-	logger.Debug(prefix, "📥 Photo message from %s (%d bytes)", senderUUID[:8], len(data))
-	// TODO: Implement photo chunk handling
+	logger.Debug(prefix, "📥 Photo message from GATT server %s (%d bytes)", senderUUID[:8], len(data))
+
+	// Get or create photo receive state for this sender
+	ip.mu.Lock()
+	state, exists := ip.photoReceiveStateServer[senderUUID]
+	if !exists {
+		state = &photoReceiveState{
+			receivedChunks: make(map[uint16][]byte),
+		}
+		ip.photoReceiveStateServer[senderUUID] = state
+	}
+	ip.mu.Unlock()
+
+	// Try to decode metadata
+	if len(data) >= phototransfer.MetadataSize {
+		meta, remaining, err := phototransfer.DecodeMetadata(data)
+		if err == nil {
+			// Metadata packet received
+			logger.Info(prefix, "📸 Receiving photo from %s (size: %d, CRC: %08X, chunks: %d)",
+				senderUUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
+
+			state.isReceiving = true
+			state.expectedSize = meta.TotalSize
+			state.expectedCRC = meta.TotalCRC
+			state.expectedChunks = meta.TotalChunks
+			state.receivedChunks = make(map[uint16][]byte)
+			state.senderDeviceID = senderUUID
+			state.buffer = remaining
+
+			if len(remaining) > 0 {
+				ip.processPhotoChunksFromServer(senderUUID, state)
+			}
+			return
+		}
+	}
+
+	// Regular chunk data
+	if state.isReceiving {
+		state.buffer = append(state.buffer, data...)
+		ip.processPhotoChunksFromServer(senderUUID, state)
+	}
+}
+
+// processPhotoChunksFromServer processes buffered photo chunks from peripheral mode
+func (ip *iPhone) processPhotoChunksFromServer(senderUUID string, state *photoReceiveState) {
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+
+	for {
+		if len(state.buffer) < phototransfer.ChunkHeaderSize {
+			break
+		}
+
+		chunk, consumed, err := phototransfer.DecodeChunk(state.buffer)
+		if err != nil {
+			break
+		}
+
+		state.receivedChunks[chunk.Index] = chunk.Data
+		state.buffer = state.buffer[consumed:]
+
+		if chunk.Index == 0 || chunk.Index == state.expectedChunks-1 {
+			logger.Debug(prefix, "📥 Received chunk %d/%d from %s",
+				len(state.receivedChunks), state.expectedChunks, senderUUID[:8])
+		}
+
+		// Check if complete
+		if uint16(len(state.receivedChunks)) == state.expectedChunks {
+			ip.reassembleAndSavePhotoFromServer(senderUUID, state)
+			state.isReceiving = false
+			// Clean up state
+			ip.mu.Lock()
+			delete(ip.photoReceiveStateServer, senderUUID)
+			ip.mu.Unlock()
+			break
+		}
+	}
+}
+
+// reassembleAndSavePhotoFromServer reassembles chunks and saves the photo from peripheral mode
+func (ip *iPhone) reassembleAndSavePhotoFromServer(senderUUID string, state *photoReceiveState) error {
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+
+	// Reassemble in order
+	var photoData []byte
+	for i := uint16(0); i < state.expectedChunks; i++ {
+		photoData = append(photoData, state.receivedChunks[i]...)
+	}
+
+	// Verify CRC
+	calculatedCRC := phototransfer.CalculateCRC32(photoData)
+	if calculatedCRC != state.expectedCRC {
+		logger.Error(prefix, "❌ Photo CRC mismatch from %s: expected %08X, got %08X",
+			senderUUID[:8], state.expectedCRC, calculatedCRC)
+		return fmt.Errorf("CRC mismatch")
+	}
+
+	// Calculate hash
+	hash := sha256.Sum256(photoData)
+	hashStr := hex.EncodeToString(hash[:])
+
+	// Get the logical deviceID from the sender UUID
+	// For peripheral mode, we need to look this up from our cached handshakes
+	ip.mu.Lock()
+	deviceID := ""
+	// First try peripheralToDeviceID mapping (if they connected to us as central)
+	if id, exists := ip.peripheralToDeviceID[senderUUID]; exists {
+		deviceID = id
+	} else {
+		// If not found, scan through lastHandshakeTime to find the device that matches this UUID
+		// This happens when we're the peripheral and they're the central writing to us
+		// In this case, we should have received a handshake from them via write request
+		// For now, use senderUUID as fallback (will be mapped later on next handshake)
+		deviceID = senderUUID // Temporary until we get proper device ID from handshake
+	}
+	ip.mu.Unlock()
+
+	// Save photo using cache manager (persists deviceID -> photoHash mapping)
+	if err := ip.cacheManager.SaveDevicePhoto(deviceID, photoData, hashStr); err != nil {
+		logger.Error(prefix, "❌ Failed to save photo from %s: %v", senderUUID[:8], err)
+		return err
+	}
+
+	// Update in-memory mapping
+	ip.mu.Lock()
+	ip.receivedPhotoHashes[deviceID] = hashStr
+	ip.mu.Unlock()
+
+	logger.Info(prefix, "✅ Photo saved from %s (hash: %s, size: %d bytes)",
+		senderUUID[:8], hashStr[:8], len(photoData))
+
+	// Notify GUI about the new photo by re-triggering discovery callback
+	if ip.discoveryCallback != nil && deviceID != "" {
+		// Get device name from advertising data or use device ID
+		name := deviceID[:8]
+		if len(deviceID) == 8 { // It's a proper device ID
+			// Try to get first name from metadata
+			if metadata, err := ip.cacheManager.LoadDeviceMetadata(deviceID); err == nil && metadata != nil && metadata.FirstName != "" {
+				name = metadata.FirstName
+			}
+		}
+
+		ip.discoveryCallback(phone.DiscoveredDevice{
+			DeviceID:  deviceID,
+			Name:      name,
+			RSSI:      -50, // Default RSSI, actual value not critical for photo update
+			Platform:  "unknown",
+			PhotoHash: hashStr,
+			PhotoData: photoData,
+		})
+		logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", senderUUID[:8])
+	}
+
+	return nil
 }
 
 func (ip *iPhone) handleProfileMessageFromUUID(senderUUID string, data []byte) {
