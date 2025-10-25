@@ -1,9 +1,0 @@
-2025-10-24 10:30:14.500 D/BluetoothProxaurati: 📡 [SCAN] New device discovered: iPhone 15 Pro, waiting for them to connect (we're peripheral)
-2025-10-24 10:30:15.400 D/BluetoothProxaurati: 📥 [HANDSHAKE] Received handshake from central iPhone 15 Pro
-2025-10-24 10:30:15.500 D/BluetoothProxaurati: 📤 [HANDSHAKE-RESPONSE] Sending handshake response to iPhone 15 Pro
-2025-10-24 10:30:16.000 D/BluetoothProxaurati: 📸 [PROFILE-PHOTO] Starting photo send to central iPhone 15 Pro
-2025-10-24 10:30:16.100 D/BluetoothPhoto: ⚔️ [PHOTO-COLLISION] Metadata received while sending. Applying tie-breaker.
-2025-10-24 10:30:16.150 D/BluetoothPhoto: ⚔️ [PHOTO-COLLISION] Win (Pixel 8 Pro > iPhone 15 Pro). Storing their metadata to receive after our send completes.
-2025-10-24 10:30:17.500 D/BluetoothProxaurati: ✅ [PROFILE-PHOTO] Completed sending photo to central iPhone 15 Pro
-2025-10-24 10:30:17.600 D/BluetoothPhoto: 📸 [PROFILE-PHOTO] Now receiving stored metadata from iPhone 15 Pro
-2025-10-24 10:30:19.000 D/BluetoothProxaurati: ✅ [PHOTO] Completed receiving photo from iPhone 15 Pro
