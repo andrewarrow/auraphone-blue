@@ -58,7 +58,9 @@ type PhoneWindow struct {
 // NewPhoneWindow creates a new phone window
 func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 	// Select random initial photo from face1.jpg to face12.jpg
-	photoNum := rand.Intn(12) + 1 // Random number from 1 to 12
+	// Use a unique random source for each phone instance to avoid collisions
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	photoNum := rng.Intn(12) + 1 // Random number from 1 to 12
 	selectedPhoto := fmt.Sprintf("testdata/face%d.jpg", photoNum)
 
 	pw := &PhoneWindow{
@@ -804,6 +806,8 @@ func (l *Launcher) buildUI() fyne.CanvasObject {
 
 	// Start iOS button
 	iosBtn := widget.NewButton("Start iOS Device", func() {
+		// Small delay to ensure unique random seed if multiple devices started quickly
+		time.Sleep(10 * time.Millisecond)
 		phoneWindow := NewPhoneWindow(l.app, "iOS")
 		if phoneWindow != nil {
 			phoneWindow.Show()
@@ -813,6 +817,8 @@ func (l *Launcher) buildUI() fyne.CanvasObject {
 
 	// Start Android button
 	androidBtn := widget.NewButton("Start Android Device", func() {
+		// Small delay to ensure unique random seed if multiple devices started quickly
+		time.Sleep(10 * time.Millisecond)
 		phoneWindow := NewPhoneWindow(l.app, "Android")
 		if phoneWindow != nil {
 			phoneWindow.Show()
