@@ -523,5 +523,29 @@ func (a *Android) reassembleAndSavePhoto() error {
 	// Update received photo hash mapping
 	a.receivedPhotoHashes[a.photoReceiveState.senderDeviceID] = hashStr
 
+	// Notify GUI about the new photo by re-triggering discovery callback
+	if a.discoveryCallback != nil {
+		senderID := a.photoReceiveState.senderDeviceID
+		if _, exists := a.connectedGatts[senderID]; exists {
+			// Get device name from advertising data or use UUID
+			name := senderID[:8]
+			if advData, err := a.wire.ReadAdvertisingData(senderID); err == nil && advData != nil {
+				if advData.DeviceName != "" {
+					name = advData.DeviceName
+				}
+			}
+
+			a.discoveryCallback(phone.DiscoveredDevice{
+				DeviceID:  senderID,
+				Name:      name,
+				RSSI:      -55, // Default RSSI, actual value not critical for photo update
+				Platform:  "unknown",
+				PhotoHash: hashStr,
+				PhotoData: photoData,
+			})
+			logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", senderID[:8])
+		}
+	}
+
 	return nil
 }

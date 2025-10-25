@@ -223,15 +223,10 @@ func (g *BluetoothGatt) StartListening() {
 					if char != nil {
 						char.Value = msg.Data
 
-						// Determine callback based on operation type
-						if msg.Operation == "notify" || msg.Operation == "indicate" {
-							if g.callback != nil {
-								g.callback.OnCharacteristicChanged(g, char)
-							}
-						} else {
-							if g.callback != nil {
-								g.callback.OnCharacteristicRead(g, char, 0) // GATT_SUCCESS = 0
-							}
+						// Always call OnCharacteristicChanged for any incoming data
+						// This matches iOS behavior and properly handles write operations
+						if g.callback != nil {
+							g.callback.OnCharacteristicChanged(g, char)
 						}
 					}
 

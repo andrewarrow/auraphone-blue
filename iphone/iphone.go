@@ -552,5 +552,29 @@ func (ip *iPhone) reassembleAndSavePhoto() error {
 	// Update received photo hash mapping
 	ip.receivedPhotoHashes[ip.photoReceiveState.senderDeviceID] = hashStr
 
+	// Notify GUI about the new photo by re-triggering discovery callback
+	if ip.discoveryCallback != nil {
+		senderID := ip.photoReceiveState.senderDeviceID
+		if peripheral, exists := ip.connectedPeripherals[senderID]; exists {
+			// Get device name from advertising data or use UUID
+			name := senderID[:8]
+			if advData, err := ip.wire.ReadAdvertisingData(senderID); err == nil && advData != nil {
+				if advData.DeviceName != "" {
+					name = advData.DeviceName
+				}
+			}
+
+			ip.discoveryCallback(phone.DiscoveredDevice{
+				DeviceID:  senderID,
+				Name:      name,
+				RSSI:      -50, // Default RSSI, actual value not critical for photo update
+				Platform:  "unknown",
+				PhotoHash: hashStr,
+				PhotoData: photoData,
+			})
+			logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", peripheral.UUID[:8])
+		}
+	}
+
 	return nil
 }
