@@ -45,6 +45,7 @@ type Android struct {
 	deviceIDToPhotoHash  map[string]string                  // deviceID -> their TX photo hash
 	receivedPhotoHashes  map[string]string                  // deviceID -> RX hash (photos we got from them)
 	lastHandshakeTime    map[string]time.Time               // deviceID -> last handshake timestamp
+	photoSendInProgress  map[string]bool                    // deviceID -> true if photo send in progress
 	photoReceiveState    *photoReceiveState
 	useAutoConnect       bool          // Whether to use autoConnect=true mode
 	staleCheckDone       chan struct{} // Signal channel for stopping background checker
@@ -63,6 +64,7 @@ func NewAndroid() *Android {
 		deviceIDToPhotoHash:  make(map[string]string),
 		receivedPhotoHashes:  make(map[string]string),
 		lastHandshakeTime:    make(map[string]time.Time),
+		photoSendInProgress:  make(map[string]bool),
 		staleCheckDone:       make(chan struct{}),
 		photoReceiveState: &photoReceiveState{
 			receivedChunks: make(map[uint16][]byte),
@@ -459,6 +461,19 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 		logger.Debug(prefix, "⏭️  Remote already has our photo, skipping")
 		return nil
 	}
+
+	// Check if a photo send is already in progress to this device
+	if a.photoSendInProgress[remoteUUID] {
+		logger.Debug(prefix, "⏭️  Photo send already in progress to %s, skipping duplicate", remoteUUID[:8])
+		return nil
+	}
+
+	// Mark photo send as in progress
+	a.photoSendInProgress[remoteUUID] = true
+	defer func() {
+		// Clear flag when done
+		delete(a.photoSendInProgress, remoteUUID)
+	}()
 
 	// Load our cached photo
 	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.deviceUUID)
