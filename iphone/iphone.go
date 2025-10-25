@@ -51,6 +51,7 @@ func hashBytesToString(hashBytes []byte) string {
 
 // photoReceiveState tracks photo reception progress
 type photoReceiveState struct {
+	mu              sync.Mutex
 	isReceiving     bool
 	expectedSize    uint32
 	expectedCRC     uint32
@@ -945,6 +946,7 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 			logger.Info(prefix, "📸 Receiving photo from %s (size: %d, CRC: %08X, chunks: %d)",
 				peripheral.UUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
 
+			state.mu.Lock()
 			state.isReceiving = true
 			state.expectedSize = meta.TotalSize
 			state.expectedCRC = meta.TotalCRC
@@ -952,6 +954,7 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 			state.receivedChunks = make(map[uint16][]byte)
 			state.senderDeviceID = peripheral.UUID
 			state.buffer = remaining
+			state.mu.Unlock()
 
 			if len(remaining) > 0 {
 				ip.processPhotoChunks(peripheral.UUID, state)
@@ -961,8 +964,14 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 	}
 
 	// Regular chunk data
-	if state.isReceiving {
+	state.mu.Lock()
+	isReceiving := state.isReceiving
+	if isReceiving {
 		state.buffer = append(state.buffer, data...)
+	}
+	state.mu.Unlock()
+
+	if isReceiving {
 		ip.processPhotoChunks(peripheral.UUID, state)
 	}
 }
@@ -970,6 +979,9 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 // processPhotoChunks processes buffered photo chunks
 func (ip *iPhone) processPhotoChunks(peripheralUUID string, state *photoReceiveState) {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
 
 	for {
 		if len(state.buffer) < phototransfer.ChunkHeaderSize {
@@ -1579,6 +1591,7 @@ func (ip *iPhone) handlePhotoMessageFromUUID(senderUUID string, data []byte) {
 			logger.Info(prefix, "📸 Receiving photo from %s (size: %d, CRC: %08X, chunks: %d)",
 				senderUUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
 
+			state.mu.Lock()
 			state.isReceiving = true
 			state.expectedSize = meta.TotalSize
 			state.expectedCRC = meta.TotalCRC
@@ -1586,6 +1599,7 @@ func (ip *iPhone) handlePhotoMessageFromUUID(senderUUID string, data []byte) {
 			state.receivedChunks = make(map[uint16][]byte)
 			state.senderDeviceID = senderUUID
 			state.buffer = remaining
+			state.mu.Unlock()
 
 			if len(remaining) > 0 {
 				ip.processPhotoChunksFromServer(senderUUID, state)
@@ -1595,8 +1609,14 @@ func (ip *iPhone) handlePhotoMessageFromUUID(senderUUID string, data []byte) {
 	}
 
 	// Regular chunk data
-	if state.isReceiving {
+	state.mu.Lock()
+	isReceiving := state.isReceiving
+	if isReceiving {
 		state.buffer = append(state.buffer, data...)
+	}
+	state.mu.Unlock()
+
+	if isReceiving {
 		ip.processPhotoChunksFromServer(senderUUID, state)
 	}
 }
@@ -1604,6 +1624,9 @@ func (ip *iPhone) handlePhotoMessageFromUUID(senderUUID string, data []byte) {
 // processPhotoChunksFromServer processes buffered photo chunks from peripheral mode
 func (ip *iPhone) processPhotoChunksFromServer(senderUUID string, state *photoReceiveState) {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
 
 	for {
 		if len(state.buffer) < phototransfer.ChunkHeaderSize {

@@ -51,6 +51,7 @@ func hashBytesToString(hashBytes []byte) string {
 
 // photoReceiveState tracks photo reception progress
 type photoReceiveState struct {
+	mu              sync.Mutex
 	isReceiving     bool
 	expectedSize    uint32
 	expectedCRC     uint32
@@ -957,6 +958,7 @@ func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 			logger.Info(prefix, "📸 Receiving photo from %s (size: %d, CRC: %08X, chunks: %d)",
 				remoteUUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
 
+			state.mu.Lock()
 			state.isReceiving = true
 			state.expectedSize = meta.TotalSize
 			state.expectedCRC = meta.TotalCRC
@@ -964,6 +966,7 @@ func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 			state.receivedChunks = make(map[uint16][]byte)
 			state.senderDeviceID = remoteUUID
 			state.buffer = remaining
+			state.mu.Unlock()
 
 			if len(remaining) > 0 {
 				a.processPhotoChunks(remoteUUID, state)
@@ -973,8 +976,14 @@ func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 	}
 
 	// Regular chunk data
-	if state.isReceiving {
+	state.mu.Lock()
+	isReceiving := state.isReceiving
+	if isReceiving {
 		state.buffer = append(state.buffer, data...)
+	}
+	state.mu.Unlock()
+
+	if isReceiving {
 		a.processPhotoChunks(remoteUUID, state)
 	}
 }
@@ -982,6 +991,9 @@ func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 // processPhotoChunks processes buffered photo chunks
 func (a *Android) processPhotoChunks(remoteUUID string, state *photoReceiveState) {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
 
 	for {
 		if len(state.buffer) < phototransfer.ChunkHeaderSize {
@@ -1762,6 +1774,7 @@ func (a *Android) handlePhotoMessageFromServer(senderUUID string, data []byte) {
 			logger.Info(prefix, "📸 Receiving photo from %s (size: %d, CRC: %08X, chunks: %d)",
 				senderUUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
 
+			state.mu.Lock()
 			state.isReceiving = true
 			state.expectedSize = meta.TotalSize
 			state.expectedCRC = meta.TotalCRC
@@ -1769,6 +1782,7 @@ func (a *Android) handlePhotoMessageFromServer(senderUUID string, data []byte) {
 			state.receivedChunks = make(map[uint16][]byte)
 			state.senderDeviceID = senderUUID
 			state.buffer = remaining
+			state.mu.Unlock()
 
 			if len(remaining) > 0 {
 				a.processPhotoChunksFromServer(senderUUID, state)
@@ -1778,8 +1792,14 @@ func (a *Android) handlePhotoMessageFromServer(senderUUID string, data []byte) {
 	}
 
 	// Regular chunk data
-	if state.isReceiving {
+	state.mu.Lock()
+	isReceiving := state.isReceiving
+	if isReceiving {
 		state.buffer = append(state.buffer, data...)
+	}
+	state.mu.Unlock()
+
+	if isReceiving {
 		a.processPhotoChunksFromServer(senderUUID, state)
 	}
 }
@@ -1787,6 +1807,9 @@ func (a *Android) handlePhotoMessageFromServer(senderUUID string, data []byte) {
 // processPhotoChunksFromServer processes buffered photo chunks from server mode
 func (a *Android) processPhotoChunksFromServer(senderUUID string, state *photoReceiveState) {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
 
 	for {
 		if len(state.buffer) < phototransfer.ChunkHeaderSize {
