@@ -196,6 +196,10 @@ func (w *Wire) InitializeDevice() error {
 	outboxPath := filepath.Join(devicePath, "outbox")
 	inboxHistoryPath := filepath.Join(devicePath, "inbox_history")
 	outboxHistoryPath := filepath.Join(devicePath, "outbox_history")
+	centralInboxPath := filepath.Join(devicePath, "central_inbox")
+	peripheralInboxPath := filepath.Join(devicePath, "peripheral_inbox")
+	centralInboxHistoryPath := filepath.Join(devicePath, "central_inbox_history")
+	peripheralInboxHistoryPath := filepath.Join(devicePath, "peripheral_inbox_history")
 
 	if err := os.MkdirAll(inboxPath, 0755); err != nil {
 		return fmt.Errorf("failed to create inbox: %w", err)
@@ -208,6 +212,18 @@ func (w *Wire) InitializeDevice() error {
 	}
 	if err := os.MkdirAll(outboxHistoryPath, 0755); err != nil {
 		return fmt.Errorf("failed to create outbox_history: %w", err)
+	}
+	if err := os.MkdirAll(centralInboxPath, 0755); err != nil {
+		return fmt.Errorf("failed to create central_inbox: %w", err)
+	}
+	if err := os.MkdirAll(peripheralInboxPath, 0755); err != nil {
+		return fmt.Errorf("failed to create peripheral_inbox: %w", err)
+	}
+	if err := os.MkdirAll(centralInboxHistoryPath, 0755); err != nil {
+		return fmt.Errorf("failed to create central_inbox_history: %w", err)
+	}
+	if err := os.MkdirAll(peripheralInboxHistoryPath, 0755); err != nil {
+		return fmt.Errorf("failed to create peripheral_inbox_history: %w", err)
 	}
 
 	return nil
@@ -581,11 +597,37 @@ func (w *Wire) GetSimulator() *Simulator {
 	return w.simulator
 }
 
+// ShouldActAsCentral determines if this device should act as Central to the target device
+// Rule: Device with LARGER UUID acts as Central (initiates connection)
+// This provides deterministic role assignment to prevent connection conflicts
+func (w *Wire) ShouldActAsCentral(targetUUID string) bool {
+	return w.localUUID > targetUUID
+}
+
+// getTargetInboxPath returns the correct inbox path based on role negotiation
+// When we act as Central → we write to target's peripheral_inbox (Central writes to Peripheral)
+// When we act as Peripheral → we write to target's central_inbox (Peripheral notifies Central)
+func (w *Wire) getTargetInboxPath(targetUUID string, operation string) string {
+	devicePath := filepath.Join(w.basePath, targetUUID)
+
+	// Determine which inbox to use based on our role relative to target
+	if w.ShouldActAsCentral(targetUUID) {
+		// We are Central, target is Peripheral
+		// Central writes/reads go to Peripheral's peripheral_inbox
+		return filepath.Join(devicePath, "peripheral_inbox")
+	} else {
+		// We are Peripheral, target is Central
+		// Peripheral notifications go to Central's central_inbox
+		return filepath.Join(devicePath, "central_inbox")
+	}
+}
+
 // SendToDevice writes data to the target device's inbox with realistic packet loss and retries
 // Simulates ~1.5% packet loss with automatic retries (3 attempts)
 // Overall success rate: ~98.4%
+// Routes to role-specific inbox: peripheral_inbox (if we're Central) or central_inbox (if we're Peripheral)
 func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) error {
-	targetInboxPath := filepath.Join(w.basePath, targetUUID, "inbox")
+	targetInboxPath := w.getTargetInboxPath(targetUUID, "")
 
 	// Fragment data if it exceeds MTU
 	fragments := w.simulator.FragmentData(data, w.mtu)
@@ -1115,6 +1157,190 @@ func (w *Wire) ReadAndConsumeCharacteristicMessages() ([]*CharacteristicMessage,
 	}
 
 	return messages, nil
+}
+
+// ReadAndConsumeCharacteristicMessagesFromInbox reads and deletes messages from a specific inbox type
+// inboxType: "central_inbox" for Central mode, "peripheral_inbox" for Peripheral mode
+func (w *Wire) ReadAndConsumeCharacteristicMessagesFromInbox(inboxType string) ([]*CharacteristicMessage, error) {
+	w.inboxMutex.Lock()
+	defer w.inboxMutex.Unlock()
+
+	files, err := w.listInboxByType(inboxType)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(files) > 0 {
+		logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+			"📬 Consuming %d message(s) from %s", len(files), inboxType)
+	}
+
+	var messages []*CharacteristicMessage
+	for _, filename := range files {
+		data, err := w.readAndReassembleFromInbox(inboxType, filename)
+		if err != nil {
+			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+				"⚠️  Failed to reassemble %s: %v", filename, err)
+			// Delete malformed message to prevent infinite loop
+			w.deleteInboxFileUnsafeByType(inboxType, filename)
+			continue
+		}
+
+		var msg CharacteristicMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+				"⚠️  Failed to parse %s: %v", filename, err)
+			// Delete unparseable message
+			w.deleteInboxFileUnsafeByType(inboxType, filename)
+			continue
+		}
+
+		logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+			fmt.Sprintf("📥 RX %s (from %s, svc=%s, char=%s, %d bytes)",
+				msg.Operation, msg.SenderUUID[:8],
+				msg.ServiceUUID[len(msg.ServiceUUID)-4:],
+				msg.CharUUID[len(msg.CharUUID)-4:], len(msg.Data)), &msg)
+
+		messages = append(messages, &msg)
+
+		// CRITICAL: Delete message immediately after reading
+		w.deleteInboxFileUnsafeByType(inboxType, filename)
+	}
+
+	return messages, nil
+}
+
+// listInboxByType lists messages in a specific inbox type
+func (w *Wire) listInboxByType(inboxType string) ([]string, error) {
+	inboxPath := filepath.Join(w.basePath, w.localUUID, inboxType)
+	files, err := os.ReadDir(inboxPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// First pass: collect all .ready markers
+	readyMessages := make(map[string]bool)
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		name := file.Name()
+		if strings.HasSuffix(name, ".ready") {
+			baseName := strings.TrimSuffix(name, ".ready")
+			readyMessages[baseName] = true
+		}
+	}
+
+	// Second pass: collect message files that have .ready markers
+	seen := make(map[string]bool)
+	var filenames []string
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		name := file.Name()
+
+		if strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+
+		if strings.HasSuffix(name, ".ready") {
+			continue
+		}
+
+		baseName := name
+		if strings.Contains(name, ".part") {
+			parts := strings.Split(name, ".part")
+			baseName = parts[0]
+		}
+
+		if !readyMessages[baseName] {
+			continue
+		}
+
+		if !seen[baseName] {
+			filenames = append(filenames, baseName)
+			seen[baseName] = true
+		}
+	}
+
+	return filenames, nil
+}
+
+// readAndReassembleFromInbox reads from a specific inbox type
+func (w *Wire) readAndReassembleFromInbox(inboxType string, filename string) ([]byte, error) {
+	inboxPath := filepath.Join(w.basePath, w.localUUID, inboxType)
+
+	// Try reading the complete file first
+	completeFile := filepath.Join(inboxPath, filename)
+	if stat, err := os.Stat(completeFile); err == nil && stat.Size() > 0 {
+		if data, err := os.ReadFile(completeFile); err == nil {
+			return data, nil
+		}
+	}
+
+	// Look for .part files
+	var fragments [][]byte
+	partIndex := 0
+
+	for {
+		partFile := filepath.Join(inboxPath, fmt.Sprintf("%s.part%d", filename, partIndex))
+		data, err := os.ReadFile(partFile)
+		if err != nil {
+			if partIndex == 0 {
+				return nil, fmt.Errorf("file not found: %s", filename)
+			}
+			break
+		}
+		fragments = append(fragments, data)
+		partIndex++
+	}
+
+	// Reassemble fragments
+	var complete []byte
+	for _, frag := range fragments {
+		complete = append(complete, frag...)
+	}
+
+	return complete, nil
+}
+
+// deleteInboxFileUnsafeByType deletes from specific inbox type WITHOUT locking
+func (w *Wire) deleteInboxFileUnsafeByType(inboxType string, filename string) error {
+	inboxPath := filepath.Join(w.basePath, w.localUUID, inboxType)
+
+	// Read for history BEFORE deleting (best effort)
+	data, err := w.readAndReassembleFromInbox(inboxType, filename)
+	if err == nil {
+		// Copy to history
+		historyPath := filepath.Join(w.basePath, w.localUUID, inboxType+"_history")
+		historyFilePath := filepath.Join(historyPath, filename)
+		os.WriteFile(historyFilePath, data, 0644) // Best effort, ignore errors
+	}
+
+	// Delete .ready marker first
+	readyFile := filepath.Join(inboxPath, filename+".ready")
+	os.Remove(readyFile)
+
+	// Try deleting complete file first
+	completeFile := filepath.Join(inboxPath, filename)
+	if err := os.Remove(completeFile); err == nil {
+		return nil
+	}
+
+	// Delete all .part files
+	partIndex := 0
+	for {
+		partFile := filepath.Join(inboxPath, fmt.Sprintf("%s.part%d", filename, partIndex))
+		if err := os.Remove(partFile); err != nil {
+			break
+		}
+		partIndex++
+	}
+
+	return nil
 }
 
 // deleteInboxFileUnsafe deletes a message file WITHOUT locking (caller must hold inboxMutex)

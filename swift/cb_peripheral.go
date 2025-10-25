@@ -303,7 +303,8 @@ func (p *CBPeripheral) StartListening() {
 			case <-p.stopChan:
 				return
 			case <-ticker.C:
-				messages, err := p.wire.ReadAndConsumeCharacteristicMessages()
+				// Central mode: read from central_inbox (notifications from peripherals)
+				messages, err := p.wire.ReadAndConsumeCharacteristicMessagesFromInbox("central_inbox")
 				if err != nil {
 					continue
 				}

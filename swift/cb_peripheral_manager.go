@@ -389,39 +389,16 @@ func (pm *CBPeripheralManager) startListeningForRequests() {
 			case <-pm.stopListening:
 				return
 			case <-ticker.C:
-				// CRITICAL FIX: Use ReadCharacteristicMessages (without consume) to allow filtering
-				// Peripheral mode should NOT consume notify/indicate messages - those are for Central mode
-				messages, err := pm.wire.ReadCharacteristicMessages()
+				// Peripheral mode: read from peripheral_inbox (writes from centrals)
+				messages, err := pm.wire.ReadAndConsumeCharacteristicMessagesFromInbox("peripheral_inbox")
 				if err != nil {
 					continue
 				}
 
+				// Process peripheral-mode operations (read, write, subscribe, unsubscribe)
+				// All messages in peripheral_inbox are meant for us - no filtering needed
 				for _, msg := range messages {
-					// Only process and delete messages meant for peripheral mode (GATT server)
-					// Skip notify/indicate messages - they should be consumed by CBPeripheral.StartListening()
-					if msg.Operation == "notify" || msg.Operation == "indicate" {
-						continue // Leave these messages in inbox for central mode
-					}
-
-					// CRITICAL FIX: Only consume messages from devices acting as Central to us
-					// In dual-role mode, write operations can be:
-					// 1. GATT server requests (Central -> Peripheral) - should be handled here
-					// 2. GATT client data (Peripheral -> Central) - should be handled by CBPeripheral
-					//
-					// Rule: We act as Peripheral to devices with LARGER UUIDs
-					// So we should only consume messages from devices with LARGER UUIDs
-					if msg.SenderUUID < pm.uuid {
-						// Sender has smaller UUID, so THEY act as peripheral to US
-						// This message is for CBPeripheral (central mode), not for us
-						continue // Leave message in inbox for central mode
-					}
-
-					// Process peripheral-mode operations (read, write, subscribe, unsubscribe)
 					pm.handleCharacteristicMessage(msg)
-
-					// Delete the message after processing (consume it)
-					filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-					pm.wire.DeleteInboxFile(filename)
 				}
 			}
 		}

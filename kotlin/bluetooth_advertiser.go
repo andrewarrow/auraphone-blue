@@ -251,41 +251,18 @@ func (a *BluetoothLeAdvertiser) startListeningForRequests() {
 			case <-a.stopListening:
 				return
 			case <-ticker.C:
-				// CRITICAL FIX: Use ReadCharacteristicMessages (without consume) to allow filtering
-				// Peripheral mode should NOT consume notify/indicate messages - those are for Central mode
-				messages, err := a.wire.ReadCharacteristicMessages()
+				// Peripheral mode: read from peripheral_inbox (writes from centrals)
+				messages, err := a.wire.ReadAndConsumeCharacteristicMessagesFromInbox("peripheral_inbox")
 				if err != nil {
 					continue
 				}
 
+				// Process peripheral-mode operations - all messages are meant for us
 				for _, msg := range messages {
-					// Only process and delete messages meant for peripheral mode (GATT server)
-					// Skip notify/indicate messages - they should be consumed by BluetoothGatt.StartListening()
-					if msg.Operation == "notify" || msg.Operation == "indicate" {
-						continue // Leave these messages in inbox for central mode
-					}
-
-					// CRITICAL FIX: Only consume messages from devices acting as Central to us
-					// In dual-role mode, write operations can be:
-					// 1. GATT server requests (Central -> Peripheral) - should be handled here
-					// 2. GATT client data (Peripheral -> Central) - should be handled by BluetoothGatt
-					//
-					// Rule: We act as Peripheral to devices with LARGER UUIDs
-					// So we should only consume messages from devices with LARGER UUIDs
-					if msg.SenderUUID < a.uuid {
-						// Sender has smaller UUID, so THEY act as peripheral to US
-						// This message is for BluetoothGatt (central mode), not for us
-						continue // Leave message in inbox for central mode
-					}
-
-					// Forward peripheral-mode operations to GATT server
+					// Forward to GATT server
 					if a.gattServer != nil {
 						a.gattServer.handleCharacteristicMessage(msg)
 					}
-
-					// Delete the message after processing (consume it)
-					filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-					a.wire.DeleteInboxFile(filename)
 				}
 			}
 		}

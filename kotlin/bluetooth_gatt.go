@@ -362,7 +362,8 @@ func (g *BluetoothGatt) StartListening() {
 			case <-g.stopChan:
 				return
 			case <-ticker.C:
-				messages, err := g.wire.ReadAndConsumeCharacteristicMessages()
+				// Central mode: read from central_inbox (notifications from peripherals)
+				messages, err := g.wire.ReadAndConsumeCharacteristicMessagesFromInbox("central_inbox")
 				if err != nil {
 					continue
 				}
