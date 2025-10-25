@@ -403,6 +403,19 @@ func (pm *CBPeripheralManager) startListeningForRequests() {
 						continue // Leave these messages in inbox for central mode
 					}
 
+					// CRITICAL FIX: Only consume messages from devices acting as Central to us
+					// In dual-role mode, write operations can be:
+					// 1. GATT server requests (Central -> Peripheral) - should be handled here
+					// 2. GATT client data (Peripheral -> Central) - should be handled by CBPeripheral
+					//
+					// Rule: We act as Peripheral to devices with LARGER UUIDs
+					// So we should only consume messages from devices with LARGER UUIDs
+					if msg.SenderUUID < pm.uuid {
+						// Sender has smaller UUID, so THEY act as peripheral to US
+						// This message is for CBPeripheral (central mode), not for us
+						continue // Leave message in inbox for central mode
+					}
+
 					// Process peripheral-mode operations (read, write, subscribe, unsubscribe)
 					pm.handleCharacteristicMessage(msg)
 

@@ -265,6 +265,19 @@ func (a *BluetoothLeAdvertiser) startListeningForRequests() {
 						continue // Leave these messages in inbox for central mode
 					}
 
+					// CRITICAL FIX: Only consume messages from devices acting as Central to us
+					// In dual-role mode, write operations can be:
+					// 1. GATT server requests (Central -> Peripheral) - should be handled here
+					// 2. GATT client data (Peripheral -> Central) - should be handled by BluetoothGatt
+					//
+					// Rule: We act as Peripheral to devices with LARGER UUIDs
+					// So we should only consume messages from devices with LARGER UUIDs
+					if msg.SenderUUID < a.uuid {
+						// Sender has smaller UUID, so THEY act as peripheral to US
+						// This message is for BluetoothGatt (central mode), not for us
+						continue // Leave message in inbox for central mode
+					}
+
 					// Forward peripheral-mode operations to GATT server
 					if a.gattServer != nil {
 						a.gattServer.handleCharacteristicMessage(msg)
