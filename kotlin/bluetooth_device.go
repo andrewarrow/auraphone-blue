@@ -22,6 +22,15 @@ func (d *BluetoothDevice) ConnectGatt(context interface{}, autoConnect bool, cal
 		remoteUUID: d.Address,
 	}
 
+	// Set up disconnect callback for this specific connection
+	d.wire.SetDisconnectCallback(func(deviceUUID string) {
+		// Connection was randomly dropped
+		if deviceUUID == gatt.remoteUUID && callback != nil {
+			// STATE_DISCONNECTED = 0, status = 0 (not an error)
+			callback.OnConnectionStateChange(gatt, 0, 0)
+		}
+	})
+
 	// Attempt realistic connection with timing and potential failure
 	go func() {
 		// STATE_CONNECTING = 1

@@ -40,10 +40,24 @@ type BluetoothLeScanner struct {
 }
 
 func NewBluetoothLeScanner(uuid string) *BluetoothLeScanner {
-	return &BluetoothLeScanner{
+	w := wire.NewWire(uuid)
+
+	scanner := &BluetoothLeScanner{
 		uuid: uuid,
-		wire: wire.NewWire(uuid),
+		wire: w,
 	}
+
+	// Set up disconnect callback - will be used when connections are made
+	w.SetDisconnectCallback(func(deviceUUID string) {
+		// Connection was randomly dropped
+		// Callback will be triggered on individual GATT connections
+		if scanner.callback != nil {
+			// Note: We don't have direct access to the gatt object here
+			// The gatt's callback will need to be notified through wire state
+		}
+	})
+
+	return scanner
 }
 
 func (s *BluetoothLeScanner) StartScan(callback ScanCallback) {

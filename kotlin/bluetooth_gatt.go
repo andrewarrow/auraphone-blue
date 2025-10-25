@@ -52,6 +52,10 @@ type BluetoothGattCallback interface {
 	OnCharacteristicChanged(gatt *BluetoothGatt, characteristic *BluetoothGattCharacteristic)
 }
 
+type writeRequest struct {
+	characteristic *BluetoothGattCharacteristic
+}
+
 type BluetoothGatt struct {
 	callback                 BluetoothGattCallback
 	wire                     *wire.Wire
@@ -59,6 +63,8 @@ type BluetoothGatt struct {
 	services                 []*BluetoothGattService
 	stopChan                 chan struct{}
 	notifyingCharacteristics map[string]bool // characteristic UUID -> is notifying
+	writeQueue               chan writeRequest
+	writeQueueStop           chan struct{}
 }
 
 func (g *BluetoothGatt) DiscoverServices() bool {
@@ -69,63 +75,71 @@ func (g *BluetoothGatt) DiscoverServices() bool {
 		return false
 	}
 
-	// Read GATT table from remote device
-	gattTable, err := g.wire.ReadGATTTable(g.remoteUUID)
-	if err != nil {
-		if g.callback != nil {
-			g.callback.OnServicesDiscovered(g, 1) // GATT_FAILURE = 1
-		}
-		return false
-	}
+	// Service discovery is async in real Android - run in goroutine with realistic delay
+	go func() {
+		// Simulate realistic discovery delay (50-500ms)
+		delay := g.wire.GetSimulator().ServiceDiscoveryDelay()
+		time.Sleep(delay)
 
-	// Convert wire.GATTService to BluetoothGattService
-	g.services = make([]*BluetoothGattService, 0)
-	for _, wireService := range gattTable.Services {
-		serviceType := SERVICE_TYPE_PRIMARY
-		if wireService.Type == "secondary" {
-			serviceType = SERVICE_TYPE_SECONDARY
+		// Read GATT table from remote device
+		gattTable, err := g.wire.ReadGATTTable(g.remoteUUID)
+		if err != nil {
+			if g.callback != nil {
+				g.callback.OnServicesDiscovered(g, 1) // GATT_FAILURE = 1
+			}
+			return
 		}
 
-		service := &BluetoothGattService{
-			UUID:            wireService.UUID,
-			Type:            serviceType,
-			Characteristics: make([]*BluetoothGattCharacteristic, 0),
-		}
+		// Convert wire.GATTService to BluetoothGattService
+		g.services = make([]*BluetoothGattService, 0)
+		for _, wireService := range gattTable.Services {
+			serviceType := SERVICE_TYPE_PRIMARY
+			if wireService.Type == "secondary" {
+				serviceType = SERVICE_TYPE_SECONDARY
+			}
 
-		// Convert characteristics
-		for _, wireChar := range wireService.Characteristics {
-			// Convert property strings to bitmask
-			properties := 0
-			for _, prop := range wireChar.Properties {
-				switch prop {
-				case "read":
-					properties |= PROPERTY_READ
-				case "write":
-					properties |= PROPERTY_WRITE
-				case "write_no_response":
-					properties |= PROPERTY_WRITE_NO_RESPONSE
-				case "notify":
-					properties |= PROPERTY_NOTIFY
-				case "indicate":
-					properties |= PROPERTY_INDICATE
+			service := &BluetoothGattService{
+				UUID:            wireService.UUID,
+				Type:            serviceType,
+				Characteristics: make([]*BluetoothGattCharacteristic, 0),
+			}
+
+			// Convert characteristics
+			for _, wireChar := range wireService.Characteristics {
+				// Convert property strings to bitmask
+				properties := 0
+				for _, prop := range wireChar.Properties {
+					switch prop {
+					case "read":
+						properties |= PROPERTY_READ
+					case "write":
+						properties |= PROPERTY_WRITE
+					case "write_no_response":
+						properties |= PROPERTY_WRITE_NO_RESPONSE
+					case "notify":
+						properties |= PROPERTY_NOTIFY
+					case "indicate":
+						properties |= PROPERTY_INDICATE
+					}
 				}
+
+				char := &BluetoothGattCharacteristic{
+					UUID:       wireChar.UUID,
+					Properties: properties,
+					Service:    service,
+					Value:      nil,
+				}
+				service.Characteristics = append(service.Characteristics, char)
 			}
 
-			char := &BluetoothGattCharacteristic{
-				UUID:       wireChar.UUID,
-				Properties: properties,
-				Service:    service,
-				Value:      nil,
-			}
-			service.Characteristics = append(service.Characteristics, char)
+			g.services = append(g.services, service)
 		}
 
-		g.services = append(g.services, service)
-	}
+		if g.callback != nil {
+			g.callback.OnServicesDiscovered(g, 0) // GATT_SUCCESS = 0
+		}
+	}()
 
-	if g.callback != nil {
-		g.callback.OnServicesDiscovered(g, 0) // GATT_SUCCESS = 0
-	}
 	return true
 }
 
@@ -142,6 +156,53 @@ func (g *BluetoothGatt) GetService(uuid string) *BluetoothGattService {
 	return nil
 }
 
+// StartWriteQueue initializes the async write queue (matches real Android BLE behavior)
+func (g *BluetoothGatt) StartWriteQueue() {
+	if g.writeQueue != nil {
+		return // Already started
+	}
+
+	g.writeQueue = make(chan writeRequest, 10) // Buffer up to 10 writes
+	g.writeQueueStop = make(chan struct{})
+
+	go func() {
+		for {
+			select {
+			case <-g.writeQueueStop:
+				return
+			case req := <-g.writeQueue:
+				// Process write asynchronously
+				go func(r writeRequest) {
+					err := g.wire.WriteCharacteristic(g.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.characteristic.Value)
+					if err != nil {
+						if g.callback != nil {
+							g.callback.OnCharacteristicWrite(g, r.characteristic, 1) // GATT_FAILURE = 1
+						}
+						return
+					}
+
+					if g.callback != nil {
+						g.callback.OnCharacteristicWrite(g, r.characteristic, 0) // GATT_SUCCESS = 0
+					}
+				}(req)
+
+				// Small delay between writes to simulate BLE radio constraints
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	}()
+}
+
+// StopWriteQueue stops the write queue
+func (g *BluetoothGatt) StopWriteQueue() {
+	if g.writeQueueStop != nil {
+		close(g.writeQueueStop)
+		g.writeQueueStop = nil
+		close(g.writeQueue)
+		g.writeQueue = nil
+	}
+}
+
 func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharacteristic) bool {
 	if g.wire == nil {
 		return false
@@ -150,6 +211,22 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 		return false
 	}
 
+	// If write queue is active, queue the write (async like real Android)
+	if g.writeQueue != nil {
+		select {
+		case g.writeQueue <- writeRequest{characteristic: characteristic}:
+			// Queued successfully - callback will come later
+			return true
+		default:
+			// Queue full - this would fail in real BLE too
+			if g.callback != nil {
+				g.callback.OnCharacteristicWrite(g, characteristic, 1) // GATT_FAILURE = 1
+			}
+			return false
+		}
+	}
+
+	// Fallback: synchronous write (if queue not started)
 	err := g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, characteristic.Value)
 	if err != nil {
 		if g.callback != nil {

@@ -245,7 +245,23 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 		// Discover services
 		gatt.DiscoverServices()
 	} else if newState == 0 { // STATE_DISCONNECTED
-		logger.Info(prefix, "❌ Disconnected from device")
+		if status != 0 {
+			logger.Error(prefix, "❌ Disconnected from device with error (status=%d)", status)
+		} else {
+			logger.Info(prefix, "📡 Disconnected from device (interference/distance)")
+		}
+
+		// Stop listening and write queue on the gatt
+		gatt.StopListening()
+		gatt.StopWriteQueue()
+
+		// Remove from connected list
+		remoteUUID := gatt.GetRemoteUUID()
+		if _, exists := a.connectedGatts[remoteUUID]; exists {
+			delete(a.connectedGatts, remoteUUID)
+		}
+
+		// In a real app, you might want to try reconnecting here
 	}
 }
 
@@ -277,6 +293,9 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 			logger.Error(prefix, "❌ Failed to enable notifications for photo characteristic")
 		}
 	}
+
+	// Start write queue for async writes (matches real Android behavior)
+	gatt.StartWriteQueue()
 
 	// Start listening for notifications
 	gatt.StartListening()

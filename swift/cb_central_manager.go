@@ -9,6 +9,7 @@ type CBCentralManagerDelegate interface {
 	DidDiscoverPeripheral(central CBCentralManager, peripheral CBPeripheral, advertisementData map[string]interface{}, rssi float64)
 	DidConnectPeripheral(central CBCentralManager, peripheral CBPeripheral)
 	DidFailToConnectPeripheral(central CBCentralManager, peripheral CBPeripheral, err error)
+	DidDisconnectPeripheral(central CBCentralManager, peripheral CBPeripheral, err error)
 }
 
 type CBCentralManager struct {
@@ -20,12 +21,26 @@ type CBCentralManager struct {
 }
 
 func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string) *CBCentralManager {
-	return &CBCentralManager{
+	w := wire.NewWire(uuid)
+
+	cm := &CBCentralManager{
 		Delegate: delegate,
 		State:    "poweredOn",
 		uuid:     uuid,
-		wire:     wire.NewWire(uuid),
+		wire:     w,
 	}
+
+	// Set up disconnect callback
+	w.SetDisconnectCallback(func(deviceUUID string) {
+		// Connection was randomly dropped
+		if delegate != nil {
+			delegate.DidDisconnectPeripheral(*cm, CBPeripheral{
+				UUID: deviceUUID,
+			}, nil) // nil error = clean disconnect (not an error, just interference/distance)
+		}
+	})
+
+	return cm
 }
 
 func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map[string]interface{}) {

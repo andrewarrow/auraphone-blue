@@ -38,6 +38,14 @@ type SimulationConfig struct {
 	EnableConnectionStates bool // Default: true
 	DisconnectingDelay int // Default: 20ms
 
+	// Random disconnection (simulates interference, distance, etc.)
+	RandomDisconnectRate float64 // Default: 0.02 (2% chance per monitoring interval)
+	ConnectionMonitorInterval int // Default: 5000ms (check every 5 seconds)
+
+	// Service discovery timing
+	MinServiceDiscoveryDelay int // Default: 50ms
+	MaxServiceDiscoveryDelay int // Default: 500ms
+
 	// Deterministic mode for testing
 	Deterministic bool // Default: false (use for reproducible scenarios)
 	Seed int64 // Random seed when Deterministic=true
@@ -72,6 +80,12 @@ func DefaultSimulationConfig() *SimulationConfig {
 
 		EnableConnectionStates: true,
 		DisconnectingDelay: 20,
+
+		RandomDisconnectRate: 0.02, // 2% chance per check (98% stay connected)
+		ConnectionMonitorInterval: 5000, // Check every 5 seconds
+
+		MinServiceDiscoveryDelay: 50,
+		MaxServiceDiscoveryDelay: 500,
 
 		Deterministic: false,
 		Seed: 0,
@@ -237,4 +251,20 @@ func (s ConnectionState) String() string {
 // DisconnectDelay returns delay for disconnection
 func (s *Simulator) DisconnectDelay() time.Duration {
 	return time.Duration(s.config.DisconnectingDelay) * time.Millisecond
+}
+
+// ShouldRandomlyDisconnect returns true if connection should randomly drop
+// Based on RandomDisconnectRate (default 2% = 98% stay connected)
+func (s *Simulator) ShouldRandomlyDisconnect() bool {
+	return s.rng.Float64() < s.config.RandomDisconnectRate
+}
+
+// ServiceDiscoveryDelay returns realistic service discovery delay
+func (s *Simulator) ServiceDiscoveryDelay() time.Duration {
+	if s.config.MinServiceDiscoveryDelay == s.config.MaxServiceDiscoveryDelay {
+		return time.Duration(s.config.MinServiceDiscoveryDelay) * time.Millisecond
+	}
+	delay := s.config.MinServiceDiscoveryDelay +
+		s.rng.Intn(s.config.MaxServiceDiscoveryDelay - s.config.MinServiceDiscoveryDelay)
+	return time.Duration(delay) * time.Millisecond
 }

@@ -224,6 +224,25 @@ func (ip *iPhone) DidFailToConnectPeripheral(central swift.CBCentralManager, per
 	logger.Error(prefix, "❌ Failed to connect to %s: %v", peripheral.UUID[:8], err)
 }
 
+func (ip *iPhone) DidDisconnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, err error) {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	if err != nil {
+		logger.Error(prefix, "❌ Disconnected from %s with error: %v", peripheral.UUID[:8], err)
+	} else {
+		logger.Info(prefix, "📡 Disconnected from %s (interference/distance)", peripheral.UUID[:8])
+	}
+
+	// Stop listening and write queue on the peripheral
+	if storedPeripheral, exists := ip.connectedPeripherals[peripheral.UUID]; exists {
+		storedPeripheral.StopListening()
+		storedPeripheral.StopWriteQueue()
+		delete(ip.connectedPeripherals, peripheral.UUID)
+	}
+
+	// In a real app, you might want to try reconnecting here
+	// For now, we just log the disconnect
+}
+
 // SetProfilePhoto sets the profile photo and broadcasts the hash
 func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	// Read photo file
@@ -305,6 +324,9 @@ func (ip *iPhone) DidDiscoverCharacteristics(peripheral *swift.CBPeripheral, ser
 			}
 		}
 	}
+
+	// Start write queue for async writes (matches real iOS behavior)
+	peripheral.StartWriteQueue()
 
 	// Start listening for notifications
 	peripheral.StartListening()

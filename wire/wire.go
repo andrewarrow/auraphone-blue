@@ -84,15 +84,18 @@ const (
 
 // Wire manages the filesystem-based communication between fake devices
 type Wire struct {
-	localUUID  string
-	basePath   string
-	role       DeviceRole
-	platform   Platform
-	deviceName string  // Device name for role negotiation
-	simulator  *Simulator
-	mtu        int // Current MTU for this connection
-	connState  ConnectionState
-	distance   float64 // Simulated distance in meters for RSSI calculation
+	localUUID            string
+	basePath             string
+	role                 DeviceRole
+	platform             Platform
+	deviceName           string  // Device name for role negotiation
+	simulator            *Simulator
+	mtu                  int // Current MTU for this connection
+	connState            ConnectionState
+	distance             float64 // Simulated distance in meters for RSSI calculation
+	connectedDeviceUUID  string // UUID of currently connected device
+	monitorStopChan      chan struct{} // Stop channel for connection monitor
+	disconnectCallback   func(deviceUUID string) // Callback when connection drops
 }
 
 // NewWire creates a new wire instance for a device with default dual role
@@ -437,7 +440,67 @@ func (w *Wire) Connect(targetUUID string) error {
 	}
 
 	w.connState = StateConnected
+	w.connectedDeviceUUID = targetUUID
+
+	// Start connection monitoring for random disconnects
+	w.startConnectionMonitoring()
+
 	return nil
+}
+
+// SetDisconnectCallback sets the callback for when connection drops
+func (w *Wire) SetDisconnectCallback(callback func(deviceUUID string)) {
+	w.disconnectCallback = callback
+}
+
+// startConnectionMonitoring monitors connection health and randomly disconnects
+// Simulates real BLE behavior: interference, distance, battery, etc.
+func (w *Wire) startConnectionMonitoring() {
+	if w.monitorStopChan != nil {
+		// Already monitoring
+		return
+	}
+
+	w.monitorStopChan = make(chan struct{})
+
+	go func() {
+		interval := time.Duration(w.simulator.config.ConnectionMonitorInterval) * time.Millisecond
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-w.monitorStopChan:
+				return
+			case <-ticker.C:
+				// Check if connection should randomly drop
+				if w.connState == StateConnected && w.simulator.ShouldRandomlyDisconnect() {
+					// Force disconnect
+					w.connState = StateDisconnected
+					deviceUUID := w.connectedDeviceUUID
+					w.connectedDeviceUUID = ""
+
+					// Notify via callback
+					if w.disconnectCallback != nil {
+						w.disconnectCallback(deviceUUID)
+					}
+
+					// Stop monitoring
+					close(w.monitorStopChan)
+					w.monitorStopChan = nil
+					return
+				}
+			}
+		}
+	}()
+}
+
+// stopConnectionMonitoring stops the connection monitor
+func (w *Wire) stopConnectionMonitoring() {
+	if w.monitorStopChan != nil {
+		close(w.monitorStopChan)
+		w.monitorStopChan = nil
+	}
 }
 
 // Disconnect simulates BLE disconnection
@@ -448,17 +511,26 @@ func (w *Wire) Disconnect() error {
 
 	w.connState = StateDisconnecting
 
+	// Stop monitoring
+	w.stopConnectionMonitoring()
+
 	// Simulate disconnection delay
 	delay := w.simulator.DisconnectDelay()
 	time.Sleep(delay)
 
 	w.connState = StateDisconnected
+	w.connectedDeviceUUID = ""
 	return nil
 }
 
 // GetConnectionState returns the current connection state
 func (w *Wire) GetConnectionState() ConnectionState {
 	return w.connState
+}
+
+// GetSimulator returns the simulator for accessing timing/delay functions
+func (w *Wire) GetSimulator() *Simulator {
+	return w.simulator
 }
 
 // SendToDevice writes data to the target device's inbox with realistic packet loss and retries

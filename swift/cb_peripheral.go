@@ -29,15 +29,22 @@ type CBPeripheralDelegate interface {
 	DidUpdateValueForCharacteristic(peripheral *CBPeripheral, characteristic *CBCharacteristic, err error)
 }
 
+type writeRequest struct {
+	data           []byte
+	characteristic *CBCharacteristic
+}
+
 type CBPeripheral struct {
-	Delegate              CBPeripheralDelegate
-	Name                  string
-	UUID                  string
-	Services              []*CBService
-	wire                  *wire.Wire
-	remoteUUID            string
-	stopChan              chan struct{}
+	Delegate                 CBPeripheralDelegate
+	Name                     string
+	UUID                     string
+	Services                 []*CBService
+	wire                     *wire.Wire
+	remoteUUID               string
+	stopChan                 chan struct{}
 	notifyingCharacteristics map[string]bool // characteristic UUID -> is notifying
+	writeQueue               chan writeRequest
+	writeQueueStop           chan struct{}
 }
 
 func (p *CBPeripheral) DiscoverServices(serviceUUIDs []string) {
@@ -48,61 +55,115 @@ func (p *CBPeripheral) DiscoverServices(serviceUUIDs []string) {
 		return
 	}
 
-	// Read GATT table from remote device
-	gattTable, err := p.wire.ReadGATTTable(p.remoteUUID)
-	if err != nil {
-		if p.Delegate != nil {
-			p.Delegate.DidDiscoverServices(p, nil, err)
-		}
-		return
-	}
+	// Service discovery is async in real iOS - run in goroutine with realistic delay
+	go func() {
+		// Simulate realistic discovery delay (50-500ms)
+		delay := p.wire.GetSimulator().ServiceDiscoveryDelay()
+		time.Sleep(delay)
 
-	// Convert wire.GATTService to CBService
-	p.Services = make([]*CBService, 0)
-	for _, wireService := range gattTable.Services {
-		// Filter by requested UUIDs if specified
-		if len(serviceUUIDs) > 0 {
-			found := false
-			for _, uuid := range serviceUUIDs {
-				if wireService.UUID == uuid {
-					found = true
-					break
+		// Read GATT table from remote device
+		gattTable, err := p.wire.ReadGATTTable(p.remoteUUID)
+		if err != nil {
+			if p.Delegate != nil {
+				p.Delegate.DidDiscoverServices(p, nil, err)
+			}
+			return
+		}
+
+		// Convert wire.GATTService to CBService
+		p.Services = make([]*CBService, 0)
+		for _, wireService := range gattTable.Services {
+			// Filter by requested UUIDs if specified
+			if len(serviceUUIDs) > 0 {
+				found := false
+				for _, uuid := range serviceUUIDs {
+					if wireService.UUID == uuid {
+						found = true
+						break
+					}
+				}
+				if !found {
+					continue
 				}
 			}
-			if !found {
-				continue
+
+			service := &CBService{
+				UUID:            wireService.UUID,
+				IsPrimary:       wireService.Type == "primary",
+				Characteristics: make([]*CBCharacteristic, 0),
 			}
-		}
 
-		service := &CBService{
-			UUID:            wireService.UUID,
-			IsPrimary:       wireService.Type == "primary",
-			Characteristics: make([]*CBCharacteristic, 0),
-		}
-
-		// Convert characteristics
-		for _, wireChar := range wireService.Characteristics {
-			char := &CBCharacteristic{
-				UUID:       wireChar.UUID,
-				Properties: wireChar.Properties,
-				Service:    service,
-				Value:      nil,
+			// Convert characteristics
+			for _, wireChar := range wireService.Characteristics {
+				char := &CBCharacteristic{
+					UUID:       wireChar.UUID,
+					Properties: wireChar.Properties,
+					Service:    service,
+					Value:      nil,
+				}
+				service.Characteristics = append(service.Characteristics, char)
 			}
-			service.Characteristics = append(service.Characteristics, char)
+
+			p.Services = append(p.Services, service)
 		}
 
-		p.Services = append(p.Services, service)
-	}
-
-	if p.Delegate != nil {
-		p.Delegate.DidDiscoverServices(p, p.Services, nil)
-	}
+		if p.Delegate != nil {
+			p.Delegate.DidDiscoverServices(p, p.Services, nil)
+		}
+	}()
 }
 
 func (p *CBPeripheral) DiscoverCharacteristics(characteristicUUIDs []string, service *CBService) {
 	// Characteristics are already discovered with services in this implementation
 	if p.Delegate != nil {
 		p.Delegate.DidDiscoverCharacteristics(p, service, nil)
+	}
+}
+
+// StartWriteQueue initializes the async write queue (matches real BLE behavior)
+func (p *CBPeripheral) StartWriteQueue() {
+	if p.writeQueue != nil {
+		return // Already started
+	}
+
+	p.writeQueue = make(chan writeRequest, 10) // Buffer up to 10 writes
+	p.writeQueueStop = make(chan struct{})
+
+	go func() {
+		for {
+			select {
+			case <-p.writeQueueStop:
+				return
+			case req := <-p.writeQueue:
+				// Process write asynchronously
+				go func(r writeRequest) {
+					err := p.wire.WriteCharacteristic(p.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.data)
+					if err != nil {
+						if p.Delegate != nil {
+							p.Delegate.DidWriteValueForCharacteristic(p, r.characteristic, err)
+						}
+						return
+					}
+
+					if p.Delegate != nil {
+						p.Delegate.DidWriteValueForCharacteristic(p, r.characteristic, nil)
+					}
+				}(req)
+
+				// Small delay between writes to simulate BLE radio constraints
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	}()
+}
+
+// StopWriteQueue stops the write queue
+func (p *CBPeripheral) StopWriteQueue() {
+	if p.writeQueueStop != nil {
+		close(p.writeQueueStop)
+		p.writeQueueStop = nil
+		close(p.writeQueue)
+		p.writeQueue = nil
 	}
 }
 
@@ -114,6 +175,19 @@ func (p *CBPeripheral) WriteValue(data []byte, characteristic *CBCharacteristic)
 		return fmt.Errorf("invalid characteristic")
 	}
 
+	// If write queue is active, queue the write (async like real iOS)
+	if p.writeQueue != nil {
+		select {
+		case p.writeQueue <- writeRequest{data: data, characteristic: characteristic}:
+			// Queued successfully - callback will come later
+			return nil
+		default:
+			// Queue full - this would fail in real BLE too
+			return fmt.Errorf("write queue full")
+		}
+	}
+
+	// Fallback: synchronous write (if queue not started)
 	err := p.wire.WriteCharacteristic(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID, data)
 	if err != nil {
 		if p.Delegate != nil {
