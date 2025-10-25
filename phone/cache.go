@@ -1,4 +1,4 @@
-package wire
+package phone
 
 import (
 	"crypto/sha256"
@@ -279,7 +279,6 @@ func (m *DeviceCacheManager) GetPhotoVersionSentToDevice(deviceID string) (strin
 
 	return metadata.SentVersions[deviceID], nil
 }
-
 
 // SaveDeviceMetadata saves metadata about a remote device
 func (m *DeviceCacheManager) SaveDeviceMetadata(metadata *DeviceMetadata) error {

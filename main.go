@@ -491,7 +491,7 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	}
 
 	// Load first_name from device metadata cache
-	cacheManager := wire.NewDeviceCacheManager(pw.phone.GetDeviceUUID())
+	cacheManager := phone.NewDeviceCacheManager(pw.phone.GetDeviceUUID())
 	if metadata, err := cacheManager.LoadDeviceMetadata(device.DeviceID); err == nil && metadata != nil {
 		if metadata.FirstName != "" {
 			pw.deviceFirstNames[device.DeviceID] = metadata.FirstName

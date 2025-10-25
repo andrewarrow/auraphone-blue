@@ -9,6 +9,7 @@ then they have no photo to display. No cheating and just using the fact that the
 testdata/*.jpg and you know the path and could just display the photo.
 
 its ok to make iphone/iphone.go and android/android.go not share any code and be very UN-dry
+but also ok to let them share code in phone/ pacakge
 
 # Auraphone Blue - Fake Bluetooth Simulator
 

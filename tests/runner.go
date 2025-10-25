@@ -31,7 +31,7 @@ type SimulatedDevice struct {
 	Config    *DeviceConfig
 	UUID      string
 	Wire      *wire.Wire
-	Cache     *wire.DeviceCacheManager
+	Cache     *phone.DeviceCacheManager
 	PhotoSync *phone.PhotoSyncManager
 	IOSMgr    *swift.CBCentralManager
 	AndroidMgr *kotlin.BluetoothManager
@@ -118,7 +118,7 @@ func (r *ScenarioRunner) createDevice(config *DeviceConfig) (*SimulatedDevice, e
 	uuid := generateDeviceUUID(config.ID)
 	w := wire.NewWire(uuid)
 
-	cache := wire.NewDeviceCacheManager(uuid)
+	cache := phone.NewDeviceCacheManager(uuid)
 	photoSync := phone.NewPhotoSyncManager(cache)
 
 	device := &SimulatedDevice{

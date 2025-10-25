@@ -52,7 +52,7 @@ type iPhone struct {
 	deviceUUID           string
 	deviceName           string
 	wire                 *wire.Wire
-	cacheManager         *wire.DeviceCacheManager       // Persistent photo storage
+	cacheManager         *phone.DeviceCacheManager      // Persistent photo storage
 	manager              *swift.CBCentralManager
 	discoveryCallback    phone.DeviceDiscoveryCallback
 	photoPath            string
@@ -95,7 +95,7 @@ func NewIPhone() *iPhone {
 	}
 
 	// Initialize cache manager
-	ip.cacheManager = wire.NewDeviceCacheManager(deviceUUID)
+	ip.cacheManager = phone.NewDeviceCacheManager(deviceUUID)
 	if err := ip.cacheManager.InitializeCache(); err != nil {
 		fmt.Printf("Failed to initialize cache: %v\n", err)
 		return nil
@@ -588,7 +588,7 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	if handshake.FirstName != "" {
 		metadata, _ := ip.cacheManager.LoadDeviceMetadata(peripheral.UUID)
 		if metadata == nil {
-			metadata = &wire.DeviceMetadata{
+			metadata = &phone.DeviceMetadata{
 				DeviceID: peripheral.UUID,
 			}
 		}
@@ -980,7 +980,7 @@ func (ip *iPhone) handleProfileMessage(peripheral *swift.CBPeripheral, data []by
 		return
 	}
 	if metadata == nil {
-		metadata = &wire.DeviceMetadata{
+		metadata = &phone.DeviceMetadata{
 			DeviceID: peripheral.UUID,
 		}
 	}

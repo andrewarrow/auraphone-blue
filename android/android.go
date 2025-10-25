@@ -52,7 +52,7 @@ type Android struct {
 	deviceUUID           string
 	deviceName           string
 	wire                 *wire.Wire
-	cacheManager         *wire.DeviceCacheManager           // Persistent photo storage
+	cacheManager         *phone.DeviceCacheManager          // Persistent photo storage
 	manager              *kotlin.BluetoothManager
 	discoveryCallback    phone.DeviceDiscoveryCallback
 	photoPath            string
@@ -99,7 +99,7 @@ func NewAndroid() *Android {
 	}
 
 	// Initialize cache manager
-	a.cacheManager = wire.NewDeviceCacheManager(deviceUUID)
+	a.cacheManager = phone.NewDeviceCacheManager(deviceUUID)
 	if err := a.cacheManager.InitializeCache(); err != nil {
 		fmt.Printf("Failed to initialize cache: %v\n", err)
 		return nil
@@ -578,7 +578,7 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	if handshake.FirstName != "" {
 		metadata, _ := a.cacheManager.LoadDeviceMetadata(remoteUUID)
 		if metadata == nil {
-			metadata = &wire.DeviceMetadata{
+			metadata = &phone.DeviceMetadata{
 				DeviceID: remoteUUID,
 			}
 		}
@@ -1010,7 +1010,7 @@ func (a *Android) handleProfileMessage(gatt *kotlin.BluetoothGatt, data []byte) 
 		return
 	}
 	if metadata == nil {
-		metadata = &wire.DeviceMetadata{
+		metadata = &phone.DeviceMetadata{
 			DeviceID: remoteUUID,
 		}
 	}

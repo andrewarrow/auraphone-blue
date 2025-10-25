@@ -1,17 +1,13 @@
 package phone
 
-import (
-	"github.com/user/auraphone-blue/wire"
-)
-
 // PhotoSyncManager handles photo synchronization logic between devices
 // This is application-level business logic, not part of the BLE transport layer
 type PhotoSyncManager struct {
-	cache *wire.DeviceCacheManager
+	cache *DeviceCacheManager
 }
 
 // NewPhotoSyncManager creates a new photo sync manager
-func NewPhotoSyncManager(cache *wire.DeviceCacheManager) *PhotoSyncManager {
+func NewPhotoSyncManager(cache *DeviceCacheManager) *PhotoSyncManager {
 	return &PhotoSyncManager{
 		cache: cache,
 	}
