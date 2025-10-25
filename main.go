@@ -397,8 +397,8 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 		telegramEntry.SetPlaceHolder("@username")
 		telegramEntry.SetText(profile["telegram"])
 
-		// Save button
-		saveButton := widget.NewButton("Save Profile", func() {
+		// Define save function to be reused by both button and OnSubmitted handlers
+		saveProfile := func() {
 			updatedProfile := map[string]string{
 				"first_name": firstNameEntry.Text,
 				"last_name":  lastNameEntry.Text,
@@ -418,7 +418,24 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 			} else {
 				fmt.Printf("Profile updated successfully\n")
 			}
-		})
+		}
+
+		// Add OnSubmitted handlers to all text fields to save on Return key
+		firstNameEntry.OnSubmitted = func(string) { saveProfile() }
+		lastNameEntry.OnSubmitted = func(string) { saveProfile() }
+		taglineEntry.OnSubmitted = func(string) { saveProfile() }
+		instaEntry.OnSubmitted = func(string) { saveProfile() }
+		linkedinEntry.OnSubmitted = func(string) { saveProfile() }
+		youtubeEntry.OnSubmitted = func(string) { saveProfile() }
+		tiktokEntry.OnSubmitted = func(string) { saveProfile() }
+		gmailEntry.OnSubmitted = func(string) { saveProfile() }
+		imessageEntry.OnSubmitted = func(string) { saveProfile() }
+		whatsappEntry.OnSubmitted = func(string) { saveProfile() }
+		signalEntry.OnSubmitted = func(string) { saveProfile() }
+		telegramEntry.OnSubmitted = func(string) { saveProfile() }
+
+		// Save button
+		saveButton := widget.NewButton("Save Profile", saveProfile)
 
 		// Create scrollable form
 		profileForm := container.NewVBox(
