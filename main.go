@@ -24,7 +24,6 @@ import (
 	"github.com/user/auraphone-blue/iphone"
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
-	"github.com/user/auraphone-blue/wire"
 )
 
 // PhoneWindow represents a single phone instance with its own window
