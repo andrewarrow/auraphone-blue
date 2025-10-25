@@ -364,22 +364,17 @@ func (g *BluetoothGatt) StartListening() {
 			case <-g.stopChan:
 				return
 			case <-ticker.C:
-				messages, err := g.wire.ReadCharacteristicMessages()
+				messages, err := g.wire.ReadAndConsumeCharacteristicMessages()
 				if err != nil {
 					continue
 				}
 
-				// Process each notification synchronously to ensure proper ordering
-				// and prevent deletion before callback completes processing multi-chunk data
+				// Process each notification - messages are already consumed (deleted) by wire layer
 				for _, msg := range messages {
 					// IMPORTANT: Only process messages from the device we're connected to
-					// Messages from other devices are intended for our GATT server, not this client
+					// Messages from other devices are already deleted but ignored
 					if msg.SenderUUID != g.GetRemoteUUID() {
-						// This message is not from our connected peripheral, skip it
-						// (It's likely intended for our GATT server from a different device)
-						filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-						g.wire.DeleteInboxFile(filename)
-						continue
+						continue // Skip messages not from our connected peripheral
 					}
 
 					// Find the characteristic this message is for
@@ -404,16 +399,11 @@ func (g *BluetoothGatt) StartListening() {
 							char.Value = dataCopy
 
 							if g.callback != nil {
-								// Deliver callback synchronously to ensure processing completes
-								// before message is deleted (critical for multi-chunk photo transfers)
+								// Deliver callback
 								g.callback.OnCharacteristicChanged(g, char)
 							}
 						}
 					}
-
-					// Delete message after callback completes
-					filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-					g.wire.DeleteInboxFile(filename)
 				}
 			}
 		}

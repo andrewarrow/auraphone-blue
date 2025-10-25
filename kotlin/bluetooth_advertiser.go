@@ -251,8 +251,8 @@ func (a *BluetoothLeAdvertiser) startListeningForRequests() {
 			case <-a.stopListening:
 				return
 			case <-ticker.C:
-				// Read incoming messages
-				messages, err := a.wire.ReadCharacteristicMessages()
+				// Read and consume incoming messages (automatically deleted by wire layer)
+				messages, err := a.wire.ReadAndConsumeCharacteristicMessages()
 				if err != nil {
 					continue
 				}
@@ -262,10 +262,6 @@ func (a *BluetoothLeAdvertiser) startListeningForRequests() {
 					if a.gattServer != nil {
 						a.gattServer.handleCharacteristicMessage(msg)
 					}
-
-					// Delete message after processing
-					filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-					a.wire.DeleteInboxFile(filename)
 				}
 			}
 		}

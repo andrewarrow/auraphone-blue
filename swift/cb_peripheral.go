@@ -303,18 +303,17 @@ func (p *CBPeripheral) StartListening() {
 			case <-p.stopChan:
 				return
 			case <-ticker.C:
-				messages, err := p.wire.ReadCharacteristicMessages()
+				messages, err := p.wire.ReadAndConsumeCharacteristicMessages()
 				if err != nil {
 					continue
 				}
 
-				// Process each notification synchronously to avoid race conditions
-				// where messages are deleted before being fully read
+				// Process each notification - messages are already consumed (deleted) by wire layer
 				for _, msg := range messages {
 					// Only process messages from the peripheral we're connected to
-					// This prevents processing messages meant for CBPeripheralManager
+					// Messages from other devices are already deleted but ignored
 					if msg.SenderUUID != p.remoteUUID {
-						continue // Skip and don't delete - let peripheral manager handle it
+						continue // Skip messages not from our connected peripheral
 					}
 
 					// Find the characteristic this message is for
@@ -338,16 +337,10 @@ func (p *CBPeripheral) StartListening() {
 							char.Value = dataCopy
 
 							if p.Delegate != nil {
-								// Deliver callback synchronously to ensure processing completes
-								// before message is deleted
+								// Deliver callback
 								p.Delegate.DidUpdateValueForCharacteristic(p, char, nil)
 							}
-
-							// Delete message after successfully delivering notification
-							filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-							p.wire.DeleteInboxFile(filename)
 						}
-						// If not delivered (e.g., write operations), don't delete - let peripheral manager handle it
 					}
 				}
 			}

@@ -1013,6 +1013,7 @@ func (w *Wire) sendCharacteristicMessage(targetUUID string, msg *CharacteristicM
 }
 
 // ReadCharacteristicMessages reads all characteristic messages from inbox
+// DEPRECATED: Use ReadAndConsumeCharacteristicMessages() instead to prevent message leaks
 // This function uses a mutex to prevent concurrent processing by multiple goroutines
 // (both central and peripheral mode poll the inbox simultaneously)
 func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
@@ -1060,4 +1061,95 @@ func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
 	}
 
 	return messages, nil
+}
+
+// ReadAndConsumeCharacteristicMessages reads all messages from inbox and DELETES them atomically
+// This matches real BLE behavior: messages are delivered once, not queued.
+// This prevents message leaks in dual-role architectures where multiple polling loops
+// compete for the same inbox (central mode + peripheral mode).
+func (w *Wire) ReadAndConsumeCharacteristicMessages() ([]*CharacteristicMessage, error) {
+	w.inboxMutex.Lock()
+	defer w.inboxMutex.Unlock()
+
+	files, err := w.ListInbox()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(files) > 0 {
+		logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+			"📬 Consuming %d message(s) from inbox", len(files))
+	}
+
+	var messages []*CharacteristicMessage
+	for _, filename := range files {
+		data, err := w.ReadAndReassemble(filename)
+		if err != nil {
+			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+				"⚠️  Failed to reassemble %s: %v", filename, err)
+			// Delete malformed message to prevent infinite loop
+			w.deleteInboxFileUnsafe(filename)
+			continue
+		}
+
+		var msg CharacteristicMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+				"⚠️  Failed to parse %s: %v", filename, err)
+			// Delete unparseable message
+			w.deleteInboxFileUnsafe(filename)
+			continue
+		}
+
+		logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+			fmt.Sprintf("📥 RX %s (from %s, svc=%s, char=%s, %d bytes)",
+				msg.Operation, msg.SenderUUID[:8],
+				msg.ServiceUUID[len(msg.ServiceUUID)-4:],
+				msg.CharUUID[len(msg.CharUUID)-4:], len(msg.Data)), &msg)
+
+		messages = append(messages, &msg)
+
+		// CRITICAL: Delete message immediately after reading
+		// This ensures exactly-once delivery semantics
+		w.deleteInboxFileUnsafe(filename)
+	}
+
+	return messages, nil
+}
+
+// deleteInboxFileUnsafe deletes a message file WITHOUT locking (caller must hold inboxMutex)
+// This is used internally by ReadAndConsumeCharacteristicMessages to atomically consume messages
+func (w *Wire) deleteInboxFileUnsafe(filename string) error {
+	inboxPath := filepath.Join(w.basePath, w.localUUID, "inbox")
+
+	// Read for history BEFORE deleting (best effort)
+	data, err := w.ReadAndReassemble(filename)
+	if err == nil {
+		// Copy complete message to inbox_history
+		historyPath := filepath.Join(w.basePath, w.localUUID, "inbox_history")
+		historyFilePath := filepath.Join(historyPath, filename)
+		os.WriteFile(historyFilePath, data, 0644) // Best effort, ignore errors
+	}
+
+	// Delete .ready marker first
+	readyFile := filepath.Join(inboxPath, filename+".ready")
+	os.Remove(readyFile) // Ignore errors
+
+	// Try deleting complete file first
+	completeFile := filepath.Join(inboxPath, filename)
+	if err := os.Remove(completeFile); err == nil {
+		return nil // Complete file deleted successfully
+	}
+
+	// Delete all .part files
+	partIndex := 0
+	for {
+		partFile := filepath.Join(inboxPath, fmt.Sprintf("%s.part%d", filename, partIndex))
+		if err := os.Remove(partFile); err != nil {
+			break // No more parts
+		}
+		partIndex++
+	}
+
+	return nil
 }

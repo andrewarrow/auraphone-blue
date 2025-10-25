@@ -389,18 +389,14 @@ func (pm *CBPeripheralManager) startListeningForRequests() {
 			case <-pm.stopListening:
 				return
 			case <-ticker.C:
-				// Read incoming messages
-				messages, err := pm.wire.ReadCharacteristicMessages()
+				// Read and consume incoming messages (automatically deleted by wire layer)
+				messages, err := pm.wire.ReadAndConsumeCharacteristicMessages()
 				if err != nil {
 					continue
 				}
 
 				for _, msg := range messages {
 					pm.handleCharacteristicMessage(msg)
-
-					// Delete message after processing
-					filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-					pm.wire.DeleteInboxFile(filename)
 				}
 			}
 		}
