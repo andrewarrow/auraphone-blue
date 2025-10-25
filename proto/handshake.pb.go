@@ -21,26 +21,15 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Handshake message exchanged between devices over BLE
+// Handshake message - minimal, fits in small MTU (~150 bytes)
+// Exchanged immediately on connection to establish photo sync state
 type HandshakeMessage struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	DeviceId        string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
 	FirstName       string                 `protobuf:"bytes,2,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`
 	ProtocolVersion int32                  `protobuf:"varint,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	LastName        string                 `protobuf:"bytes,4,opt,name=last_name,json=lastName,proto3" json:"last_name,omitempty"`
-	PhoneNumber     string                 `protobuf:"bytes,5,opt,name=phone_number,json=phoneNumber,proto3" json:"phone_number,omitempty"`
-	Tagline         string                 `protobuf:"bytes,6,opt,name=tagline,proto3" json:"tagline,omitempty"`
-	Insta           string                 `protobuf:"bytes,7,opt,name=insta,proto3" json:"insta,omitempty"`
-	RxPhotoHash     string                 `protobuf:"bytes,8,opt,name=rx_photo_hash,json=rxPhotoHash,proto3" json:"rx_photo_hash,omitempty"` // Hash of photo we RECEIVED from remote device
-	TxPhotoHash     string                 `protobuf:"bytes,9,opt,name=tx_photo_hash,json=txPhotoHash,proto3" json:"tx_photo_hash,omitempty"` // Hash of OUR photo available to send
-	Linkedin        string                 `protobuf:"bytes,10,opt,name=linkedin,proto3" json:"linkedin,omitempty"`
-	Youtube         string                 `protobuf:"bytes,11,opt,name=youtube,proto3" json:"youtube,omitempty"`
-	Tiktok          string                 `protobuf:"bytes,12,opt,name=tiktok,proto3" json:"tiktok,omitempty"`
-	Gmail           string                 `protobuf:"bytes,13,opt,name=gmail,proto3" json:"gmail,omitempty"`
-	Imessage        string                 `protobuf:"bytes,14,opt,name=imessage,proto3" json:"imessage,omitempty"`
-	Whatsapp        string                 `protobuf:"bytes,15,opt,name=whatsapp,proto3" json:"whatsapp,omitempty"`
-	Signal          string                 `protobuf:"bytes,16,opt,name=signal,proto3" json:"signal,omitempty"`
-	Telegram        string                 `protobuf:"bytes,17,opt,name=telegram,proto3" json:"telegram,omitempty"`
+	RxPhotoHash     string                 `protobuf:"bytes,4,opt,name=rx_photo_hash,json=rxPhotoHash,proto3" json:"rx_photo_hash,omitempty"` // Hash of photo we RECEIVED from remote device
+	TxPhotoHash     string                 `protobuf:"bytes,5,opt,name=tx_photo_hash,json=txPhotoHash,proto3" json:"tx_photo_hash,omitempty"` // Hash of OUR photo available to send
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -96,34 +85,6 @@ func (x *HandshakeMessage) GetProtocolVersion() int32 {
 	return 0
 }
 
-func (x *HandshakeMessage) GetLastName() string {
-	if x != nil {
-		return x.LastName
-	}
-	return ""
-}
-
-func (x *HandshakeMessage) GetPhoneNumber() string {
-	if x != nil {
-		return x.PhoneNumber
-	}
-	return ""
-}
-
-func (x *HandshakeMessage) GetTagline() string {
-	if x != nil {
-		return x.Tagline
-	}
-	return ""
-}
-
-func (x *HandshakeMessage) GetInsta() string {
-	if x != nil {
-		return x.Insta
-	}
-	return ""
-}
-
 func (x *HandshakeMessage) GetRxPhotoHash() string {
 	if x != nil {
 		return x.RxPhotoHash
@@ -138,56 +99,142 @@ func (x *HandshakeMessage) GetTxPhotoHash() string {
 	return ""
 }
 
-func (x *HandshakeMessage) GetLinkedin() string {
+// Profile message - detailed info, sent after handshake
+// Can be fragmented if it exceeds MTU
+type ProfileMessage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DeviceId      string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	LastName      string                 `protobuf:"bytes,2,opt,name=last_name,json=lastName,proto3" json:"last_name,omitempty"`
+	PhoneNumber   string                 `protobuf:"bytes,3,opt,name=phone_number,json=phoneNumber,proto3" json:"phone_number,omitempty"`
+	Tagline       string                 `protobuf:"bytes,4,opt,name=tagline,proto3" json:"tagline,omitempty"`
+	Insta         string                 `protobuf:"bytes,5,opt,name=insta,proto3" json:"insta,omitempty"`
+	Linkedin      string                 `protobuf:"bytes,6,opt,name=linkedin,proto3" json:"linkedin,omitempty"`
+	Youtube       string                 `protobuf:"bytes,7,opt,name=youtube,proto3" json:"youtube,omitempty"`
+	Tiktok        string                 `protobuf:"bytes,8,opt,name=tiktok,proto3" json:"tiktok,omitempty"`
+	Gmail         string                 `protobuf:"bytes,9,opt,name=gmail,proto3" json:"gmail,omitempty"`
+	Imessage      string                 `protobuf:"bytes,10,opt,name=imessage,proto3" json:"imessage,omitempty"`
+	Whatsapp      string                 `protobuf:"bytes,11,opt,name=whatsapp,proto3" json:"whatsapp,omitempty"`
+	Signal        string                 `protobuf:"bytes,12,opt,name=signal,proto3" json:"signal,omitempty"`
+	Telegram      string                 `protobuf:"bytes,13,opt,name=telegram,proto3" json:"telegram,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProfileMessage) Reset() {
+	*x = ProfileMessage{}
+	mi := &file_proto_handshake_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileMessage) ProtoMessage() {}
+
+func (x *ProfileMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_handshake_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileMessage.ProtoReflect.Descriptor instead.
+func (*ProfileMessage) Descriptor() ([]byte, []int) {
+	return file_proto_handshake_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ProfileMessage) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+func (x *ProfileMessage) GetLastName() string {
+	if x != nil {
+		return x.LastName
+	}
+	return ""
+}
+
+func (x *ProfileMessage) GetPhoneNumber() string {
+	if x != nil {
+		return x.PhoneNumber
+	}
+	return ""
+}
+
+func (x *ProfileMessage) GetTagline() string {
+	if x != nil {
+		return x.Tagline
+	}
+	return ""
+}
+
+func (x *ProfileMessage) GetInsta() string {
+	if x != nil {
+		return x.Insta
+	}
+	return ""
+}
+
+func (x *ProfileMessage) GetLinkedin() string {
 	if x != nil {
 		return x.Linkedin
 	}
 	return ""
 }
 
-func (x *HandshakeMessage) GetYoutube() string {
+func (x *ProfileMessage) GetYoutube() string {
 	if x != nil {
 		return x.Youtube
 	}
 	return ""
 }
 
-func (x *HandshakeMessage) GetTiktok() string {
+func (x *ProfileMessage) GetTiktok() string {
 	if x != nil {
 		return x.Tiktok
 	}
 	return ""
 }
 
-func (x *HandshakeMessage) GetGmail() string {
+func (x *ProfileMessage) GetGmail() string {
 	if x != nil {
 		return x.Gmail
 	}
 	return ""
 }
 
-func (x *HandshakeMessage) GetImessage() string {
+func (x *ProfileMessage) GetImessage() string {
 	if x != nil {
 		return x.Imessage
 	}
 	return ""
 }
 
-func (x *HandshakeMessage) GetWhatsapp() string {
+func (x *ProfileMessage) GetWhatsapp() string {
 	if x != nil {
 		return x.Whatsapp
 	}
 	return ""
 }
 
-func (x *HandshakeMessage) GetSignal() string {
+func (x *ProfileMessage) GetSignal() string {
 	if x != nil {
 		return x.Signal
 	}
 	return ""
 }
 
-func (x *HandshakeMessage) GetTelegram() string {
+func (x *ProfileMessage) GetTelegram() string {
 	if x != nil {
 		return x.Telegram
 	}
@@ -206,7 +253,7 @@ type PhotoCompletionAck struct {
 
 func (x *PhotoCompletionAck) Reset() {
 	*x = PhotoCompletionAck{}
-	mi := &file_proto_handshake_proto_msgTypes[1]
+	mi := &file_proto_handshake_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -218,7 +265,7 @@ func (x *PhotoCompletionAck) String() string {
 func (*PhotoCompletionAck) ProtoMessage() {}
 
 func (x *PhotoCompletionAck) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[1]
+	mi := &file_proto_handshake_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -231,7 +278,7 @@ func (x *PhotoCompletionAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PhotoCompletionAck.ProtoReflect.Descriptor instead.
 func (*PhotoCompletionAck) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{1}
+	return file_proto_handshake_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PhotoCompletionAck) GetDeviceId() string {
@@ -259,27 +306,29 @@ var File_proto_handshake_proto protoreflect.FileDescriptor
 
 const file_proto_handshake_proto_rawDesc = "" +
 	"\n" +
-	"\x15proto/handshake.proto\x12\tauraphone\"\x81\x04\n" +
+	"\x15proto/handshake.proto\x12\tauraphone\"\xc1\x01\n" +
 	"\x10HandshakeMessage\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
 	"first_name\x18\x02 \x01(\tR\tfirstName\x12)\n" +
-	"\x10protocol_version\x18\x03 \x01(\x05R\x0fprotocolVersion\x12\x1b\n" +
-	"\tlast_name\x18\x04 \x01(\tR\blastName\x12!\n" +
-	"\fphone_number\x18\x05 \x01(\tR\vphoneNumber\x12\x18\n" +
-	"\atagline\x18\x06 \x01(\tR\atagline\x12\x14\n" +
-	"\x05insta\x18\a \x01(\tR\x05insta\x12\"\n" +
-	"\rrx_photo_hash\x18\b \x01(\tR\vrxPhotoHash\x12\"\n" +
-	"\rtx_photo_hash\x18\t \x01(\tR\vtxPhotoHash\x12\x1a\n" +
-	"\blinkedin\x18\n" +
-	" \x01(\tR\blinkedin\x12\x18\n" +
-	"\ayoutube\x18\v \x01(\tR\ayoutube\x12\x16\n" +
-	"\x06tiktok\x18\f \x01(\tR\x06tiktok\x12\x14\n" +
-	"\x05gmail\x18\r \x01(\tR\x05gmail\x12\x1a\n" +
-	"\bimessage\x18\x0e \x01(\tR\bimessage\x12\x1a\n" +
-	"\bwhatsapp\x18\x0f \x01(\tR\bwhatsapp\x12\x16\n" +
-	"\x06signal\x18\x10 \x01(\tR\x06signal\x12\x1a\n" +
-	"\btelegram\x18\x11 \x01(\tR\btelegram\"n\n" +
+	"\x10protocol_version\x18\x03 \x01(\x05R\x0fprotocolVersion\x12\"\n" +
+	"\rrx_photo_hash\x18\x04 \x01(\tR\vrxPhotoHash\x12\"\n" +
+	"\rtx_photo_hash\x18\x05 \x01(\tR\vtxPhotoHash\"\xed\x02\n" +
+	"\x0eProfileMessage\x12\x1b\n" +
+	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1b\n" +
+	"\tlast_name\x18\x02 \x01(\tR\blastName\x12!\n" +
+	"\fphone_number\x18\x03 \x01(\tR\vphoneNumber\x12\x18\n" +
+	"\atagline\x18\x04 \x01(\tR\atagline\x12\x14\n" +
+	"\x05insta\x18\x05 \x01(\tR\x05insta\x12\x1a\n" +
+	"\blinkedin\x18\x06 \x01(\tR\blinkedin\x12\x18\n" +
+	"\ayoutube\x18\a \x01(\tR\ayoutube\x12\x16\n" +
+	"\x06tiktok\x18\b \x01(\tR\x06tiktok\x12\x14\n" +
+	"\x05gmail\x18\t \x01(\tR\x05gmail\x12\x1a\n" +
+	"\bimessage\x18\n" +
+	" \x01(\tR\bimessage\x12\x1a\n" +
+	"\bwhatsapp\x18\v \x01(\tR\bwhatsapp\x12\x16\n" +
+	"\x06signal\x18\f \x01(\tR\x06signal\x12\x1a\n" +
+	"\btelegram\x18\r \x01(\tR\btelegram\"n\n" +
 	"\x12PhotoCompletionAck\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12!\n" +
 	"\ftransfer_crc\x18\x02 \x01(\aR\vtransferCrc\x12\x18\n" +
@@ -297,10 +346,11 @@ func file_proto_handshake_proto_rawDescGZIP() []byte {
 	return file_proto_handshake_proto_rawDescData
 }
 
-var file_proto_handshake_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_proto_handshake_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_proto_handshake_proto_goTypes = []any{
 	(*HandshakeMessage)(nil),   // 0: auraphone.HandshakeMessage
-	(*PhotoCompletionAck)(nil), // 1: auraphone.PhotoCompletionAck
+	(*ProfileMessage)(nil),     // 1: auraphone.ProfileMessage
+	(*PhotoCompletionAck)(nil), // 2: auraphone.PhotoCompletionAck
 }
 var file_proto_handshake_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -321,7 +371,7 @@ func file_proto_handshake_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_handshake_proto_rawDesc), len(file_proto_handshake_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

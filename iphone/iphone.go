@@ -3,6 +3,7 @@ package iphone
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +31,22 @@ type photoReceiveState struct {
 	buffer          []byte
 }
 
+// LocalProfile stores our local profile information
+type LocalProfile struct {
+	FirstName string
+	LastName  string
+	Tagline   string
+	Insta     string
+	LinkedIn  string
+	YouTube   string
+	TikTok    string
+	Gmail     string
+	IMessage  string
+	WhatsApp  string
+	Signal    string
+	Telegram  string
+}
+
 // iPhone represents an iOS device with BLE capabilities
 type iPhone struct {
 	deviceUUID           string
@@ -41,6 +58,7 @@ type iPhone struct {
 	photoPath            string
 	photoHash            string
 	photoData            []byte
+	localProfile         *LocalProfile                  // Our local profile data
 	connectedPeripherals map[string]*swift.CBPeripheral // UUID -> peripheral
 	deviceIDToPhotoHash  map[string]string              // deviceID -> their TX photo hash
 	receivedPhotoHashes  map[string]string              // deviceID -> RX hash (photos we got from them)
@@ -85,6 +103,9 @@ func NewIPhone() *iPhone {
 
 	// Load existing photo mappings from disk
 	ip.loadReceivedPhotoMappings()
+
+	// Load local profile from disk
+	ip.localProfile = ip.loadLocalProfile()
 
 	// Setup BLE
 	ip.setupBLE()
@@ -367,6 +388,42 @@ func (ip *iPhone) GetProfilePhotoHash() string {
 	return ip.photoHash
 }
 
+// GetLocalProfile returns the local profile as a map
+func (ip *iPhone) GetLocalProfile() map[string]string {
+	return map[string]string{
+		"first_name": ip.localProfile.FirstName,
+		"last_name":  ip.localProfile.LastName,
+		"tagline":    ip.localProfile.Tagline,
+		"insta":      ip.localProfile.Insta,
+		"linkedin":   ip.localProfile.LinkedIn,
+		"youtube":    ip.localProfile.YouTube,
+		"tiktok":     ip.localProfile.TikTok,
+		"gmail":      ip.localProfile.Gmail,
+		"imessage":   ip.localProfile.IMessage,
+		"whatsapp":   ip.localProfile.WhatsApp,
+		"signal":     ip.localProfile.Signal,
+		"telegram":   ip.localProfile.Telegram,
+	}
+}
+
+// UpdateLocalProfile updates the local profile
+func (ip *iPhone) UpdateLocalProfile(profile map[string]string) error {
+	ip.localProfile.FirstName = profile["first_name"]
+	ip.localProfile.LastName = profile["last_name"]
+	ip.localProfile.Tagline = profile["tagline"]
+	ip.localProfile.Insta = profile["insta"]
+	ip.localProfile.LinkedIn = profile["linkedin"]
+	ip.localProfile.YouTube = profile["youtube"]
+	ip.localProfile.TikTok = profile["tiktok"]
+	ip.localProfile.Gmail = profile["gmail"]
+	ip.localProfile.IMessage = profile["imessage"]
+	ip.localProfile.WhatsApp = profile["whatsapp"]
+	ip.localProfile.Signal = profile["signal"]
+	ip.localProfile.Telegram = profile["telegram"]
+
+	return ip.UpdateProfile(ip.localProfile)
+}
+
 // CBPeripheralDelegate methods
 
 func (ip *iPhone) DidDiscoverServices(peripheral *swift.CBPeripheral, services []*swift.CBService, err error) {
@@ -437,7 +494,17 @@ func (ip *iPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral
 
 	// Handle based on characteristic type
 	if characteristic.UUID == auraTextCharUUID {
-		ip.handleHandshakeMessage(peripheral, characteristic.Value)
+		// Try to unmarshal as HandshakeMessage first
+		var handshake proto.HandshakeMessage
+		if err := proto2.Unmarshal(characteristic.Value, &handshake); err == nil && handshake.DeviceId != "" {
+			ip.handleHandshakeMessage(peripheral, characteristic.Value)
+		} else {
+			// Try ProfileMessage
+			var profileMsg proto.ProfileMessage
+			if err := proto2.Unmarshal(characteristic.Value, &profileMsg); err == nil && profileMsg.DeviceId != "" {
+				ip.handleProfileMessage(peripheral, characteristic.Value)
+			}
+		}
 	} else if characteristic.UUID == auraPhotoCharUUID {
 		ip.handlePhotoMessage(peripheral, characteristic.Value)
 	}
@@ -456,9 +523,14 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 		return fmt.Errorf("text characteristic not found")
 	}
 
+	firstName := ip.localProfile.FirstName
+	if firstName == "" {
+		firstName = "iOS" // Default if not set
+	}
+
 	msg := &proto.HandshakeMessage{
 		DeviceId:        ip.deviceUUID,
-		FirstName:       "iOS",
+		FirstName:       firstName,
 		ProtocolVersion: 1,
 		TxPhotoHash:     ip.photoHash,
 		RxPhotoHash:     ip.receivedPhotoHashes[peripheral.UUID],
@@ -510,6 +582,18 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	// Store their TX photo hash
 	if handshake.TxPhotoHash != "" {
 		ip.deviceIDToPhotoHash[peripheral.UUID] = handshake.TxPhotoHash
+	}
+
+	// Save first_name to device metadata
+	if handshake.FirstName != "" {
+		metadata, _ := ip.cacheManager.LoadDeviceMetadata(peripheral.UUID)
+		if metadata == nil {
+			metadata = &wire.DeviceMetadata{
+				DeviceID: peripheral.UUID,
+			}
+		}
+		metadata.FirstName = handshake.FirstName
+		ip.cacheManager.SaveDeviceMetadata(metadata)
 	}
 
 	// Check if they have a new photo for us
@@ -767,4 +851,159 @@ func (ip *iPhone) checkStaleHandshakes() {
 			go ip.sendHandshakeMessage(peripheral)
 		}
 	}
+}
+
+// loadLocalProfile loads our profile from disk cache
+func (ip *iPhone) loadLocalProfile() *LocalProfile {
+	cachePath := filepath.Join("data", ip.deviceUUID, "cache", "local_profile.json")
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		// No profile yet, return empty
+		return &LocalProfile{}
+	}
+
+	var profile LocalProfile
+	if err := json.Unmarshal(data, &profile); err != nil {
+		return &LocalProfile{}
+	}
+
+	return &profile
+}
+
+// saveLocalProfile saves our profile to disk cache
+func (ip *iPhone) saveLocalProfile() error {
+	cachePath := filepath.Join("data", ip.deviceUUID, "cache", "local_profile.json")
+	data, err := json.MarshalIndent(ip.localProfile, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(cachePath, data, 0644)
+}
+
+// UpdateProfile updates local profile and sends ProfileMessage to all connected devices
+func (ip *iPhone) UpdateProfile(profile *LocalProfile) error {
+	ip.localProfile = profile
+
+	// Save to disk
+	if err := ip.saveLocalProfile(); err != nil {
+		return err
+	}
+
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	logger.Info(prefix, "📝 Updated local profile")
+
+	// Send ProfileMessage to all connected devices if contact methods changed
+	if profile.LinkedIn != "" || profile.Insta != "" || profile.YouTube != "" ||
+	   profile.TikTok != "" || profile.Gmail != "" || profile.IMessage != "" ||
+	   profile.WhatsApp != "" || profile.Signal != "" || profile.Telegram != "" {
+		logger.Debug(prefix, "📤 Sending ProfileMessage to %d connected device(s)", len(ip.connectedPeripherals))
+		for _, peripheral := range ip.connectedPeripherals {
+			go ip.sendProfileMessage(peripheral)
+		}
+	} else {
+		// Just first_name, last_name, tagline changed - resend handshake
+		logger.Debug(prefix, "📤 Sending updated handshake to %d connected device(s)", len(ip.connectedPeripherals))
+		for _, peripheral := range ip.connectedPeripherals {
+			go ip.sendHandshakeMessage(peripheral)
+		}
+	}
+
+	return nil
+}
+
+// sendProfileMessage sends a ProfileMessage to a connected peripheral
+func (ip *iPhone) sendProfileMessage(peripheral *swift.CBPeripheral) error {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+
+	textChar := peripheral.GetCharacteristic(auraServiceUUID, auraTextCharUUID)
+	if textChar == nil {
+		return fmt.Errorf("text characteristic not found")
+	}
+
+	msg := &proto.ProfileMessage{
+		DeviceId:    ip.deviceUUID,
+		LastName:    ip.localProfile.LastName,
+		PhoneNumber: ip.localProfile.IMessage, // Phone number = iMessage
+		Tagline:     ip.localProfile.Tagline,
+		Insta:       ip.localProfile.Insta,
+		Linkedin:    ip.localProfile.LinkedIn,
+		Youtube:     ip.localProfile.YouTube,
+		Tiktok:      ip.localProfile.TikTok,
+		Gmail:       ip.localProfile.Gmail,
+		Imessage:    ip.localProfile.IMessage,
+		Whatsapp:    ip.localProfile.WhatsApp,
+		Signal:      ip.localProfile.Signal,
+		Telegram:    ip.localProfile.Telegram,
+	}
+
+	// Marshal to binary protobuf
+	data, err := proto2.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal profile: %w", err)
+	}
+
+	// Log as JSON for debugging
+	marshaler := protojson.MarshalOptions{
+		UseProtoNames: true,
+	}
+	jsonData, _ := marshaler.Marshal(msg)
+	logger.Debug(prefix, "📤 TX ProfileMessage (binary protobuf, %d bytes): %s", len(data), string(jsonData))
+
+	return peripheral.WriteValue(data, textChar, swift.CBCharacteristicWriteWithResponse)
+}
+
+// handleProfileMessage processes incoming ProfileMessage
+func (ip *iPhone) handleProfileMessage(peripheral *swift.CBPeripheral, data []byte) {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+
+	var profileMsg proto.ProfileMessage
+	if err := proto2.Unmarshal(data, &profileMsg); err != nil {
+		logger.Error(prefix, "❌ Failed to parse ProfileMessage: %v", err)
+		return
+	}
+
+	// Log as JSON for debugging
+	marshaler := protojson.MarshalOptions{
+		UseProtoNames: true,
+	}
+	jsonData, _ := marshaler.Marshal(&profileMsg)
+	logger.Debug(prefix, "📥 RX ProfileMessage (binary protobuf, %d bytes): %s", len(data), string(jsonData))
+
+	// Load existing metadata or create new
+	metadata, err := ip.cacheManager.LoadDeviceMetadata(peripheral.UUID)
+	if err != nil {
+		logger.Error(prefix, "❌ Failed to load device metadata: %v", err)
+		return
+	}
+	if metadata == nil {
+		metadata = &wire.DeviceMetadata{
+			DeviceID: peripheral.UUID,
+		}
+	}
+
+	// Update fields from ProfileMessage
+	metadata.LastName = profileMsg.LastName
+	metadata.PhoneNumber = profileMsg.PhoneNumber
+	metadata.Tagline = profileMsg.Tagline
+	metadata.Insta = profileMsg.Insta
+	metadata.LinkedIn = profileMsg.Linkedin
+	metadata.YouTube = profileMsg.Youtube
+	metadata.TikTok = profileMsg.Tiktok
+	metadata.Gmail = profileMsg.Gmail
+	metadata.IMessage = profileMsg.Imessage
+	metadata.WhatsApp = profileMsg.Whatsapp
+	metadata.Signal = profileMsg.Signal
+	metadata.Telegram = profileMsg.Telegram
+
+	// Save updated metadata
+	if err := ip.cacheManager.SaveDeviceMetadata(metadata); err != nil {
+		logger.Error(prefix, "❌ Failed to save device metadata: %v", err)
+		return
+	}
+
+	logger.Info(prefix, "✅ Saved profile data for %s", peripheral.UUID[:8])
 }

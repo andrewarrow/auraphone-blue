@@ -24,6 +24,7 @@ import (
 	"github.com/user/auraphone-blue/iphone"
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
+	"github.com/user/auraphone-blue/wire"
 )
 
 // PhoneWindow represents a single phone instance with its own window
@@ -43,6 +44,7 @@ type PhoneWindow struct {
 	profileImage      *canvas.Image          // Profile tab image
 	deviceImages      map[string]image.Image // Photo hash -> profile image cache
 	devicePhotoHashes map[string]string      // Device ID -> photo hash mapping
+	deviceFirstNames  map[string]string      // Device ID -> first_name mapping
 }
 
 // NewPhoneWindow creates a new phone window
@@ -60,6 +62,7 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 		selectedPhoto:     selectedPhoto,
 		deviceImages:      make(map[string]image.Image),
 		devicePhotoHashes: make(map[string]string),
+		deviceFirstNames:  make(map[string]string),
 	}
 
 	// Create platform-specific phone
@@ -269,8 +272,14 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 						deviceIDText := textStack.Objects[1].(*canvas.Text)
 						rssiText := textStack.Objects[2].(*canvas.Text)
 
+						// Use first_name from cache if available, otherwise use device name
+						displayName := device.Name
+						if firstName, hasName := pw.deviceFirstNames[device.DeviceID]; hasName && firstName != "" {
+							displayName = firstName
+						}
+
 						// Set name with cyan color (matching iOS)
-						nameText.Text = device.Name
+						nameText.Text = displayName
 						nameText.Refresh()
 
 						// Set device info on separate lines
@@ -312,14 +321,7 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 		pw.profileImage.Refresh()
 
 		// Set a fixed size for the profile image
-		pw.profileImage.SetMinSize(fyne.NewSize(200, 200))
-
-		// Create a large profile image container
-		profileContainer := container.NewVBox(
-			widget.NewLabel(""), // Spacer
-			container.NewCenter(pw.profileImage),
-			widget.NewLabel(""), // Spacer
-		)
+		pw.profileImage.SetMinSize(fyne.NewSize(120, 120))
 
 		// Create photo selector dropdown
 		photoOptions := make([]string, 12)
@@ -343,15 +345,120 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 		currentPhoto := filepath.Base(pw.selectedPhoto)
 		photoSelect.SetSelected(currentPhoto)
 
-		// Layout
-		profileContent := container.NewVBox(
-			profileContainer,
+		// Get current profile data
+		profile := pw.phone.GetLocalProfile()
+
+		// Create profile form fields
+		firstNameEntry := widget.NewEntry()
+		firstNameEntry.SetPlaceHolder("First Name")
+		firstNameEntry.SetText(profile["first_name"])
+
+		lastNameEntry := widget.NewEntry()
+		lastNameEntry.SetPlaceHolder("Last Name")
+		lastNameEntry.SetText(profile["last_name"])
+
+		taglineEntry := widget.NewEntry()
+		taglineEntry.SetPlaceHolder("Tagline")
+		taglineEntry.SetText(profile["tagline"])
+
+		// Contact method entries
+		instaEntry := widget.NewEntry()
+		instaEntry.SetPlaceHolder("@username")
+		instaEntry.SetText(profile["insta"])
+
+		linkedinEntry := widget.NewEntry()
+		linkedinEntry.SetPlaceHolder("linkedin.com/in/username")
+		linkedinEntry.SetText(profile["linkedin"])
+
+		youtubeEntry := widget.NewEntry()
+		youtubeEntry.SetPlaceHolder("youtube.com/@username")
+		youtubeEntry.SetText(profile["youtube"])
+
+		tiktokEntry := widget.NewEntry()
+		tiktokEntry.SetPlaceHolder("@username")
+		tiktokEntry.SetText(profile["tiktok"])
+
+		gmailEntry := widget.NewEntry()
+		gmailEntry.SetPlaceHolder("yourname@gmail.com")
+		gmailEntry.SetText(profile["gmail"])
+
+		imessageEntry := widget.NewEntry()
+		imessageEntry.SetPlaceHolder("+1 (555) 123-4567")
+		imessageEntry.SetText(profile["imessage"])
+
+		whatsappEntry := widget.NewEntry()
+		whatsappEntry.SetPlaceHolder("+1 (555) 123-4567")
+		whatsappEntry.SetText(profile["whatsapp"])
+
+		signalEntry := widget.NewEntry()
+		signalEntry.SetPlaceHolder("+1 (555) 123-4567")
+		signalEntry.SetText(profile["signal"])
+
+		telegramEntry := widget.NewEntry()
+		telegramEntry.SetPlaceHolder("@username")
+		telegramEntry.SetText(profile["telegram"])
+
+		// Save button
+		saveButton := widget.NewButton("Save Profile", func() {
+			updatedProfile := map[string]string{
+				"first_name": firstNameEntry.Text,
+				"last_name":  lastNameEntry.Text,
+				"tagline":    taglineEntry.Text,
+				"insta":      instaEntry.Text,
+				"linkedin":   linkedinEntry.Text,
+				"youtube":    youtubeEntry.Text,
+				"tiktok":     tiktokEntry.Text,
+				"gmail":      gmailEntry.Text,
+				"imessage":   imessageEntry.Text,
+				"whatsapp":   whatsappEntry.Text,
+				"signal":     signalEntry.Text,
+				"telegram":   telegramEntry.Text,
+			}
+			if err := pw.phone.UpdateLocalProfile(updatedProfile); err != nil {
+				fmt.Printf("Failed to update profile: %v\n", err)
+			} else {
+				fmt.Printf("Profile updated successfully\n")
+			}
+		})
+
+		// Create scrollable form
+		profileForm := container.NewVBox(
+			container.NewCenter(pw.profileImage),
 			widget.NewLabel(""),
-			widget.NewLabelWithStyle("Select Profile Photo", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+			widget.NewLabelWithStyle("Profile Photo", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 			container.NewPadded(photoSelect),
+			widget.NewSeparator(),
+			widget.NewLabel(""),
+			widget.NewLabelWithStyle("Profile Info", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			widget.NewForm(
+				widget.NewFormItem("First Name", firstNameEntry),
+				widget.NewFormItem("Last Name", lastNameEntry),
+				widget.NewFormItem("Tagline", taglineEntry),
+			),
+			widget.NewLabel(""),
+			widget.NewLabelWithStyle("Public Contact Methods", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			widget.NewForm(
+				widget.NewFormItem("Instagram", instaEntry),
+				widget.NewFormItem("LinkedIn", linkedinEntry),
+				widget.NewFormItem("YouTube", youtubeEntry),
+				widget.NewFormItem("TikTok", tiktokEntry),
+			),
+			widget.NewLabel(""),
+			widget.NewLabelWithStyle("Private Contact Methods", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			widget.NewForm(
+				widget.NewFormItem("Gmail", gmailEntry),
+				widget.NewFormItem("iMessage", imessageEntry),
+				widget.NewFormItem("WhatsApp", whatsappEntry),
+				widget.NewFormItem("Signal", signalEntry),
+				widget.NewFormItem("Telegram", telegramEntry),
+			),
+			widget.NewLabel(""),
+			saveButton,
 		)
 
-		return container.NewMax(bg, profileContent)
+		scrollable := container.NewVScroll(profileForm)
+
+		return container.NewMax(bg, scrollable)
 	}
 
 	// Other tabs show placeholder
@@ -381,6 +488,14 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	if device.PhotoHash != "" {
 		pw.devicePhotoHashes[device.DeviceID] = device.PhotoHash
 		pw.loadDevicePhoto(device.PhotoHash)
+	}
+
+	// Load first_name from device metadata cache
+	cacheManager := wire.NewDeviceCacheManager(pw.phone.GetDeviceUUID())
+	if metadata, err := cacheManager.LoadDeviceMetadata(device.DeviceID); err == nil && metadata != nil {
+		if metadata.FirstName != "" {
+			pw.deviceFirstNames[device.DeviceID] = metadata.FirstName
+		}
 	}
 
 	// Rebuild sorted list from map

@@ -3,6 +3,7 @@ package android
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +31,22 @@ type photoReceiveState struct {
 	buffer          []byte
 }
 
+// LocalProfile stores our local profile information
+type LocalProfile struct {
+	FirstName string
+	LastName  string
+	Tagline   string
+	Insta     string
+	LinkedIn  string
+	YouTube   string
+	TikTok    string
+	Gmail     string
+	IMessage  string
+	WhatsApp  string
+	Signal    string
+	Telegram  string
+}
+
 // Android represents an Android device with BLE capabilities
 type Android struct {
 	deviceUUID           string
@@ -41,6 +58,7 @@ type Android struct {
 	photoPath            string
 	photoHash            string
 	photoData            []byte
+	localProfile         *LocalProfile                      // Our local profile data
 	connectedGatts       map[string]*kotlin.BluetoothGatt   // UUID -> GATT connection
 	discoveredDevices    map[string]*kotlin.BluetoothDevice // UUID -> discovered device (for reconnect)
 	deviceIDToPhotoHash  map[string]string                  // deviceID -> their TX photo hash
@@ -89,6 +107,9 @@ func NewAndroid() *Android {
 
 	// Load existing photo mappings from disk
 	a.loadReceivedPhotoMappings()
+
+	// Load local profile from disk
+	a.localProfile = a.loadLocalProfile()
 
 	// Setup BLE
 	a.setupBLE()
@@ -324,6 +345,42 @@ func (a *Android) GetProfilePhotoHash() string {
 	return a.photoHash
 }
 
+// GetLocalProfile returns the local profile as a map
+func (a *Android) GetLocalProfile() map[string]string {
+	return map[string]string{
+		"first_name": a.localProfile.FirstName,
+		"last_name":  a.localProfile.LastName,
+		"tagline":    a.localProfile.Tagline,
+		"insta":      a.localProfile.Insta,
+		"linkedin":   a.localProfile.LinkedIn,
+		"youtube":    a.localProfile.YouTube,
+		"tiktok":     a.localProfile.TikTok,
+		"gmail":      a.localProfile.Gmail,
+		"imessage":   a.localProfile.IMessage,
+		"whatsapp":   a.localProfile.WhatsApp,
+		"signal":     a.localProfile.Signal,
+		"telegram":   a.localProfile.Telegram,
+	}
+}
+
+// UpdateLocalProfile updates the local profile
+func (a *Android) UpdateLocalProfile(profile map[string]string) error {
+	a.localProfile.FirstName = profile["first_name"]
+	a.localProfile.LastName = profile["last_name"]
+	a.localProfile.Tagline = profile["tagline"]
+	a.localProfile.Insta = profile["insta"]
+	a.localProfile.LinkedIn = profile["linkedin"]
+	a.localProfile.YouTube = profile["youtube"]
+	a.localProfile.TikTok = profile["tiktok"]
+	a.localProfile.Gmail = profile["gmail"]
+	a.localProfile.IMessage = profile["imessage"]
+	a.localProfile.WhatsApp = profile["whatsapp"]
+	a.localProfile.Signal = profile["signal"]
+	a.localProfile.Telegram = profile["telegram"]
+
+	return a.UpdateProfile(a.localProfile)
+}
+
 // BluetoothGattCallback methods
 
 func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int, newState int) {
@@ -423,7 +480,17 @@ func (a *Android) OnCharacteristicChanged(gatt *kotlin.BluetoothGatt, characteri
 
 	// Handle based on characteristic type
 	if characteristic.UUID == auraTextCharUUID {
-		a.handleHandshakeMessage(gatt, characteristic.Value)
+		// Try to unmarshal as HandshakeMessage first
+		var handshake proto.HandshakeMessage
+		if err := proto2.Unmarshal(characteristic.Value, &handshake); err == nil && handshake.DeviceId != "" {
+			a.handleHandshakeMessage(gatt, characteristic.Value)
+		} else {
+			// Try ProfileMessage
+			var profileMsg proto.ProfileMessage
+			if err := proto2.Unmarshal(characteristic.Value, &profileMsg); err == nil && profileMsg.DeviceId != "" {
+				a.handleProfileMessage(gatt, characteristic.Value)
+			}
+		}
 	} else if characteristic.UUID == auraPhotoCharUUID {
 		a.handlePhotoMessage(gatt, characteristic.Value)
 	}
@@ -442,9 +509,14 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 		return fmt.Errorf("text characteristic not found")
 	}
 
+	firstName := a.localProfile.FirstName
+	if firstName == "" {
+		firstName = "Android" // Default if not set
+	}
+
 	msg := &proto.HandshakeMessage{
 		DeviceId:        a.deviceUUID,
-		FirstName:       "Android",
+		FirstName:       firstName,
 		ProtocolVersion: 1,
 		TxPhotoHash:     a.photoHash,
 		RxPhotoHash:     a.receivedPhotoHashes[gatt.GetRemoteUUID()],
@@ -500,6 +572,18 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	// Store their TX photo hash
 	if handshake.TxPhotoHash != "" {
 		a.deviceIDToPhotoHash[remoteUUID] = handshake.TxPhotoHash
+	}
+
+	// Save first_name to device metadata
+	if handshake.FirstName != "" {
+		metadata, _ := a.cacheManager.LoadDeviceMetadata(remoteUUID)
+		if metadata == nil {
+			metadata = &wire.DeviceMetadata{
+				DeviceID: remoteUUID,
+			}
+		}
+		metadata.FirstName = handshake.FirstName
+		a.cacheManager.SaveDeviceMetadata(metadata)
 	}
 
 	// Check if they have a new photo for us
@@ -790,4 +874,166 @@ func (a *Android) checkStaleHandshakes() {
 			go a.sendHandshakeMessage(gatt)
 		}
 	}
+}
+
+// loadLocalProfile loads our profile from disk cache
+func (a *Android) loadLocalProfile() *LocalProfile {
+	cachePath := filepath.Join("data", a.deviceUUID, "cache", "local_profile.json")
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		// No profile yet, return empty
+		return &LocalProfile{}
+	}
+
+	var profile LocalProfile
+	if err := json.Unmarshal(data, &profile); err != nil {
+		return &LocalProfile{}
+	}
+
+	return &profile
+}
+
+// saveLocalProfile saves our profile to disk cache
+func (a *Android) saveLocalProfile() error {
+	cachePath := filepath.Join("data", a.deviceUUID, "cache", "local_profile.json")
+	data, err := json.MarshalIndent(a.localProfile, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(cachePath, data, 0644)
+}
+
+// UpdateProfile updates local profile and sends ProfileMessage to all connected devices
+func (a *Android) UpdateProfile(profile *LocalProfile) error {
+	a.localProfile = profile
+
+	// Save to disk
+	if err := a.saveLocalProfile(); err != nil {
+		return err
+	}
+
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	logger.Info(prefix, "📝 Updated local profile")
+
+	// Send ProfileMessage to all connected devices if contact methods changed
+	if profile.LinkedIn != "" || profile.Insta != "" || profile.YouTube != "" ||
+		profile.TikTok != "" || profile.Gmail != "" || profile.IMessage != "" ||
+		profile.WhatsApp != "" || profile.Signal != "" || profile.Telegram != "" {
+		logger.Debug(prefix, "📤 Sending ProfileMessage to %d connected device(s)", len(a.connectedGatts))
+		for _, gatt := range a.connectedGatts {
+			go a.sendProfileMessage(gatt)
+		}
+	} else {
+		// Just first_name, last_name, tagline changed - resend handshake
+		logger.Debug(prefix, "📤 Sending updated handshake to %d connected device(s)", len(a.connectedGatts))
+		for _, gatt := range a.connectedGatts {
+			go a.sendHandshakeMessage(gatt)
+		}
+	}
+
+	return nil
+}
+
+// sendProfileMessage sends a ProfileMessage to a connected GATT
+func (a *Android) sendProfileMessage(gatt *kotlin.BluetoothGatt) error {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+
+	textChar := gatt.GetCharacteristic(auraServiceUUID, auraTextCharUUID)
+	if textChar == nil {
+		return fmt.Errorf("text characteristic not found")
+	}
+
+	msg := &proto.ProfileMessage{
+		DeviceId:    a.deviceUUID,
+		LastName:    a.localProfile.LastName,
+		PhoneNumber: a.localProfile.IMessage, // Phone number = iMessage
+		Tagline:     a.localProfile.Tagline,
+		Insta:       a.localProfile.Insta,
+		Linkedin:    a.localProfile.LinkedIn,
+		Youtube:     a.localProfile.YouTube,
+		Tiktok:      a.localProfile.TikTok,
+		Gmail:       a.localProfile.Gmail,
+		Imessage:    a.localProfile.IMessage,
+		Whatsapp:    a.localProfile.WhatsApp,
+		Signal:      a.localProfile.Signal,
+		Telegram:    a.localProfile.Telegram,
+	}
+
+	// Marshal to binary protobuf
+	data, err := proto2.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal profile: %w", err)
+	}
+
+	// Log as JSON for debugging
+	marshaler := protojson.MarshalOptions{
+		UseProtoNames: true,
+	}
+	jsonData, _ := marshaler.Marshal(msg)
+	logger.Debug(prefix, "📤 TX ProfileMessage (binary protobuf, %d bytes): %s", len(data), string(jsonData))
+
+	textChar.Value = data
+	textChar.WriteType = kotlin.WRITE_TYPE_DEFAULT
+	success := gatt.WriteCharacteristic(textChar)
+	if !success {
+		return fmt.Errorf("failed to write profile message")
+	}
+	return nil
+}
+
+// handleProfileMessage processes incoming ProfileMessage
+func (a *Android) handleProfileMessage(gatt *kotlin.BluetoothGatt, data []byte) {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+
+	var profileMsg proto.ProfileMessage
+	if err := proto2.Unmarshal(data, &profileMsg); err != nil {
+		logger.Error(prefix, "❌ Failed to parse ProfileMessage: %v", err)
+		return
+	}
+
+	// Log as JSON for debugging
+	marshaler := protojson.MarshalOptions{
+		UseProtoNames: true,
+	}
+	jsonData, _ := marshaler.Marshal(&profileMsg)
+	logger.Debug(prefix, "📥 RX ProfileMessage (binary protobuf, %d bytes): %s", len(data), string(jsonData))
+
+	// Load existing metadata or create new
+	remoteUUID := gatt.GetRemoteUUID()
+	metadata, err := a.cacheManager.LoadDeviceMetadata(remoteUUID)
+	if err != nil {
+		logger.Error(prefix, "❌ Failed to load device metadata: %v", err)
+		return
+	}
+	if metadata == nil {
+		metadata = &wire.DeviceMetadata{
+			DeviceID: remoteUUID,
+		}
+	}
+
+	// Update fields from ProfileMessage
+	metadata.LastName = profileMsg.LastName
+	metadata.PhoneNumber = profileMsg.PhoneNumber
+	metadata.Tagline = profileMsg.Tagline
+	metadata.Insta = profileMsg.Insta
+	metadata.LinkedIn = profileMsg.Linkedin
+	metadata.YouTube = profileMsg.Youtube
+	metadata.TikTok = profileMsg.Tiktok
+	metadata.Gmail = profileMsg.Gmail
+	metadata.IMessage = profileMsg.Imessage
+	metadata.WhatsApp = profileMsg.Whatsapp
+	metadata.Signal = profileMsg.Signal
+	metadata.Telegram = profileMsg.Telegram
+
+	// Save updated metadata
+	if err := a.cacheManager.SaveDeviceMetadata(metadata); err != nil {
+		logger.Error(prefix, "❌ Failed to save device metadata: %v", err)
+		return
+	}
+
+	logger.Info(prefix, "✅ Saved profile data for %s", remoteUUID[:8])
 }

@@ -21,6 +21,16 @@ type DeviceMetadata struct {
 	FirstName   string `json:"first_name,omitempty"`
 	LastName    string `json:"last_name,omitempty"`
 	PhoneNumber string `json:"phone_number,omitempty"`
+	Tagline     string `json:"tagline,omitempty"`
+	Insta       string `json:"insta,omitempty"`
+	LinkedIn    string `json:"linkedin,omitempty"`
+	YouTube     string `json:"youtube,omitempty"`
+	TikTok      string `json:"tiktok,omitempty"`
+	Gmail       string `json:"gmail,omitempty"`
+	IMessage    string `json:"imessage,omitempty"`
+	WhatsApp    string `json:"whatsapp,omitempty"`
+	Signal      string `json:"signal,omitempty"`
+	Telegram    string `json:"telegram,omitempty"`
 	PhotoHash   string `json:"photo_hash,omitempty"` // Hash of their photo we have cached
 	LastUpdated int64  `json:"last_updated"`
 }

@@ -8,6 +8,8 @@ and act like real phones. They cache things to disk. When they start up if that 
 then they have no photo to display. No cheating and just using the fact that the test photos are in
 testdata/*.jpg and you know the path and could just display the photo.
 
+its ok to make iphone/iphone.go and android/android.go not share any code and be very UN-dry
+
 # Auraphone Blue - Fake Bluetooth Simulator
 
 ## Overview
