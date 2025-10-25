@@ -1302,16 +1302,48 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 			// Handshake message - decode and process
 			handshake := &proto.HandshakeMessage{}
 			if err := proto2.Unmarshal(request.Value, handshake); err == nil {
+				deviceID := handshake.DeviceId
+				txPhotoHash := hashBytesToString(handshake.TxPhotoHash)
+
 				d.iphone.mu.Lock()
-				d.iphone.peripheralToDeviceID[senderUUID] = handshake.DeviceId
-				if len(handshake.TxPhotoHash) > 0 {
-					d.iphone.deviceIDToPhotoHash[handshake.DeviceId] = hashBytesToString(handshake.TxPhotoHash)
+				d.iphone.peripheralToDeviceID[senderUUID] = deviceID
+				if txPhotoHash != "" {
+					d.iphone.deviceIDToPhotoHash[deviceID] = txPhotoHash
 				}
+				d.iphone.lastHandshakeTime[deviceID] = time.Now()
 				d.iphone.mu.Unlock()
-				logger.Info(prefix, "📥 RX Handshake from peripheral write: deviceID=%s", handshake.DeviceId)
+
+				logger.Info(prefix, "📥 RX Handshake from peripheral write: deviceID=%s, firstName=%s", deviceID, handshake.FirstName)
+
+				// Save first_name to device metadata
+				if handshake.FirstName != "" {
+					metadata, _ := d.iphone.cacheManager.LoadDeviceMetadata(deviceID)
+					if metadata == nil {
+						metadata = &phone.DeviceMetadata{
+							DeviceID: deviceID,
+						}
+					}
+					metadata.FirstName = handshake.FirstName
+					d.iphone.cacheManager.SaveDeviceMetadata(metadata)
+				}
 
 				// Send our handshake back
 				go d.iphone.sendHandshakeToDevice(senderUUID)
+
+				// Trigger discovery callback to update GUI
+				if d.iphone.discoveryCallback != nil {
+					name := deviceID[:8]
+					if handshake.FirstName != "" {
+						name = handshake.FirstName
+					}
+					d.iphone.discoveryCallback(phone.DiscoveredDevice{
+						DeviceID:  deviceID,
+						Name:      name,
+						RSSI:      -50,
+						Platform:  "unknown",
+						PhotoHash: txPhotoHash,
+					})
+				}
 			}
 		case auraPhotoCharUUID:
 			// Photo chunk
@@ -1330,15 +1362,26 @@ func (ip *iPhone) sendHandshakeToDevice(targetUUID string) {
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
 
+	firstName := ip.localProfile.FirstName
+	if firstName == "" {
+		firstName = "iOS"
+	}
+
 	msg := &proto.HandshakeMessage{
 		DeviceId:        ip.deviceID,
-		FirstName:       "iOS",
+		FirstName:       firstName,
 		ProtocolVersion: 1,
 		TxPhotoHash:     hashStringToBytes(ip.photoHash),
 	}
 
 	data, _ := proto2.Marshal(msg)
-	ip.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraTextCharUUID, data)
+	if err := ip.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraTextCharUUID, data); err != nil {
+		prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+		logger.Error(prefix, "❌ Failed to send handshake: %v", err)
+	} else {
+		prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+		logger.Debug(prefix, "📤 Sent handshake back to %s", targetUUID[:8])
+	}
 }
 
 func (ip *iPhone) handlePhotoMessageFromUUID(senderUUID string, data []byte) {
