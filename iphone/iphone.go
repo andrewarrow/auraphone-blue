@@ -1745,7 +1745,7 @@ func (ip *iPhone) reassembleAndSavePhotoFromServer(senderUUID string, state *pho
 
 		ip.discoveryCallback(phone.DiscoveredDevice{
 			DeviceID:     deviceID,
-			HardwareUUID: peripheralUUID,
+			HardwareUUID: senderUUID,
 			Name:         name,
 			RSSI:         -50, // Default RSSI, actual value not critical for photo update
 			Platform:     "unknown",
