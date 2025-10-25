@@ -5,6 +5,14 @@ import (
 	"github.com/user/auraphone-blue/wire"
 )
 
+// Connection state constants (matches Android BluetoothProfile)
+const (
+	STATE_DISCONNECTED  = 0
+	STATE_CONNECTING    = 1
+	STATE_CONNECTED     = 2
+	STATE_DISCONNECTING = 3
+)
+
 type BluetoothDevice struct {
 	Name    string
 	Address string
@@ -27,8 +35,7 @@ func (d *BluetoothDevice) ConnectGatt(context interface{}, autoConnect bool, cal
 	d.wire.SetDisconnectCallback(func(deviceUUID string) {
 		// Connection was randomly dropped
 		if deviceUUID == gatt.remoteUUID && callback != nil {
-			// STATE_DISCONNECTED = 0, status = 0 (not an error)
-			callback.OnConnectionStateChange(gatt, 0, 0)
+			callback.OnConnectionStateChange(gatt, 0, STATE_DISCONNECTED) // status = 0 (not an error)
 
 			// Android auto-reconnect: if autoConnect=true, retry in background
 			if gatt.autoConnect {
@@ -39,13 +46,12 @@ func (d *BluetoothDevice) ConnectGatt(context interface{}, autoConnect bool, cal
 
 	// Attempt realistic connection with timing and potential failure
 	go func() {
-		// STATE_CONNECTING = 1
-		callback.OnConnectionStateChange(gatt, 0, 1)
+		callback.OnConnectionStateChange(gatt, 0, STATE_CONNECTING)
 
 		err := d.wire.Connect(d.Address)
 		if err != nil {
-			// Connection failed - STATE_DISCONNECTED = 0
-			callback.OnConnectionStateChange(gatt, 1, 0) // status=1 (GATT_FAILURE)
+			// Connection failed
+			callback.OnConnectionStateChange(gatt, 1, STATE_DISCONNECTED) // status=1 (GATT_FAILURE)
 
 			// Android auto-reconnect: if autoConnect=true, retry in background
 			if autoConnect {
@@ -54,8 +60,8 @@ func (d *BluetoothDevice) ConnectGatt(context interface{}, autoConnect bool, cal
 			return
 		}
 
-		// Connection succeeded - STATE_CONNECTED = 2
-		callback.OnConnectionStateChange(gatt, 0, 2)
+		// Connection succeeded
+		callback.OnConnectionStateChange(gatt, 0, STATE_CONNECTED)
 	}()
 
 	return gatt

@@ -10,8 +10,9 @@ import (
 
 // BluetoothGattDescriptor represents a BLE descriptor
 type BluetoothGattDescriptor struct {
-	UUID  string
-	Value []byte
+	UUID        string
+	Value       []byte
+	Permissions int // PERMISSION_READ, PERMISSION_WRITE, etc.
 }
 
 // Write type constants (matches Android BLE API)
@@ -419,6 +420,6 @@ func (g *BluetoothGatt) attemptReconnect() {
 
 	// Success! Notify connected
 	if g.callback != nil {
-		g.callback.OnConnectionStateChange(g, 0, 2) // STATE_CONNECTED = 2
+		g.callback.OnConnectionStateChange(g, 0, STATE_CONNECTED)
 	}
 }

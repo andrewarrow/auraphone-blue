@@ -16,17 +16,17 @@ type AdvertiseCallback interface {
 
 // AdvertiseSettings matches Android's AdvertiseSettings class
 type AdvertiseSettings struct {
-	AdvertiseMode     int  // ADVERTISE_MODE_LOW_POWER, BALANCED, LOW_LATENCY
-	Connectable       bool
-	Timeout           int // milliseconds, 0 = no timeout
-	TxPowerLevel      int // ADVERTISE_TX_POWER_ULTRA_LOW, LOW, MEDIUM, HIGH
+	AdvertiseMode int // ADVERTISE_MODE_LOW_POWER, BALANCED, LOW_LATENCY
+	Connectable   bool
+	Timeout       int // milliseconds, 0 = no timeout
+	TxPowerLevel  int // ADVERTISE_TX_POWER_ULTRA_LOW, LOW, MEDIUM, HIGH
 }
 
 // AdvertiseSettings modes
 const (
-	ADVERTISE_MODE_LOW_POWER     = 0 // 1000ms interval
-	ADVERTISE_MODE_BALANCED      = 1 // 250ms interval
-	ADVERTISE_MODE_LOW_LATENCY   = 2 // 100ms interval
+	ADVERTISE_MODE_LOW_POWER   = 0 // 1000ms interval
+	ADVERTISE_MODE_BALANCED    = 1 // 250ms interval
+	ADVERTISE_MODE_LOW_LATENCY = 2 // 100ms interval
 )
 
 // AdvertiseSettings TX power levels
@@ -39,20 +39,20 @@ const (
 
 // AdvertiseSettings error codes
 const (
-	ADVERTISE_FAILED_DATA_TOO_LARGE         = 1
-	ADVERTISE_FAILED_TOO_MANY_ADVERTISERS   = 2
-	ADVERTISE_FAILED_ALREADY_STARTED        = 3
-	ADVERTISE_FAILED_INTERNAL_ERROR         = 4
-	ADVERTISE_FAILED_FEATURE_UNSUPPORTED    = 5
+	ADVERTISE_FAILED_DATA_TOO_LARGE       = 1
+	ADVERTISE_FAILED_TOO_MANY_ADVERTISERS = 2
+	ADVERTISE_FAILED_ALREADY_STARTED      = 3
+	ADVERTISE_FAILED_INTERNAL_ERROR       = 4
+	ADVERTISE_FAILED_FEATURE_UNSUPPORTED  = 5
 )
 
 // AdvertiseData matches Android's AdvertiseData class
 type AdvertiseData struct {
-	ServiceUUIDs         []string
-	ManufacturerData     map[int][]byte // Company ID -> data
-	ServiceData          map[string][]byte // Service UUID -> data
-	IncludeTxPowerLevel  bool
-	IncludeDeviceName    bool
+	ServiceUUIDs        []string
+	ManufacturerData    map[int][]byte    // Company ID -> data
+	ServiceData         map[string][]byte // Service UUID -> data
+	IncludeTxPowerLevel bool
+	IncludeDeviceName   bool
 }
 
 // BluetoothLeAdvertiser matches Android's BluetoothLeAdvertiser class
@@ -275,11 +275,11 @@ func (a *BluetoothLeAdvertiser) startListeningForRequests() {
 // BluetoothGattServer matches Android's BluetoothGattServer class
 // Manages the local GATT database when device is in peripheral role
 type BluetoothGattServer struct {
-	uuid              string
-	wire              *wire.Wire
-	services          []*BluetoothGattService
-	callback          BluetoothGattServerCallback
-	connectedDevices  map[string]*BluetoothDevice // device UUID -> device
+	uuid             string
+	wire             *wire.Wire
+	services         []*BluetoothGattService
+	callback         BluetoothGattServerCallback
+	connectedDevices map[string]*BluetoothDevice // device UUID -> device
 }
 
 // BluetoothGattServerCallback matches Android's BluetoothGattServerCallback
@@ -291,40 +291,11 @@ type BluetoothGattServerCallback interface {
 	OnDescriptorWriteRequest(device *BluetoothDevice, requestId int, descriptor *BluetoothGattDescriptor, preparedWrite bool, responseNeeded bool, offset int, value []byte)
 }
 
-// BluetoothGattService for server-side services
-type BluetoothGattService struct {
-	UUID            string
-	Type            int // SERVICE_TYPE_PRIMARY or SERVICE_TYPE_SECONDARY
-	Characteristics []*BluetoothGattCharacteristic
-}
-
-// Service types
-const (
-	SERVICE_TYPE_PRIMARY   = 0
-	SERVICE_TYPE_SECONDARY = 1
-)
-
-// BluetoothGattCharacteristic properties
-const (
-	PROPERTY_READ                = 0x02
-	PROPERTY_WRITE_NO_RESPONSE   = 0x04
-	PROPERTY_WRITE               = 0x08
-	PROPERTY_NOTIFY              = 0x10
-	PROPERTY_INDICATE            = 0x20
-)
-
 // BluetoothGattCharacteristic permissions
 const (
 	PERMISSION_READ  = 0x01
 	PERMISSION_WRITE = 0x10
 )
-
-// BluetoothGattDescriptor for server-side descriptors
-type BluetoothGattDescriptor struct {
-	UUID        string
-	Permissions int
-	Value       []byte
-}
 
 // GATT status codes
 const (
@@ -447,8 +418,8 @@ func (s *BluetoothGattServer) buildGATTTable() *wire.GATTTable {
 
 	for _, service := range s.services {
 		gattService := wire.GATTService{
-			UUID: service.UUID,
-			Type: "primary",
+			UUID:            service.UUID,
+			Type:            "primary",
 			Characteristics: make([]wire.GATTCharacteristic, 0),
 		}
 
@@ -495,10 +466,8 @@ func (s *BluetoothGattServer) propertiesToStrings(props int) []string {
 func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.CharacteristicMessage) {
 	// Find the characteristic
 	var targetChar *BluetoothGattCharacteristic
-	var targetService *BluetoothGattService
 	for _, service := range s.services {
 		if service.UUID == msg.ServiceUUID {
-			targetService = service
 			for _, char := range service.Characteristics {
 				if char.UUID == msg.CharUUID {
 					targetChar = char
