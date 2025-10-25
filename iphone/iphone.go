@@ -456,9 +456,16 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	logger.Debug(prefix, "   └─ Cached to disk and broadcasting TX hash in advertising data")
 
 	// Re-send handshake to all connected devices to notify them of the new photo
-	if len(ip.connectedPeripherals) > 0 {
-		logger.Debug(prefix, "   └─ Notifying %d connected device(s) of photo change", len(ip.connectedPeripherals))
-		for _, peripheral := range ip.connectedPeripherals {
+	ip.mu.RLock()
+	peripheralsCopy := make([]*swift.CBPeripheral, 0, len(ip.connectedPeripherals))
+	for _, p := range ip.connectedPeripherals {
+		peripheralsCopy = append(peripheralsCopy, p)
+	}
+	ip.mu.RUnlock()
+
+	if len(peripheralsCopy) > 0 {
+		logger.Debug(prefix, "   └─ Notifying %d connected device(s) of photo change", len(peripheralsCopy))
+		for _, peripheral := range peripheralsCopy {
 			go ip.sendHandshakeMessage(peripheral)
 		}
 	}
@@ -1063,14 +1070,22 @@ func (ip *iPhone) UpdateProfile(profile *LocalProfile) error {
 	logger.Info(prefix, "📝 Updated local profile (version %d)", profile.ProfileVersion)
 
 	// Always send updated handshake (includes first_name and profile_version)
-	logger.Debug(prefix, "📤 Sending updated handshake to %d connected device(s)", len(ip.connectedPeripherals))
-	for _, peripheral := range ip.connectedPeripherals {
+	// Make a safe copy of connected peripherals while holding lock
+	ip.mu.RLock()
+	peripheralsCopy := make([]*swift.CBPeripheral, 0, len(ip.connectedPeripherals))
+	for _, p := range ip.connectedPeripherals {
+		peripheralsCopy = append(peripheralsCopy, p)
+	}
+	ip.mu.RUnlock()
+
+	logger.Debug(prefix, "📤 Sending updated handshake to %d connected device(s)", len(peripheralsCopy))
+	for _, peripheral := range peripheralsCopy {
 		go ip.sendHandshakeMessage(peripheral)
 	}
 
 	// Always send ProfileMessage to sync all profile fields
-	logger.Debug(prefix, "📤 Sending ProfileMessage to %d connected device(s)", len(ip.connectedPeripherals))
-	for _, peripheral := range ip.connectedPeripherals {
+	logger.Debug(prefix, "📤 Sending ProfileMessage to %d connected device(s)", len(peripheralsCopy))
+	for _, peripheral := range peripheralsCopy {
 		go ip.sendProfileMessage(peripheral)
 	}
 

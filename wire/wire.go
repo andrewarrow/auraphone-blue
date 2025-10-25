@@ -405,10 +405,13 @@ func (w *Wire) Connect(targetUUID string) error {
 	currentState := w.connectionStates[targetUUID]
 	if currentState != StateDisconnected && currentState != 0 {
 		w.connMutex.Unlock()
+		logger.Debug(fmt.Sprintf("%s wire", w.localUUID[:8]), "🔌 Connect attempt to %s BLOCKED (current state: %d)", targetUUID[:8], currentState)
 		return fmt.Errorf("already connected or connecting to %s", targetUUID[:8])
 	}
 	w.connectionStates[targetUUID] = StateConnecting
 	w.connMutex.Unlock()
+
+	logger.Debug(fmt.Sprintf("%s wire", w.localUUID[:8]), "🔌 Connecting to %s (delay: simulated)", targetUUID[:8])
 
 	// Simulate connection delay
 	delay := w.simulator.ConnectionDelay()
@@ -419,12 +422,15 @@ func (w *Wire) Connect(targetUUID string) error {
 		w.connMutex.Lock()
 		w.connectionStates[targetUUID] = StateDisconnected
 		w.connMutex.Unlock()
+		logger.Warn(fmt.Sprintf("%s wire", w.localUUID[:8]), "❌ Connection to %s FAILED (simulated interference)", targetUUID[:8])
 		return fmt.Errorf("connection failed (timeout or interference)")
 	}
 
 	w.connMutex.Lock()
 	w.connectionStates[targetUUID] = StateConnected
 	w.connMutex.Unlock()
+
+	logger.Info(fmt.Sprintf("%s wire", w.localUUID[:8]), "✅ Connected to %s at wire level", targetUUID[:8])
 
 	// Start connection monitoring for random disconnects
 	w.startConnectionMonitoring(targetUUID)

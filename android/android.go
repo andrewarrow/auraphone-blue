@@ -410,9 +410,16 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	logger.Debug(prefix, "   └─ Cached to disk and broadcasting TX hash in advertising data")
 
 	// Re-send handshake to all connected devices to notify them of the new photo
-	if len(a.connectedGatts) > 0 {
-		logger.Debug(prefix, "   └─ Notifying %d connected device(s) of photo change", len(a.connectedGatts))
-		for _, gatt := range a.connectedGatts {
+	a.mu.RLock()
+	gattsCopy := make([]*kotlin.BluetoothGatt, 0, len(a.connectedGatts))
+	for _, g := range a.connectedGatts {
+		gattsCopy = append(gattsCopy, g)
+	}
+	a.mu.RUnlock()
+
+	if len(gattsCopy) > 0 {
+		logger.Debug(prefix, "   └─ Notifying %d connected device(s) of photo change", len(gattsCopy))
+		for _, gatt := range gattsCopy {
 			go a.sendHandshakeMessage(gatt)
 		}
 	}
@@ -1096,14 +1103,22 @@ func (a *Android) UpdateProfile(profile *LocalProfile) error {
 	logger.Info(prefix, "📝 Updated local profile (version %d)", profile.ProfileVersion)
 
 	// Always send updated handshake (includes first_name and profile_version)
-	logger.Debug(prefix, "📤 Sending updated handshake to %d connected device(s)", len(a.connectedGatts))
-	for _, gatt := range a.connectedGatts {
+	// Make a safe copy of connected gatts while holding lock
+	a.mu.RLock()
+	gattsCopy := make([]*kotlin.BluetoothGatt, 0, len(a.connectedGatts))
+	for _, g := range a.connectedGatts {
+		gattsCopy = append(gattsCopy, g)
+	}
+	a.mu.RUnlock()
+
+	logger.Debug(prefix, "📤 Sending updated handshake to %d connected device(s)", len(gattsCopy))
+	for _, gatt := range gattsCopy {
 		go a.sendHandshakeMessage(gatt)
 	}
 
 	// Always send ProfileMessage to sync all profile fields
-	logger.Debug(prefix, "📤 Sending ProfileMessage to %d connected device(s)", len(a.connectedGatts))
-	for _, gatt := range a.connectedGatts {
+	logger.Debug(prefix, "📤 Sending ProfileMessage to %d connected device(s)", len(gattsCopy))
+	for _, gatt := range gattsCopy {
 		go a.sendProfileMessage(gatt)
 	}
 
