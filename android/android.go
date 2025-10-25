@@ -474,6 +474,7 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
 	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	// Enable notifications for characteristics (matches real Android behavior)
 	textChar := gatt.GetCharacteristic(auraServiceUUID, auraTextCharUUID)
@@ -487,6 +488,13 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 	if photoChar != nil {
 		if !gatt.SetCharacteristicNotification(photoChar, true) {
 			logger.Error(prefix, "❌ Failed to enable notifications for photo characteristic")
+		}
+	}
+
+	profileChar := gatt.GetCharacteristic(auraServiceUUID, auraProfileCharUUID)
+	if profileChar != nil {
+		if !gatt.SetCharacteristicNotification(profileChar, true) {
+			logger.Error(prefix, "❌ Failed to enable notifications for profile characteristic")
 		}
 	}
 

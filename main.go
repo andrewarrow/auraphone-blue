@@ -313,6 +313,23 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 			},
 		)
 
+		// Add OnSelected handler to show modal when row is tapped
+		pw.deviceListWidget.OnSelected = func(id widget.ListItemID) {
+			pw.devicesMutex.RLock()
+			if id >= len(pw.discoveredDevices) {
+				pw.devicesMutex.RUnlock()
+				return
+			}
+			device := pw.discoveredDevices[id]
+			pw.devicesMutex.RUnlock()
+
+			// Show person modal
+			pw.showPersonModal(device)
+
+			// Deselect the row
+			pw.deviceListWidget.UnselectAll()
+		}
+
 		// Always return the list widget, even if empty
 		// The list will handle its own empty state
 		return container.NewMax(bg, pw.deviceListWidget)
@@ -576,6 +593,155 @@ func (pw *PhoneWindow) sortAndRefreshDevices() {
 
 	// Mark that we need a refresh (ticker will pick this up)
 	pw.needsRefresh = true
+}
+
+// showPersonModal displays a modal with detailed person information
+func (pw *PhoneWindow) showPersonModal(device phone.DiscoveredDevice) {
+	// Load device metadata from cache
+	cacheManager := phone.NewDeviceCacheManager(pw.phone.GetDeviceUUID())
+	metadata, err := cacheManager.LoadDeviceMetadata(device.DeviceID)
+
+	// Build full name
+	displayName := device.Name
+	if metadata != nil && metadata.FirstName != "" {
+		displayName = metadata.FirstName
+		if metadata.LastName != "" {
+			displayName += " " + metadata.LastName
+		}
+	}
+
+	// Create profile image (larger for modal)
+	var profileImage *canvas.Image
+	if photoHash, hasHash := pw.devicePhotoHashes[device.DeviceID]; hasHash {
+		if img, hasImage := pw.deviceImages[photoHash]; hasImage {
+			profileImage = canvas.NewImageFromImage(img)
+			profileImage.FillMode = canvas.ImageFillContain
+			profileImage.SetMinSize(fyne.NewSize(120, 120))
+		}
+	}
+
+	// Fallback to circle if no image
+	if profileImage == nil {
+		profileImage = canvas.NewImageFromImage(nil)
+		profileImage.FillMode = canvas.ImageFillContain
+		profileImage.SetMinSize(fyne.NewSize(120, 120))
+	}
+
+	// Name label
+	nameLabel := widget.NewLabelWithStyle(displayName, fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+
+	// Tagline label
+	var taglineLabel *widget.Label
+	if metadata != nil && metadata.Tagline != "" {
+		taglineLabel = widget.NewLabel(metadata.Tagline)
+		taglineLabel.Wrapping = fyne.TextWrapWord
+		taglineLabel.Alignment = fyne.TextAlignCenter
+	}
+
+	// Build contact ways list
+	contactWays := container.NewVBox()
+
+	if metadata != nil {
+		// Social media section
+		if metadata.Insta != "" || metadata.LinkedIn != "" || metadata.YouTube != "" || metadata.TikTok != "" {
+			contactWays.Add(widget.NewLabelWithStyle("Social Media", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
+
+			if metadata.Insta != "" {
+				contactWays.Add(widget.NewLabel("Instagram: " + metadata.Insta))
+			}
+			if metadata.LinkedIn != "" {
+				contactWays.Add(widget.NewLabel("LinkedIn: " + metadata.LinkedIn))
+			}
+			if metadata.YouTube != "" {
+				contactWays.Add(widget.NewLabel("YouTube: " + metadata.YouTube))
+			}
+			if metadata.TikTok != "" {
+				contactWays.Add(widget.NewLabel("TikTok: " + metadata.TikTok))
+			}
+			contactWays.Add(widget.NewLabel(""))
+		}
+
+		// Messaging section
+		if metadata.Gmail != "" || metadata.IMessage != "" || metadata.WhatsApp != "" || metadata.Signal != "" || metadata.Telegram != "" {
+			contactWays.Add(widget.NewLabelWithStyle("Contact Methods", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
+
+			if metadata.Gmail != "" {
+				contactWays.Add(widget.NewLabel("Gmail: " + metadata.Gmail))
+			}
+			if metadata.IMessage != "" {
+				contactWays.Add(widget.NewLabel("iMessage: " + metadata.IMessage))
+			}
+			if metadata.WhatsApp != "" {
+				contactWays.Add(widget.NewLabel("WhatsApp: " + metadata.WhatsApp))
+			}
+			if metadata.Signal != "" {
+				contactWays.Add(widget.NewLabel("Signal: " + metadata.Signal))
+			}
+			if metadata.Telegram != "" {
+				contactWays.Add(widget.NewLabel("Telegram: " + metadata.Telegram))
+			}
+		}
+	}
+
+	// If no contact info available
+	if len(contactWays.Objects) == 0 {
+		contactWays.Add(widget.NewLabel("No contact information available"))
+	}
+
+	// Add device info at bottom
+	contactWays.Add(widget.NewLabel(""))
+	contactWays.Add(widget.NewSeparator())
+	contactWays.Add(widget.NewLabel(fmt.Sprintf("Device ID: %s", device.DeviceID[:8])))
+	contactWays.Add(widget.NewLabel(fmt.Sprintf("RSSI: %.0f dBm", device.RSSI)))
+
+	// Build modal content
+	content := container.NewVBox(
+		container.NewCenter(profileImage),
+		widget.NewLabel(""),
+		nameLabel,
+	)
+
+	if taglineLabel != nil {
+		content.Add(taglineLabel)
+	}
+
+	content.Add(widget.NewLabel(""))
+	content.Add(widget.NewSeparator())
+	content.Add(widget.NewLabel(""))
+
+	// Add contact ways in scrollable container
+	scrollableContacts := container.NewVScroll(contactWays)
+	scrollableContacts.SetMinSize(fyne.NewSize(300, 200))
+	content.Add(scrollableContacts)
+
+	// Create modal dialog (declare variable first so we can reference it in the close button)
+	var dialog *widget.PopUp
+
+	closeButton := widget.NewButton("Close", func() {
+		if dialog != nil {
+			dialog.Hide()
+		}
+	})
+
+	dialog = widget.NewModalPopUp(
+		container.NewBorder(
+			nil,
+			closeButton,
+			nil, nil,
+			container.NewVScroll(content),
+		),
+		pw.window.Canvas(),
+	)
+
+	dialog.Resize(fyne.NewSize(350, 500))
+	dialog.Show()
+
+	// Log the action
+	if err == nil && metadata != nil {
+		fmt.Printf("Showing profile for %s\n", displayName)
+	} else {
+		fmt.Printf("Showing profile for device %s (limited info)\n", device.DeviceID[:8])
+	}
 }
 
 // cleanup cleans up resources when window is closed
