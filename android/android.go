@@ -1381,16 +1381,27 @@ func (a *Android) handleProfileMessage(gatt *kotlin.BluetoothGatt, data []byte) 
 	jsonData, _ := marshaler.Marshal(&profileMsg)
 	logger.Debug(prefix, "📥 RX ProfileMessage (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
-	// Load existing metadata or create new
+	// Get the logical deviceID for this GATT connection
 	remoteUUID := gatt.GetRemoteUUID()
-	metadata, err := a.cacheManager.LoadDeviceMetadata(remoteUUID)
+	a.mu.RLock()
+	deviceID := a.remoteUUIDToDeviceID[remoteUUID]
+	a.mu.RUnlock()
+
+	// If we don't have a deviceID mapping yet, use hardware UUID as fallback
+	if deviceID == "" {
+		deviceID = remoteUUID
+		logger.Warn(prefix, "⚠️  No deviceID mapping for %s, using hardware UUID as fallback", remoteUUID[:8])
+	}
+
+	// Load existing metadata or create new using logical deviceID
+	metadata, err := a.cacheManager.LoadDeviceMetadata(deviceID)
 	if err != nil {
 		logger.Error(prefix, "❌ Failed to load device metadata: %v", err)
 		return
 	}
 	if metadata == nil {
 		metadata = &phone.DeviceMetadata{
-			DeviceID: remoteUUID,
+			DeviceID: deviceID,
 		}
 	}
 
@@ -1414,7 +1425,7 @@ func (a *Android) handleProfileMessage(gatt *kotlin.BluetoothGatt, data []byte) 
 		return
 	}
 
-	logger.Info(prefix, "✅ Saved profile data for %s", remoteUUID[:8])
+	logger.Info(prefix, "✅ Saved profile data for %s (deviceID: %s)", remoteUUID[:8], deviceID[:8])
 }
 
 // ====================================================================================

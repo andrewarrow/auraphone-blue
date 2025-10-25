@@ -1285,15 +1285,26 @@ func (ip *iPhone) handleProfileMessage(peripheral *swift.CBPeripheral, data []by
 	jsonData, _ := marshaler.Marshal(&profileMsg)
 	logger.Debug(prefix, "📥 RX ProfileMessage (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
-	// Load existing metadata or create new
-	metadata, err := ip.cacheManager.LoadDeviceMetadata(peripheral.UUID)
+	// Get the logical deviceID for this peripheral connection
+	ip.mu.RLock()
+	deviceID := ip.peripheralToDeviceID[peripheral.UUID]
+	ip.mu.RUnlock()
+
+	// If we don't have a deviceID mapping yet, use hardware UUID as fallback
+	if deviceID == "" {
+		deviceID = peripheral.UUID
+		logger.Warn(prefix, "⚠️  No deviceID mapping for %s, using hardware UUID as fallback", peripheral.UUID[:8])
+	}
+
+	// Load existing metadata or create new using logical deviceID
+	metadata, err := ip.cacheManager.LoadDeviceMetadata(deviceID)
 	if err != nil {
 		logger.Error(prefix, "❌ Failed to load device metadata: %v", err)
 		return
 	}
 	if metadata == nil {
 		metadata = &phone.DeviceMetadata{
-			DeviceID: peripheral.UUID,
+			DeviceID: deviceID,
 		}
 	}
 
@@ -1317,7 +1328,7 @@ func (ip *iPhone) handleProfileMessage(peripheral *swift.CBPeripheral, data []by
 		return
 	}
 
-	logger.Info(prefix, "✅ Saved profile data for %s", peripheral.UUID[:8])
+	logger.Info(prefix, "✅ Saved profile data for %s (deviceID: %s)", peripheral.UUID[:8], deviceID[:8])
 }
 
 // ====================================================================================
