@@ -975,20 +975,16 @@ func (a *Android) UpdateProfile(profile *LocalProfile) error {
 	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
 	logger.Info(prefix, "📝 Updated local profile (version %d)", profile.ProfileVersion)
 
-	// Send ProfileMessage to all connected devices if contact methods changed
-	if profile.LinkedIn != "" || profile.Insta != "" || profile.YouTube != "" ||
-		profile.TikTok != "" || profile.Gmail != "" || profile.IMessage != "" ||
-		profile.WhatsApp != "" || profile.Signal != "" || profile.Telegram != "" {
-		logger.Debug(prefix, "📤 Sending ProfileMessage to %d connected device(s)", len(a.connectedGatts))
-		for _, gatt := range a.connectedGatts {
-			go a.sendProfileMessage(gatt)
-		}
-	} else {
-		// Just first_name, last_name, tagline changed - resend handshake
-		logger.Debug(prefix, "📤 Sending updated handshake to %d connected device(s)", len(a.connectedGatts))
-		for _, gatt := range a.connectedGatts {
-			go a.sendHandshakeMessage(gatt)
-		}
+	// Always send updated handshake (includes first_name and profile_version)
+	logger.Debug(prefix, "📤 Sending updated handshake to %d connected device(s)", len(a.connectedGatts))
+	for _, gatt := range a.connectedGatts {
+		go a.sendHandshakeMessage(gatt)
+	}
+
+	// Always send ProfileMessage to sync all profile fields
+	logger.Debug(prefix, "📤 Sending ProfileMessage to %d connected device(s)", len(a.connectedGatts))
+	for _, gatt := range a.connectedGatts {
+		go a.sendProfileMessage(gatt)
 	}
 
 	return nil
