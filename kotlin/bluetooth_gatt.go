@@ -375,6 +375,16 @@ func (g *BluetoothGatt) StartListening() {
 					// Copy message to avoid race condition
 					msgCopy := *msg
 					go func(m wire.CharacteristicMessage) {
+						// IMPORTANT: Only process messages from the device we're connected to
+						// Messages from other devices are intended for our GATT server, not this client
+						if m.SenderUUID != g.GetRemoteUUID() {
+							// This message is not from our connected peripheral, skip it
+							// (It's likely intended for our GATT server from a different device)
+							filename := fmt.Sprintf("msg_%d.json", m.Timestamp)
+							g.wire.DeleteInboxFile(filename)
+							return
+						}
+
 						// Find the characteristic this message is for
 						char := g.GetCharacteristic(m.ServiceUUID, m.CharUUID)
 						if char != nil {
