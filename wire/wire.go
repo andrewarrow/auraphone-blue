@@ -316,9 +316,9 @@ func (sw *Wire) handleConnection(conn net.Conn) {
 // readLoop reads messages from a connection
 func (sw *Wire) readLoop(remoteUUID string, conn net.Conn) {
 	for {
-		// Read message length
-		var msgLen uint32
-		if err := binary.Read(conn, binary.BigEndian, &msgLen); err != nil {
+		// Read total message length (sent by SendToDevice)
+		var totalLen uint32
+		if err := binary.Read(conn, binary.BigEndian, &totalLen); err != nil {
 			if err != io.EOF {
 				logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 					"Read error from %s: %v", remoteUUID[:8], err)
@@ -326,11 +326,12 @@ func (sw *Wire) readLoop(remoteUUID string, conn net.Conn) {
 			return
 		}
 
-		// Read message data
-		msgData := make([]byte, msgLen)
+		// Read complete message data (may arrive in fragments from SendToDevice)
+		msgData := make([]byte, totalLen)
 		if _, err := io.ReadFull(conn, msgData); err != nil {
 			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"Failed to read message from %s: %v", remoteUUID[:8], err)
+				"Failed to read complete message from %s (expected %d bytes): %v",
+				remoteUUID[:8], totalLen, err)
 			return
 		}
 
@@ -491,9 +492,16 @@ func (sw *Wire) SendToDevice(targetUUID string, data []byte) error {
 		return fmt.Errorf("not connected to %s", targetUUID[:8])
 	}
 
-	// Fragment data based on MTU
+	// Fragment data based on MTU for realistic BLE simulation
 	fragments := sw.simulator.FragmentData(data, sw.mtu)
 
+	// Send complete message length first (so receiver knows total size)
+	totalLen := uint32(len(data))
+	if err := binary.Write(conn, binary.BigEndian, totalLen); err != nil {
+		return fmt.Errorf("failed to write message length: %w", err)
+	}
+
+	// Send each fragment with realistic BLE timing and packet loss
 	for i, fragment := range fragments {
 		// Inter-packet delay (realistic BLE timing)
 		if i > 0 {
@@ -519,11 +527,7 @@ func (sw *Wire) SendToDevice(targetUUID string, data []byte) error {
 				continue
 			}
 
-			// Write fragment length + fragment data
-			if err := binary.Write(conn, binary.BigEndian, uint32(len(fragment))); err != nil {
-				lastErr = fmt.Errorf("failed to write fragment length: %w", err)
-				continue
-			}
+			// Write fragment data (no per-fragment length prefix)
 			if _, err := conn.Write(fragment); err != nil {
 				lastErr = fmt.Errorf("failed to write fragment: %w", err)
 				continue
