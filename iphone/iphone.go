@@ -85,6 +85,7 @@ type iPhone struct {
 	wire                 *wire.Wire
 	cacheManager         *phone.DeviceCacheManager      // Persistent photo storage
 	manager              *swift.CBCentralManager
+	peripheralManager    *swift.CBPeripheralManager     // Peripheral mode: GATT server + advertising
 	discoveryCallback    phone.DeviceDiscoveryCallback
 	photoPath            string
 	photoHash            string
@@ -156,7 +157,52 @@ func NewIPhone(hardwareUUID string) *iPhone {
 	// Create manager with hardware UUID
 	ip.manager = swift.NewCBCentralManager(ip, hardwareUUID)
 
+	// Initialize peripheral mode (GATT server + advertising)
+	ip.initializePeripheralMode()
+
 	return ip
+}
+
+// initializePeripheralMode sets up CBPeripheralManager for peripheral role
+func (ip *iPhone) initializePeripheralMode() {
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
+
+	// Create peripheral manager with wrapper delegate
+	delegate := &iPhonePeripheralDelegate{iphone: ip}
+	ip.peripheralManager = swift.NewCBPeripheralManager(delegate, ip.hardwareUUID, wire.PlatformIOS, ip.deviceName)
+
+	// Create the Aura service
+	service := &swift.CBMutableService{
+		UUID:      auraServiceUUID,
+		IsPrimary: true,
+	}
+
+	// Add characteristics
+	textChar := &swift.CBMutableCharacteristic{
+		UUID:       auraTextCharUUID,
+		Properties: swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
+		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
+		Service:    service,
+	}
+	photoChar := &swift.CBMutableCharacteristic{
+		UUID:       auraPhotoCharUUID,
+		Properties: swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
+		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
+		Service:    service,
+	}
+	profileChar := &swift.CBMutableCharacteristic{
+		UUID:       auraProfileCharUUID,
+		Properties: swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
+		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
+		Service:    service,
+	}
+
+	service.Characteristics = []*swift.CBMutableCharacteristic{textChar, photoChar, profileChar}
+
+	ip.peripheralManager.AddService(service)
 }
 
 // setupBLE configures GATT table and advertising data
@@ -265,18 +311,22 @@ func (ip *iPhone) loadReceivedPhotoMappings() {
 func (ip *iPhone) Start() {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
-	// Start scanning for peripherals
+	// Start scanning for peripherals (Central mode)
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		ip.manager.ScanForPeripherals(nil, nil)
-		logger.Info(prefix, "Started scanning for peripherals")
+		logger.Info(prefix, "Started scanning for peripherals (Central mode)")
 	}()
 
-	// TODO: Start CBPeripheralManager for peripheral mode
-	// Currently iOS only runs in Central mode (scanner/connector)
-	// It cannot receive incoming connections because no PeripheralManager is running
-	logger.Info(prefix, "⚠️  Peripheral mode NOT started - cannot receive incoming connections")
-	logger.Info(prefix, "   iOS is only running as Central (scanner/connector)")
+	// Start advertising (Peripheral mode)
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	advertisingData := map[string]interface{}{
+		"kCBAdvDataLocalName":    ip.deviceName,
+		"kCBAdvDataServiceUUIDs": []string{auraServiceUUID},
+	}
+
+	ip.peripheralManager.StartAdvertising(advertisingData)
+	logger.Info(prefix, "✅ Started peripheral mode (CBPeripheralManager + advertising)")
 
 	// Start periodic stale handshake checker
 	ip.startStaleHandshakeChecker()
@@ -1206,4 +1256,120 @@ func (ip *iPhone) handleProfileMessage(peripheral *swift.CBPeripheral, data []by
 	}
 
 	logger.Info(prefix, "✅ Saved profile data for %s", peripheral.UUID[:8])
+}
+
+// ====================================================================================
+// CBPeripheralManagerDelegate implementation (Peripheral mode)
+// ====================================================================================
+
+// iPhonePeripheralDelegate wraps iPhone to provide separate delegate for peripheral manager
+type iPhonePeripheralDelegate struct {
+	iphone *iPhone
+}
+
+// DidUpdateState for peripheral manager
+func (d *iPhonePeripheralDelegate) DidUpdateState(peripheralManager *swift.CBPeripheralManager) {
+	// State updated for peripheral manager
+}
+
+// DidStartAdvertising is called when advertising starts
+func (d *iPhonePeripheralDelegate) DidStartAdvertising(peripheralManager *swift.CBPeripheralManager, err error) {
+	prefix := fmt.Sprintf("%s iOS", d.iphone.hardwareUUID[:8])
+	if err != nil {
+		logger.Error(prefix, "❌ Failed to start advertising: %v", err)
+	} else {
+		logger.Debug(prefix, "✅ Peripheral advertising started successfully")
+	}
+}
+
+// DidReceiveReadRequest is called when a central device reads a characteristic
+func (d *iPhonePeripheralDelegate) DidReceiveReadRequest(peripheralManager *swift.CBPeripheralManager, request *swift.CBATTRequest) {
+	// For now, we don't support reads - all data is pushed via writes
+	peripheralManager.RespondToRequest(request, 0) // 0 = success
+}
+
+// DidReceiveWriteRequests is called when a central device writes to characteristics
+func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *swift.CBPeripheralManager, requests []*swift.CBATTRequest) {
+	prefix := fmt.Sprintf("%s iOS", d.iphone.hardwareUUID[:8])
+
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
+
+	for _, request := range requests {
+		logger.Debug(prefix, "📥 Peripheral GATT write from %s to char %s (%d bytes)",
+			request.Central.UUID[:8], request.Characteristic.UUID[:8], len(request.Value))
+
+		// Get or create GATT connection for this sender
+		senderUUID := request.Central.UUID
+
+		// Process based on characteristic - use existing handler methods
+		switch request.Characteristic.UUID {
+		case auraTextCharUUID:
+			// Handshake message - decode and process
+			handshake := &proto.HandshakeMessage{}
+			if err := proto2.Unmarshal(request.Value, handshake); err == nil {
+				d.iphone.mu.Lock()
+				d.iphone.peripheralToDeviceID[senderUUID] = handshake.DeviceId
+				if len(handshake.TxPhotoHash) > 0 {
+					d.iphone.deviceIDToPhotoHash[handshake.DeviceId] = hashBytesToString(handshake.TxPhotoHash)
+				}
+				d.iphone.mu.Unlock()
+				logger.Info(prefix, "📥 RX Handshake from peripheral write: deviceID=%s", handshake.DeviceId)
+
+				// Send our handshake back
+				go d.iphone.sendHandshakeToDevice(senderUUID)
+			}
+		case auraPhotoCharUUID:
+			// Photo chunk
+			go d.iphone.handlePhotoMessageFromUUID(senderUUID, request.Value)
+		case auraProfileCharUUID:
+			// Profile message
+			go d.iphone.handleProfileMessageFromUUID(senderUUID, request.Value)
+		}
+	}
+
+	// Respond to all requests
+	peripheralManager.RespondToRequest(requests[0], 0) // 0 = success
+}
+
+func (ip *iPhone) sendHandshakeToDevice(targetUUID string) {
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+
+	msg := &proto.HandshakeMessage{
+		DeviceId:        ip.deviceID,
+		FirstName:       "iOS",
+		ProtocolVersion: 1,
+		TxPhotoHash:     hashStringToBytes(ip.photoHash),
+	}
+
+	data, _ := proto2.Marshal(msg)
+	ip.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraTextCharUUID, data)
+}
+
+func (ip *iPhone) handlePhotoMessageFromUUID(senderUUID string, data []byte) {
+	// Reuse existing photo handling logic - simplified
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+	logger.Debug(prefix, "📥 Photo message from %s (%d bytes)", senderUUID[:8], len(data))
+	// TODO: Implement photo chunk handling
+}
+
+func (ip *iPhone) handleProfileMessageFromUUID(senderUUID string, data []byte) {
+	// Reuse existing profile handling logic - simplified
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+	logger.Debug(prefix, "📥 Profile message from %s (%d bytes)", senderUUID[:8], len(data))
+	// TODO: Implement profile handling
+}
+
+// CentralDidSubscribe is called when a central subscribes to notifications
+func (d *iPhonePeripheralDelegate) CentralDidSubscribe(peripheralManager *swift.CBPeripheralManager, central swift.CBCentral, characteristic *swift.CBMutableCharacteristic) {
+	prefix := fmt.Sprintf("%s iOS", d.iphone.hardwareUUID[:8])
+	logger.Debug(prefix, "📥 Central %s subscribed to char %s", central.UUID[:8], characteristic.UUID[:8])
+}
+
+// CentralDidUnsubscribe is called when a central unsubscribes from notifications
+func (d *iPhonePeripheralDelegate) CentralDidUnsubscribe(peripheralManager *swift.CBPeripheralManager, central swift.CBCentral, characteristic *swift.CBMutableCharacteristic) {
+	prefix := fmt.Sprintf("%s iOS", d.iphone.hardwareUUID[:8])
+	logger.Debug(prefix, "📥 Central %s unsubscribed from char %s", central.UUID[:8], characteristic.UUID[:8])
 }

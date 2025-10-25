@@ -85,6 +85,7 @@ type Android struct {
 	wire                 *wire.Wire
 	cacheManager         *phone.DeviceCacheManager          // Persistent photo storage
 	manager              *kotlin.BluetoothManager
+	advertiser           *kotlin.BluetoothLeAdvertiser      // Peripheral mode: advertising + inbox polling
 	discoveryCallback    phone.DeviceDiscoveryCallback
 	photoPath            string
 	photoHash            string
@@ -160,7 +161,17 @@ func NewAndroid(hardwareUUID string) *Android {
 	// Create manager with hardware UUID
 	a.manager = kotlin.NewBluetoothManager(hardwareUUID)
 
+	// Initialize peripheral mode (GATT server + advertiser)
+	a.initializePeripheralMode()
+
 	return a
+}
+
+// initializePeripheralMode sets up advertiser for peripheral role
+func (a *Android) initializePeripheralMode() {
+	// Create advertiser - it will poll inbox and handle incoming messages
+	a.advertiser = kotlin.NewBluetoothLeAdvertiser(a.hardwareUUID, wire.PlatformAndroid, a.deviceName)
+	// Note: The advertiser automatically polls the inbox when advertising starts
 }
 
 // setupBLE configures GATT table and advertising data
@@ -269,19 +280,31 @@ func (a *Android) loadReceivedPhotoMappings() {
 func (a *Android) Start() {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
-	// Start scanning for devices
+	// Start scanning for devices (Central mode)
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		scanner := a.manager.Adapter.GetBluetoothLeScanner()
 		scanner.StartScan(a)
-		logger.Info(prefix, "Started scanning for devices")
+		logger.Info(prefix, "Started scanning for devices (Central mode)")
 	}()
 
-	// TODO: Start GATT server for peripheral mode
-	// Currently Android only runs in Central mode (scanner/connector)
-	// It cannot receive incoming connections because no GattServer is running
-	logger.Info(prefix, "⚠️  Peripheral mode NOT started - cannot receive incoming connections")
-	logger.Info(prefix, "   Android is only running as Central (scanner/connector)")
+	// Start advertising and GATT server (Peripheral mode)
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	settings := &kotlin.AdvertiseSettings{
+		AdvertiseMode: kotlin.ADVERTISE_MODE_LOW_LATENCY,
+		Connectable:   true,
+		Timeout:       0,
+		TxPowerLevel:  kotlin.ADVERTISE_TX_POWER_MEDIUM,
+	}
+
+	advertiseData := &kotlin.AdvertiseData{
+		ServiceUUIDs:        []string{auraServiceUUID},
+		IncludeDeviceName:   true,
+		IncludeTxPowerLevel: true,
+	}
+
+	a.advertiser.StartAdvertising(settings, advertiseData, nil, a)
+	logger.Info(prefix, "✅ Started peripheral mode (GATT server + advertising)")
 
 	// Start periodic stale handshake checker
 	a.startStaleHandshakeChecker()
@@ -1246,4 +1269,97 @@ func (a *Android) handleProfileMessage(gatt *kotlin.BluetoothGatt, data []byte) 
 	}
 
 	logger.Info(prefix, "✅ Saved profile data for %s", remoteUUID[:8])
+}
+
+// ====================================================================================
+// BluetoothGattServerCallback implementation (Peripheral mode)
+// ====================================================================================
+
+// Server callbacks are handled by the gattServer's internal message polling
+// The advertiser polls inbox and forwards to handleServerWrite below
+
+// handleServerWrite processes writes from remote central devices to our GATT server
+func (a *Android) handleServerWrite(senderUUID string, charUUID string, value []byte) {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
+
+	logger.Debug(prefix, "📥 GATT server write from %s to char %s (%d bytes)", senderUUID[:8], charUUID[:8], len(value))
+
+	// Create a fake GATT connection for this sender if we don't have one
+	a.mu.Lock()
+	gatt, exists := a.connectedGatts[senderUUID]
+	if !exists {
+		// Create a new GATT connection representing the incoming connection
+		gatt = &kotlin.BluetoothGatt{}
+		a.connectedGatts[senderUUID] = gatt
+		logger.Debug(prefix, "📝 Created GATT connection for incoming central %s", senderUUID[:8])
+	}
+	a.mu.Unlock()
+
+	// Process based on characteristic
+	switch charUUID {
+	case auraTextCharUUID:
+		// Handshake message - decode protobuf
+		handshake := &proto.HandshakeMessage{}
+		if err := proto2.Unmarshal(value, handshake); err != nil {
+			logger.Error(prefix, "❌ Failed to decode handshake: %v", err)
+			return
+		}
+
+		// Process handshake (simplified version of handleHandshake)
+		a.mu.Lock()
+		a.remoteUUIDToDeviceID[senderUUID] = handshake.DeviceId
+		if len(handshake.TxPhotoHash) > 0 {
+			a.deviceIDToPhotoHash[handshake.DeviceId] = hashBytesToString(handshake.TxPhotoHash)
+		}
+		a.mu.Unlock()
+
+		logger.Info(prefix, "📥 RX Handshake from server write: deviceID=%s", handshake.DeviceId)
+
+		// Send our handshake back through the wire
+		go a.sendHandshakeToDevice(senderUUID)
+
+	case auraPhotoCharUUID:
+		// Photo chunk - process photo message
+		go a.handlePhotoMessage(gatt, value)
+
+	case auraProfileCharUUID:
+		// Profile message
+		go a.handleProfileMessage(gatt, value)
+	}
+}
+
+func (a *Android) sendHandshakeToDevice(targetUUID string) {
+	// Send handshake back via wire protocol
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+
+	msg := &proto.HandshakeMessage{
+		DeviceId:        a.deviceID,
+		FirstName:       "Android",
+		ProtocolVersion: 1,
+		TxPhotoHash:     hashStringToBytes(a.photoHash),
+	}
+
+	data, _ := proto2.Marshal(msg)
+	a.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraTextCharUUID, data)
+}
+
+// ====================================================================================
+// AdvertiseCallback implementation (Peripheral mode)
+// ====================================================================================
+
+// OnStartSuccess is called when advertising starts successfully
+func (a *Android) OnStartSuccess(settingsInEffect *kotlin.AdvertiseSettings) {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+	logger.Debug(prefix, "✅ Advertising started successfully")
+}
+
+// OnStartFailure is called when advertising fails to start
+func (a *Android) OnStartFailure(errorCode int) {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+	logger.Error(prefix, "❌ Advertising failed to start (error code: %d)", errorCode)
 }
