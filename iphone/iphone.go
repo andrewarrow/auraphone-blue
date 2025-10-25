@@ -1264,7 +1264,7 @@ func (ip *iPhone) startStalePhotoTransferChecker() {
 func (ip *iPhone) checkStalePhotoTransfers() {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	now := time.Now()
-	staleTimeout := 5 * time.Second
+	staleTimeout := 30 * time.Second
 	maxRetransmits := 3
 
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
