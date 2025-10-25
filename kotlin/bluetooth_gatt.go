@@ -353,7 +353,10 @@ func (g *BluetoothGatt) StartListening() {
 	g.stopChan = make(chan struct{})
 
 	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
+		// Reduced polling interval (10ms instead of 50ms) to simulate interrupt-driven BLE
+		// Real BLE uses hardware interrupts, but filesystem polling is an intentional
+		// simplification for portability. Faster polling approximates real-time delivery.
+		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
 
 		for {
@@ -366,34 +369,44 @@ func (g *BluetoothGatt) StartListening() {
 					continue
 				}
 
+				// Process each notification in a separate goroutine (matches real BLE)
+				// This allows notifications to race and arrive out-of-order if handler is slow
 				for _, msg := range messages {
-					// Find the characteristic this message is for
-					char := g.GetCharacteristic(msg.ServiceUUID, msg.CharUUID)
-					if char != nil {
-						// Deliver the message data
-						// - For "write" operations from remote, we receive the data
-						// - For "notify" operations, only deliver if notifications are enabled
-						shouldDeliver := false
-						if msg.Operation == "write" {
-							// Always deliver incoming writes (remote wrote to our characteristic)
-							shouldDeliver = true
-						} else if msg.Operation == "notify" || msg.Operation == "indicate" {
-							// Only deliver notifications/indications if we subscribed
-							shouldDeliver = g.notifyingCharacteristics != nil && g.notifyingCharacteristics[char.UUID]
-						}
+					// Copy message to avoid race condition
+					msgCopy := *msg
+					go func(m wire.CharacteristicMessage) {
+						// Find the characteristic this message is for
+						char := g.GetCharacteristic(m.ServiceUUID, m.CharUUID)
+						if char != nil {
+							// Deliver the message data
+							// - For "write" operations from remote, we receive the data
+							// - For "notify" operations, only deliver if notifications are enabled
+							shouldDeliver := false
+							if m.Operation == "write" || m.Operation == "write_no_response" {
+								// Always deliver incoming writes (remote wrote to our characteristic)
+								shouldDeliver = true
+							} else if m.Operation == "notify" || m.Operation == "indicate" {
+								// Only deliver notifications/indications if we subscribed
+								shouldDeliver = g.notifyingCharacteristics != nil && g.notifyingCharacteristics[char.UUID]
+							}
 
-						if shouldDeliver {
-							char.Value = msg.Data
+							if shouldDeliver {
+								// Create a copy of data to prevent race conditions
+								dataCopy := make([]byte, len(m.Data))
+								copy(dataCopy, m.Data)
+								char.Value = dataCopy
 
-							if g.callback != nil {
-								g.callback.OnCharacteristicChanged(g, char)
+								if g.callback != nil {
+									// Callback may race with other notifications (realistic!)
+									g.callback.OnCharacteristicChanged(g, char)
+								}
 							}
 						}
-					}
 
-					// Delete message after processing
-					filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-					g.wire.DeleteInboxFile(filename)
+						// Delete message after processing
+						filename := fmt.Sprintf("msg_%d.json", m.Timestamp)
+						g.wire.DeleteInboxFile(filename)
+					}(msgCopy)
 				}
 			}
 		}

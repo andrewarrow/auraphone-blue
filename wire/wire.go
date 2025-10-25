@@ -742,6 +742,9 @@ func (w *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, dat
 
 // WriteCharacteristicNoResponse sends a characteristic write WITHOUT response (fire and forget)
 // Does not wait for ACK - faster but no delivery guarantee (matches real BLE)
+// Returns immediately like real BLE, but transmission happens asynchronously in background
+// IMPORTANT: Callback fires immediately on successful queue (NOT after transmission)
+// Transmission failures happen silently in background (matches real BLE behavior)
 func (w *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID string, data []byte) error {
 	msg := CharacteristicMessage{
 		Operation:   "write_no_response",
@@ -756,13 +759,17 @@ func (w *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID s
 		fmt.Sprintf("📤 TX Write NO Response (to %s, svc=%s, char=%s, %d bytes)",
 			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
 
-	// Send without waiting - fire and forget
-	// Note: Still goes through SendToDevice which has retries, but we don't wait for completion
+	// Transmit asynchronously - failures are silent (matches real BLE)
 	go func() {
-		w.sendCharacteristicMessage(targetUUID, &msg)
+		if err := w.sendCharacteristicMessage(targetUUID, &msg); err != nil {
+			// Real BLE: transmission failures are completely silent to the app
+			// App has no way to know if the packet was lost
+			logger.Debug(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+				"📉 Write NO Response transmission failed silently (realistic BLE behavior): %v", err)
+		}
 	}()
 
-	return nil // Returns immediately
+	return nil // Returns immediately (app callback can fire now)
 }
 
 // ReadCharacteristic sends a read request to target device
@@ -778,7 +785,8 @@ func (w *Wire) ReadCharacteristic(targetUUID, serviceUUID, charUUID string) erro
 	return w.sendCharacteristicMessage(targetUUID, &msg)
 }
 
-// NotifyCharacteristic sends a notification to target device
+// NotifyCharacteristic sends a notification to target device with realistic delivery
+// Notifications may be dropped (~1%), arrive out-of-order, or be delayed (5-20ms)
 func (w *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
 	msg := CharacteristicMessage{
 		Operation:   "notify",
@@ -789,6 +797,24 @@ func (w *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, da
 		SenderUUID:  w.localUUID,
 	}
 
+	// Simulate notification drops (1% under load)
+	if w.simulator.ShouldNotificationDrop() {
+		logger.Debug(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+			"📉 Notification DROPPED (realistic BLE behavior, %d bytes lost)", len(data))
+		return nil // Silently dropped (matches real BLE)
+	}
+
+	// Simulate realistic notification latency (5-20ms)
+	if w.simulator.EnableNotificationReordering() {
+		delay := w.simulator.NotificationDeliveryDelay()
+		go func() {
+			time.Sleep(delay)
+			w.sendCharacteristicMessage(targetUUID, &msg)
+		}()
+		return nil // Non-blocking like real BLE
+	}
+
+	// Synchronous delivery (deterministic mode)
 	return w.sendCharacteristicMessage(targetUUID, &msg)
 }
 

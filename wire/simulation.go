@@ -46,6 +46,12 @@ type SimulationConfig struct {
 	MinServiceDiscoveryDelay int // Default: 50ms
 	MaxServiceDiscoveryDelay int // Default: 500ms
 
+	// Notification delivery realism
+	NotificationDropRate float64 // Default: 0.01 (1% notifications dropped under load)
+	NotificationDelay int // Default: 10ms (realistic notification latency)
+	MaxNotificationDelay int // Default: 20ms (max latency under load)
+	EnableNotificationReordering bool // Default: true (notifications can arrive out-of-order)
+
 	// Deterministic mode for testing
 	Deterministic bool // Default: false (use for reproducible scenarios)
 	Seed int64 // Random seed when Deterministic=true
@@ -87,6 +93,11 @@ func DefaultSimulationConfig() *SimulationConfig {
 		MinServiceDiscoveryDelay: 50,
 		MaxServiceDiscoveryDelay: 500,
 
+		NotificationDropRate: 0.01, // 1% dropped under load
+		NotificationDelay: 10,
+		MaxNotificationDelay: 20,
+		EnableNotificationReordering: true,
+
 		Deterministic: false,
 		Seed: 0,
 	}
@@ -101,6 +112,10 @@ func PerfectSimulationConfig() *SimulationConfig {
 	cfg.MinDiscoveryDelay = 0
 	cfg.MaxDiscoveryDelay = 0
 	cfg.PacketLossRate = 0
+	cfg.NotificationDropRate = 0
+	cfg.NotificationDelay = 0
+	cfg.MaxNotificationDelay = 0
+	cfg.EnableNotificationReordering = false
 	cfg.Deterministic = true
 	return cfg
 }
@@ -267,4 +282,24 @@ func (s *Simulator) ServiceDiscoveryDelay() time.Duration {
 	delay := s.config.MinServiceDiscoveryDelay +
 		s.rng.Intn(s.config.MaxServiceDiscoveryDelay - s.config.MinServiceDiscoveryDelay)
 	return time.Duration(delay) * time.Millisecond
+}
+
+// ShouldNotificationDrop returns true if notification should be dropped (under load)
+func (s *Simulator) ShouldNotificationDrop() bool {
+	return s.rng.Float64() < s.config.NotificationDropRate
+}
+
+// NotificationDeliveryDelay returns realistic notification latency
+func (s *Simulator) NotificationDeliveryDelay() time.Duration {
+	if s.config.NotificationDelay == s.config.MaxNotificationDelay {
+		return time.Duration(s.config.NotificationDelay) * time.Millisecond
+	}
+	delay := s.config.NotificationDelay +
+		s.rng.Intn(s.config.MaxNotificationDelay - s.config.NotificationDelay)
+	return time.Duration(delay) * time.Millisecond
+}
+
+// EnableNotificationReordering returns true if notifications can arrive out-of-order
+func (s *Simulator) EnableNotificationReordering() bool {
+	return s.config.EnableNotificationReordering
 }

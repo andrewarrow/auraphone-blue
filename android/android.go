@@ -580,12 +580,16 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 		// Android reconnect behavior depends on autoConnect parameter:
 		// - If autoConnect=true: BluetoothGatt will retry automatically in background
 		// - If autoConnect=false: App must manually call connectGatt() again
+		// IMPORTANT: The simulator does NOT auto-reconnect for the app anymore!
+		// The app code in this file must implement its own reconnection logic.
 		if a.useAutoConnect {
 			logger.Info(prefix, "🔄 Android autoConnect=true: Will retry in background...")
+			// Auto-reconnect is handled by BluetoothGatt.attemptReconnect() in kotlin layer
 		} else {
-			logger.Info(prefix, "💡 Android autoConnect=false: App will manually reconnect...")
-			// Manually reconnect after a delay (simulates real Android app behavior)
-			go a.manualReconnect(remoteUUID)
+			logger.Warn(prefix, "❌ Android autoConnect=false: App must manually reconnect (disconnected from %s)", remoteUUID[:8])
+			// REALISTIC BEHAVIOR: App stays disconnected until it manually calls connectGatt()
+			// If you want reconnection, implement it in the app layer (this file)
+			// Example: go a.manualReconnect(remoteUUID)
 		}
 	}
 }
