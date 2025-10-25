@@ -1400,12 +1400,17 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 
 	// Map sender UUID to logical device ID
 	deviceID := handshake.DeviceId
+
+	// Check if we've already handshaked recently (before updating timestamp)
+	a.mu.RLock()
+	lastHandshake, alreadyHandshaked := a.lastHandshakeTime[deviceID]
+	a.mu.RUnlock()
+
+	shouldReply := !alreadyHandshaked || time.Since(lastHandshake) > 5*time.Second
+
+	// Update our state
 	a.mu.Lock()
 	a.remoteUUIDToDeviceID[senderUUID] = deviceID
-	a.mu.Unlock()
-
-	// Record handshake timestamp
-	a.mu.Lock()
 	a.lastHandshakeTime[deviceID] = time.Now()
 	a.mu.Unlock()
 
@@ -1434,28 +1439,33 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 
 	logger.Info(prefix, "✅ Processed handshake from GATT server: deviceID=%s, firstName=%s", deviceID, handshake.FirstName)
 
-	// Send our handshake back to the central device
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	// Only send handshake back if this is the first time or it's been a while
+	if shouldReply {
+		// Send our handshake back to the central device
+		const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+		const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
 
-	firstName := a.localProfile.FirstName
-	if firstName == "" {
-		firstName = "Android"
-	}
+		firstName := a.localProfile.FirstName
+		if firstName == "" {
+			firstName = "Android"
+		}
 
-	replyMsg := &proto.HandshakeMessage{
-		DeviceId:        a.deviceID,
-		FirstName:       firstName,
-		ProtocolVersion: 1,
-		TxPhotoHash:     hashStringToBytes(a.photoHash),
-		RxPhotoHash:     hashStringToBytes(rxPhotoHash),
-	}
+		replyMsg := &proto.HandshakeMessage{
+			DeviceId:        a.deviceID,
+			FirstName:       firstName,
+			ProtocolVersion: 1,
+			TxPhotoHash:     hashStringToBytes(a.photoHash),
+			RxPhotoHash:     hashStringToBytes(rxPhotoHash),
+		}
 
-	replyData, _ := proto2.Marshal(replyMsg)
-	if err := a.wire.WriteCharacteristic(senderUUID, auraServiceUUID, auraTextCharUUID, replyData); err != nil {
-		logger.Error(prefix, "❌ Failed to send handshake back: %v", err)
+		replyData, _ := proto2.Marshal(replyMsg)
+		if err := a.wire.WriteCharacteristic(senderUUID, auraServiceUUID, auraTextCharUUID, replyData); err != nil {
+			logger.Error(prefix, "❌ Failed to send handshake back: %v", err)
+		} else {
+			logger.Debug(prefix, "📤 Sent handshake back to %s", senderUUID[:8])
+		}
 	} else {
-		logger.Debug(prefix, "📤 Sent handshake back to %s", senderUUID[:8])
+		logger.Debug(prefix, "⏭️  Skipping handshake reply to %s (already handshaked recently)", deviceID[:8])
 	}
 
 	// Check if they have a new photo for us

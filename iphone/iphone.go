@@ -1305,6 +1305,14 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 				deviceID := handshake.DeviceId
 				txPhotoHash := hashBytesToString(handshake.TxPhotoHash)
 
+				// Check if we've already handshaked recently (before updating timestamp)
+				d.iphone.mu.RLock()
+				lastHandshake, alreadyHandshaked := d.iphone.lastHandshakeTime[deviceID]
+				d.iphone.mu.RUnlock()
+
+				shouldReply := !alreadyHandshaked || time.Since(lastHandshake) > 5*time.Second
+
+				// Now update our state
 				d.iphone.mu.Lock()
 				d.iphone.peripheralToDeviceID[senderUUID] = deviceID
 				if txPhotoHash != "" {
@@ -1327,8 +1335,13 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 					d.iphone.cacheManager.SaveDeviceMetadata(metadata)
 				}
 
-				// Send our handshake back
-				go d.iphone.sendHandshakeToDevice(senderUUID)
+				// Only send handshake back if this is the first time or it's been a while
+				if shouldReply {
+					// Send our handshake back
+					go d.iphone.sendHandshakeToDevice(senderUUID)
+				} else {
+					logger.Debug(prefix, "⏭️  Skipping handshake reply to %s (already handshaked recently)", deviceID[:8])
+				}
 
 				// Trigger discovery callback to update GUI
 				if d.iphone.discoveryCallback != nil {
