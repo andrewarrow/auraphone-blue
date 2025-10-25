@@ -575,9 +575,16 @@ func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) err
 				continue
 			}
 
-			// Write to target's inbox
+			// Write to target's inbox using atomic write (temp file + rename)
+			// This prevents readers from seeing incomplete files during write
 			fragmentPath := filepath.Join(targetInboxPath, fragmentFilename)
-			if err := os.WriteFile(fragmentPath, fragment, 0644); err != nil {
+			tempPath := fragmentPath + ".tmp"
+			if err := os.WriteFile(tempPath, fragment, 0644); err != nil {
+				lastErr = err
+				continue
+			}
+			if err := os.Rename(tempPath, fragmentPath); err != nil {
+				os.Remove(tempPath) // Clean up temp file
 				lastErr = err
 				continue
 			}
@@ -592,12 +599,17 @@ func (w *Wire) SendToDevice(targetUUID string, data []byte, filename string) err
 		}
 	}
 
-	// Copy to our outbox_history
+	// Copy to our outbox_history using atomic write
 	historyPath := filepath.Join(w.basePath, w.localUUID, "outbox_history")
 	historyFilePath := filepath.Join(historyPath, filename)
-	if err := os.WriteFile(historyFilePath, data, 0644); err != nil {
-		// Don't fail the send if history write fails, just log it
-		fmt.Printf("Warning: failed to copy to outbox_history: %v\n", err)
+	tempHistoryPath := historyFilePath + ".tmp"
+	if err := os.WriteFile(tempHistoryPath, data, 0644); err == nil {
+		if err := os.Rename(tempHistoryPath, historyFilePath); err != nil {
+			os.Remove(tempHistoryPath)
+			fmt.Printf("Warning: failed to copy to outbox_history: %v\n", err)
+		}
+	} else {
+		fmt.Printf("Warning: failed to write temp file for outbox_history: %v\n", err)
 	}
 
 	return nil
@@ -615,10 +627,15 @@ func (w *Wire) DeleteInboxFile(filename string) error {
 		return fmt.Errorf("failed to read inbox file: %w", err)
 	}
 
-	// Copy complete message to inbox_history
+	// Copy complete message to inbox_history using atomic write
 	historyPath := filepath.Join(w.basePath, w.localUUID, "inbox_history")
 	historyFilePath := filepath.Join(historyPath, filename)
-	if err := os.WriteFile(historyFilePath, data, 0644); err != nil {
+	tempHistoryPath := historyFilePath + ".tmp"
+	if err := os.WriteFile(tempHistoryPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write temp file for inbox_history: %w", err)
+	}
+	if err := os.Rename(tempHistoryPath, historyFilePath); err != nil {
+		os.Remove(tempHistoryPath) // Clean up temp file
 		return fmt.Errorf("failed to copy to inbox_history: %w", err)
 	}
 

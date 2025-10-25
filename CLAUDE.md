@@ -11,13 +11,6 @@ testdata/*.jpg and you know the path and could just display the photo.
 its ok to make iphone/iphone.go and android/android.go not share any code and be very UN-dry
 but also ok to let them share code in phone/ pacakge
 
-ignore  tests/runner.go 
-ignore tests/scenario.go
-ignore cmd/
-
-start from main.go that is active code
-
-
 testdata/hardware_uuids.txt are the never changing UUIDs of the bluetooth radio. Make sure
 no logic uses these to map a device when it should be using the base36 device id. The only time
 this hardware UUID is the main id for a device is before the 1st handshake that gives us the base36 id.
