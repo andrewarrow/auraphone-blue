@@ -83,7 +83,8 @@ const (
 	PlatformGeneric Platform = "generic"
 )
 
-// Wire manages the filesystem-based communication between fake devices
+// Wire manages the communication between fake devices
+// Now uses Unix Domain Sockets internally for reliable IPC
 type Wire struct {
 	localUUID            string
 	basePath             string
@@ -98,6 +99,9 @@ type Wire struct {
 	disconnectCallback   func(deviceUUID string) // Callback when connection drops
 	connMutex            sync.RWMutex // Protects connectionStates and monitorStopChans
 	inboxMutex           sync.Mutex   // Protects inbox operations to prevent duplicate processing
+
+	// Socket-based implementation (new)
+	socketWire           *SocketWire // If non-nil, delegates to socket implementation
 }
 
 // NewWire creates a new wire instance for a device with default dual role
@@ -126,6 +130,7 @@ func NewWireWithRole(deviceUUID string, role DeviceRole, config *SimulationConfi
 }
 
 // NewWireWithPlatform creates a wire with platform-specific behavior
+// IMPORTANT: Now uses Unix Domain Sockets for IPC instead of filesystem
 func NewWireWithPlatform(deviceUUID string, platform Platform, deviceName string, config *SimulationConfig) *Wire {
 	if config == nil {
 		config = DefaultSimulationConfig()
@@ -135,17 +140,39 @@ func NewWireWithPlatform(deviceUUID string, platform Platform, deviceName string
 		deviceName = deviceUUID
 	}
 
+	// Use SocketWire implementation (new, reliable)
+	socketWire, err := NewSocketWire(deviceUUID, platform, deviceName, config)
+	if err != nil {
+		// Fallback to old implementation if socket creation fails
+		logger.Warn(fmt.Sprintf("%s %s", deviceUUID[:8], platform),
+			"Failed to create socket wire, falling back to filesystem: %v", err)
+		return &Wire{
+			localUUID:        deviceUUID,
+			basePath:         "data/",
+			role:             RoleDual,
+			platform:         platform,
+			deviceName:       deviceName,
+			simulator:        NewSimulator(config),
+			mtu:              config.DefaultMTU,
+			connectionStates: make(map[string]ConnectionState),
+			monitorStopChans: make(map[string]chan struct{}),
+			distance:         1.0,
+		}
+	}
+
+	// Wrap SocketWire in Wire struct for compatibility
 	return &Wire{
 		localUUID:        deviceUUID,
 		basePath:         "data/",
-		role:             RoleDual, // Both iOS and Android support dual role
+		role:             RoleDual,
 		platform:         platform,
 		deviceName:       deviceName,
-		simulator:        NewSimulator(config),
+		simulator:        socketWire.GetSimulator(),
 		mtu:              config.DefaultMTU,
 		connectionStates: make(map[string]ConnectionState),
 		monitorStopChans: make(map[string]chan struct{}),
 		distance:         1.0,
+		socketWire:       socketWire, // Store socket wire for delegation
 	}
 }
 
@@ -189,8 +216,14 @@ func (w *Wire) SetBasePath(path string) {
 	w.basePath = path
 }
 
-// InitializeDevice creates the inbox, outbox, and history directories for this device
+// InitializeDevice creates the necessary infrastructure for this device
 func (w *Wire) InitializeDevice() error {
+	// Delegate to SocketWire if available
+	if w.socketWire != nil {
+		return w.socketWire.InitializeDevice()
+	}
+
+	// Fallback to old filesystem implementation
 	devicePath := filepath.Join(w.basePath, w.localUUID)
 	inboxPath := filepath.Join(devicePath, "inbox")
 	outboxPath := filepath.Join(devicePath, "outbox")
@@ -453,6 +486,12 @@ func (w *Wire) ListOutbox() ([]string, error) {
 // Returns error if connection fails (simulates ~1.6% failure rate)
 // Now supports multiple simultaneous connections
 func (w *Wire) Connect(targetUUID string) error {
+	// Delegate to SocketWire if available
+	if w.socketWire != nil {
+		return w.socketWire.Connect(targetUUID)
+	}
+
+	// Fallback to old implementation
 	w.connMutex.Lock()
 	currentState := w.connectionStates[targetUUID]
 	if currentState != StateDisconnected && currentState != 0 {
@@ -924,6 +963,12 @@ func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) 
 
 // WriteCharacteristic sends a characteristic write WITH response (waits for ACK)
 func (w *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
+	// Delegate to SocketWire if available
+	if w.socketWire != nil {
+		return w.socketWire.WriteCharacteristic(targetUUID, serviceUUID, charUUID, data)
+	}
+
+	// Fallback to old implementation
 	msg := CharacteristicMessage{
 		Operation:   "write",
 		ServiceUUID: serviceUUID,
@@ -946,6 +991,12 @@ func (w *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, dat
 // IMPORTANT: Callback fires immediately on successful queue (NOT after transmission)
 // Transmission failures happen silently in background (matches real BLE behavior)
 func (w *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID string, data []byte) error {
+	// Delegate to SocketWire if available
+	if w.socketWire != nil {
+		return w.socketWire.WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID, data)
+	}
+
+	// Fallback to old implementation
 	msg := CharacteristicMessage{
 		Operation:   "write_no_response",
 		ServiceUUID: serviceUUID,
@@ -1120,6 +1171,12 @@ func (w *Wire) ReadCharacteristicMessages() ([]*CharacteristicMessage, error) {
 // This prevents message leaks in dual-role architectures where multiple polling loops
 // compete for the same inbox (central mode + peripheral mode).
 func (w *Wire) ReadAndConsumeCharacteristicMessages() ([]*CharacteristicMessage, error) {
+	// Delegate to SocketWire if available
+	if w.socketWire != nil {
+		return w.socketWire.ReadAndConsumeCharacteristicMessages()
+	}
+
+	// Fallback to old filesystem implementation
 	w.inboxMutex.Lock()
 	defer w.inboxMutex.Unlock()
 
