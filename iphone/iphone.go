@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
 	"github.com/user/auraphone-blue/phototransfer"
@@ -80,7 +79,8 @@ type LocalProfile struct {
 
 // iPhone represents an iOS device with BLE capabilities
 type iPhone struct {
-	deviceUUID           string
+	hardwareUUID         string // Bluetooth hardware UUID (never changes, from testdata/hardware_uuids.txt)
+	deviceID             string // Logical device ID (8-char base36, cached to disk)
 	deviceName           string
 	wire                 *wire.Wire
 	cacheManager         *phone.DeviceCacheManager      // Persistent photo storage
@@ -102,13 +102,20 @@ type iPhone struct {
 	staleCheckDone        chan struct{} // Signal channel for stopping background checker
 }
 
-// NewIPhone creates a new iPhone instance
-func NewIPhone() *iPhone {
-	deviceUUID := uuid.New().String()
+// NewIPhone creates a new iPhone instance with a hardware UUID
+func NewIPhone(hardwareUUID string) *iPhone {
 	deviceName := "iOS Device"
 
+	// Load or generate device ID (8-char base36, persists across app restarts)
+	deviceID, err := phone.LoadOrGenerateDeviceID(hardwareUUID)
+	if err != nil {
+		fmt.Printf("Failed to load/generate device ID: %v\n", err)
+		return nil
+	}
+
 	ip := &iPhone{
-		deviceUUID:             deviceUUID,
+		hardwareUUID:           hardwareUUID,
+		deviceID:               deviceID,
 		deviceName:             deviceName,
 		connectedPeripherals:   make(map[string]*swift.CBPeripheral),
 		peripheralToDeviceID:   make(map[string]string),
@@ -123,15 +130,15 @@ func NewIPhone() *iPhone {
 		},
 	}
 
-	// Initialize wire
-	ip.wire = wire.NewWire(deviceUUID)
+	// Initialize wire with hardware UUID
+	ip.wire = wire.NewWire(hardwareUUID)
 	if err := ip.wire.InitializeDevice(); err != nil {
 		fmt.Printf("Failed to initialize iOS device: %v\n", err)
 		return nil
 	}
 
-	// Initialize cache manager
-	ip.cacheManager = phone.NewDeviceCacheManager(deviceUUID)
+	// Initialize cache manager with hardware UUID
+	ip.cacheManager = phone.NewDeviceCacheManager(hardwareUUID)
 	if err := ip.cacheManager.InitializeCache(); err != nil {
 		fmt.Printf("Failed to initialize cache: %v\n", err)
 		return nil
@@ -146,8 +153,8 @@ func NewIPhone() *iPhone {
 	// Setup BLE
 	ip.setupBLE()
 
-	// Create manager
-	ip.manager = swift.NewCBCentralManager(ip, deviceUUID)
+	// Create manager with hardware UUID
+	ip.manager = swift.NewCBCentralManager(ip, hardwareUUID)
 
 	return ip
 }
@@ -202,16 +209,16 @@ func (ip *iPhone) setupBLE() {
 		return
 	}
 
-	logger.Info(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "Setup complete - advertising as: %s", ip.deviceName)
+	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Setup complete - advertising as: %s (deviceID: %s)", ip.deviceName, ip.deviceID)
 }
 
 // loadReceivedPhotoMappings loads deviceID->photoHash mappings from disk cache
 // This restores knowledge of which photos we've already received from other devices
 func (ip *iPhone) loadReceivedPhotoMappings() {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	// Scan cache/photos directory for received photos
-	photosDir := fmt.Sprintf("data/%s/cache/photos", ip.deviceUUID)
+	photosDir := fmt.Sprintf("data/%s/cache/photos", ip.hardwareUUID)
 	entries, err := os.ReadDir(photosDir)
 	if err != nil {
 		// Directory doesn't exist yet - no photos received
@@ -229,7 +236,7 @@ func (ip *iPhone) loadReceivedPhotoMappings() {
 		photoHash := entry.Name()[:len(entry.Name())-4]
 
 		// Look for device metadata files to find which device sent this photo
-		metadataFiles, err := filepath.Glob(fmt.Sprintf("data/%s/cache/*_metadata.json", ip.deviceUUID))
+		metadataFiles, err := filepath.Glob(fmt.Sprintf("data/%s/cache/*_metadata.json", ip.hardwareUUID))
 		if err != nil {
 			continue
 		}
@@ -260,17 +267,17 @@ func (ip *iPhone) Start() {
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		ip.manager.ScanForPeripherals(nil, nil)
-		logger.Info(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "Started scanning for peripherals")
+		logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Started scanning for peripherals")
 	}()
 
 	// Start periodic stale handshake checker
 	ip.startStaleHandshakeChecker()
-	logger.Debug(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "Started stale handshake checker (60s threshold, 30s interval)")
+	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Started stale handshake checker (60s threshold, 30s interval)")
 }
 
 // Stop stops BLE operations and cleans up resources
 func (ip *iPhone) Stop() {
-	fmt.Printf("[%s iOS] Stopping BLE operations\n", ip.deviceUUID[:8])
+	fmt.Printf("[%s iOS] Stopping BLE operations\n", ip.hardwareUUID[:8])
 	// Stop stale handshake checker
 	close(ip.staleCheckDone)
 	// Future: stop scanning, disconnect, cleanup
@@ -281,9 +288,14 @@ func (ip *iPhone) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
 	ip.discoveryCallback = callback
 }
 
-// GetDeviceUUID returns the device's UUID
+// GetDeviceUUID returns the device's hardware UUID (for BLE operations)
 func (ip *iPhone) GetDeviceUUID() string {
-	return ip.deviceUUID
+	return ip.hardwareUUID
+}
+
+// GetDeviceID returns the device's logical ID (8-char base36)
+func (ip *iPhone) GetDeviceID() string {
+	return ip.deviceID
 }
 
 // GetDeviceName returns the device's name
@@ -313,7 +325,7 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 		txPhotoHash = hash
 	}
 
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	logger.Debug(prefix, "📱 DISCOVERED device %s (%s)", peripheral.UUID[:8], name)
 	logger.Debug(prefix, "   └─ RSSI: %.0f dBm", rssi)
 	if txPhotoHash != "" {
@@ -365,7 +377,7 @@ func (ip *iPhone) shouldActAsCentral(remoteUUID, remoteName string) bool {
 
 	// iOS → iOS: Device with larger UUID acts as Central (prevents both from connecting)
 	if isRemoteIOS {
-		return ip.deviceUUID > remoteUUID
+		return ip.hardwareUUID > remoteUUID
 	}
 
 	// iOS → Android: iOS always acts as Central
@@ -373,12 +385,12 @@ func (ip *iPhone) shouldActAsCentral(remoteUUID, remoteName string) bool {
 		return true
 	}
 
-	// Unknown platform: use UUID comparison as fallback
-	return ip.deviceUUID > remoteUUID
+	// Unknown platform: use hardware UUID comparison as fallback
+	return ip.hardwareUUID > remoteUUID
 }
 
 func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral) {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	logger.Info(prefix, "✅ Connected to %s", peripheral.UUID[:8])
 
 	// Store peripheral
@@ -395,12 +407,12 @@ func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, periphera
 }
 
 func (ip *iPhone) DidFailToConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, err error) {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	logger.Error(prefix, "❌ Failed to connect to %s: %v", peripheral.UUID[:8], err)
 }
 
 func (ip *iPhone) DidDisconnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, err error) {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	if err != nil {
 		logger.Error(prefix, "❌ Disconnected from %s with error: %v", peripheral.UUID[:8], err)
 	} else {
@@ -434,8 +446,8 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	photoHash := hex.EncodeToString(hash[:])
 
 	// Cache photo to disk
-	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.deviceUUID)
-	cacheDir := fmt.Sprintf("data/%s/cache", ip.deviceUUID)
+	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.hardwareUUID)
+	cacheDir := fmt.Sprintf("data/%s/cache", ip.hardwareUUID)
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return fmt.Errorf("failed to create cache directory: %w", err)
 	}
@@ -451,7 +463,7 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	// Update advertising data to broadcast new hash
 	ip.setupBLE()
 
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	logger.Info(prefix, "📸 Updated profile photo (hash: %s)", truncateHash(photoHash, 8))
 	logger.Debug(prefix, "   └─ Cached to disk and broadcasting TX hash in advertising data")
 
@@ -517,7 +529,7 @@ func (ip *iPhone) UpdateLocalProfile(profile map[string]string) error {
 // CBPeripheralDelegate methods
 
 func (ip *iPhone) DidDiscoverServices(peripheral *swift.CBPeripheral, services []*swift.CBService, err error) {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	if err != nil {
 		logger.Error(prefix, "❌ Service discovery failed: %v", err)
 		return
@@ -536,7 +548,7 @@ func (ip *iPhone) DidDiscoverServices(peripheral *swift.CBPeripheral, services [
 }
 
 func (ip *iPhone) DidDiscoverCharacteristics(peripheral *swift.CBPeripheral, service *swift.CBService, err error) {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	if err != nil {
 		logger.Error(prefix, "❌ Characteristic discovery failed: %v", err)
 		return
@@ -569,13 +581,13 @@ func (ip *iPhone) DidDiscoverCharacteristics(peripheral *swift.CBPeripheral, ser
 
 func (ip *iPhone) DidWriteValueForCharacteristic(peripheral *swift.CBPeripheral, characteristic *swift.CBCharacteristic, err error) {
 	if err != nil {
-		prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+		prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 		logger.Error(prefix, "❌ Write failed for characteristic %s: %v", characteristic.UUID[:8], err)
 	}
 }
 
 func (ip *iPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral, characteristic *swift.CBCharacteristic, err error) {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	if err != nil {
 		logger.Error(prefix, "❌ Read failed: %v", err)
 		return
@@ -600,7 +612,7 @@ func (ip *iPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral
 
 // sendHandshakeMessage sends a handshake to a connected peripheral
 func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
@@ -623,7 +635,7 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 	ip.mu.RUnlock()
 
 	msg := &proto.HandshakeMessage{
-		DeviceId:        ip.deviceUUID,
+		DeviceId:        ip.deviceID, // Send logical deviceID, not hardware UUID
 		FirstName:       firstName,
 		ProtocolVersion: 1,
 		TxPhotoHash:     hashStringToBytes(ip.photoHash),
@@ -657,7 +669,7 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 
 // handleHandshakeMessage processes incoming handshake messages
 func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []byte) {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	// Unmarshal binary protobuf
 	var handshake proto.HandshakeMessage
@@ -765,7 +777,7 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 
 // sendPhoto sends our profile photo to a connected device
 func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash string) error {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	// Check if they already have our photo
 	if remoteRxPhotoHash == ip.photoHash {
@@ -792,7 +804,7 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 	}()
 
 	// Load our cached photo
-	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.deviceUUID)
+	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.hardwareUUID)
 	photoData, err := os.ReadFile(cachePath)
 	if err != nil {
 		return fmt.Errorf("failed to load photo: %w", err)
@@ -841,7 +853,7 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 
 // handlePhotoMessage processes incoming photo data
 func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte) {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	// Try to decode metadata
 	if len(data) >= phototransfer.MetadataSize {
@@ -875,7 +887,7 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 
 // processPhotoChunks processes buffered photo chunks
 func (ip *iPhone) processPhotoChunks() {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	for {
 		if len(ip.photoReceiveState.buffer) < phototransfer.ChunkHeaderSize {
@@ -906,7 +918,7 @@ func (ip *iPhone) processPhotoChunks() {
 
 // reassembleAndSavePhoto reassembles chunks and saves the photo
 func (ip *iPhone) reassembleAndSavePhoto() error {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	// Reassemble in order
 	var photoData []byte
@@ -994,7 +1006,7 @@ func (ip *iPhone) startStaleHandshakeChecker() {
 
 // checkStaleHandshakes checks all connected devices for stale handshakes and re-handshakes if needed
 func (ip *iPhone) checkStaleHandshakes() {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	now := time.Now()
 	staleThreshold := 60 * time.Second
 
@@ -1029,7 +1041,7 @@ func (ip *iPhone) checkStaleHandshakes() {
 
 // loadLocalProfile loads our profile from disk cache
 func (ip *iPhone) loadLocalProfile() *LocalProfile {
-	cachePath := filepath.Join("data", ip.deviceUUID, "cache", "local_profile.json")
+	cachePath := filepath.Join("data", ip.hardwareUUID, "cache", "local_profile.json")
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		// No profile yet, return empty
@@ -1046,7 +1058,7 @@ func (ip *iPhone) loadLocalProfile() *LocalProfile {
 
 // saveLocalProfile saves our profile to disk cache
 func (ip *iPhone) saveLocalProfile() error {
-	cachePath := filepath.Join("data", ip.deviceUUID, "cache", "local_profile.json")
+	cachePath := filepath.Join("data", ip.hardwareUUID, "cache", "local_profile.json")
 	data, err := json.MarshalIndent(ip.localProfile, "", "  ")
 	if err != nil {
 		return err
@@ -1066,7 +1078,7 @@ func (ip *iPhone) UpdateProfile(profile *LocalProfile) error {
 		return err
 	}
 
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 	logger.Info(prefix, "📝 Updated local profile (version %d)", profile.ProfileVersion)
 
 	// Always send updated handshake (includes first_name and profile_version)
@@ -1094,7 +1106,7 @@ func (ip *iPhone) UpdateProfile(profile *LocalProfile) error {
 
 // sendProfileMessage sends a ProfileMessage to a connected peripheral
 func (ip *iPhone) sendProfileMessage(peripheral *swift.CBPeripheral) error {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
@@ -1105,7 +1117,7 @@ func (ip *iPhone) sendProfileMessage(peripheral *swift.CBPeripheral) error {
 	}
 
 	msg := &proto.ProfileMessage{
-		DeviceId:    ip.deviceUUID,
+		DeviceId:    ip.deviceID, // Send logical deviceID
 		LastName:    ip.localProfile.LastName,
 		PhoneNumber: ip.localProfile.IMessage, // Phone number = iMessage
 		Tagline:     ip.localProfile.Tagline,
@@ -1138,7 +1150,7 @@ func (ip *iPhone) sendProfileMessage(peripheral *swift.CBPeripheral) error {
 
 // handleProfileMessage processes incoming ProfileMessage
 func (ip *iPhone) handleProfileMessage(peripheral *swift.CBPeripheral, data []byte) {
-	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	var profileMsg proto.ProfileMessage
 	if err := proto2.Unmarshal(data, &profileMsg); err != nil {

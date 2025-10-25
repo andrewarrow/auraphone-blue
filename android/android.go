@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/user/auraphone-blue/kotlin"
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
@@ -80,7 +79,8 @@ type LocalProfile struct {
 
 // Android represents an Android device with BLE capabilities
 type Android struct {
-	deviceUUID           string
+	hardwareUUID         string // Bluetooth hardware UUID (never changes, from testdata/hardware_uuids.txt)
+	deviceID             string // Logical device ID (8-char base36, cached to disk)
 	deviceName           string
 	wire                 *wire.Wire
 	cacheManager         *phone.DeviceCacheManager          // Persistent photo storage
@@ -104,13 +104,20 @@ type Android struct {
 	staleCheckDone       chan struct{} // Signal channel for stopping background checker
 }
 
-// NewAndroid creates a new Android instance
-func NewAndroid() *Android {
-	deviceUUID := uuid.New().String()
+// NewAndroid creates a new Android instance with a hardware UUID
+func NewAndroid(hardwareUUID string) *Android {
 	deviceName := "Android Device"
 
+	// Load or generate device ID (8-char base36, persists across app restarts)
+	deviceID, err := phone.LoadOrGenerateDeviceID(hardwareUUID)
+	if err != nil {
+		fmt.Printf("Failed to load/generate device ID: %v\n", err)
+		return nil
+	}
+
 	a := &Android{
-		deviceUUID:             deviceUUID,
+		hardwareUUID:           hardwareUUID,
+		deviceID:               deviceID,
 		deviceName:             deviceName,
 		connectedGatts:         make(map[string]*kotlin.BluetoothGatt),
 		discoveredDevices:      make(map[string]*kotlin.BluetoothDevice),
@@ -127,15 +134,15 @@ func NewAndroid() *Android {
 		useAutoConnect: false, // Default: manual reconnect (matches real Android apps)
 	}
 
-	// Initialize wire
-	a.wire = wire.NewWire(deviceUUID)
+	// Initialize wire with hardware UUID
+	a.wire = wire.NewWire(hardwareUUID)
 	if err := a.wire.InitializeDevice(); err != nil {
 		fmt.Printf("Failed to initialize Android device: %v\n", err)
 		return nil
 	}
 
-	// Initialize cache manager
-	a.cacheManager = phone.NewDeviceCacheManager(deviceUUID)
+	// Initialize cache manager with hardware UUID
+	a.cacheManager = phone.NewDeviceCacheManager(hardwareUUID)
 	if err := a.cacheManager.InitializeCache(); err != nil {
 		fmt.Printf("Failed to initialize cache: %v\n", err)
 		return nil
@@ -150,8 +157,8 @@ func NewAndroid() *Android {
 	// Setup BLE
 	a.setupBLE()
 
-	// Create manager
-	a.manager = kotlin.NewBluetoothManager(deviceUUID)
+	// Create manager with hardware UUID
+	a.manager = kotlin.NewBluetoothManager(hardwareUUID)
 
 	return a
 }
@@ -206,16 +213,16 @@ func (a *Android) setupBLE() {
 		return
 	}
 
-	logger.Info(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "Setup complete - advertising as: %s", a.deviceName)
+	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Setup complete - advertising as: %s (deviceID: %s)", a.deviceName, a.deviceID)
 }
 
 // loadReceivedPhotoMappings loads deviceID->photoHash mappings from disk cache
 // This restores knowledge of which photos we've already received from other devices
 func (a *Android) loadReceivedPhotoMappings() {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 	// Scan cache/photos directory for received photos
-	photosDir := fmt.Sprintf("data/%s/cache/photos", a.deviceUUID)
+	photosDir := fmt.Sprintf("data/%s/cache/photos", a.hardwareUUID)
 	entries, err := os.ReadDir(photosDir)
 	if err != nil {
 		// Directory doesn't exist yet - no photos received
@@ -233,7 +240,7 @@ func (a *Android) loadReceivedPhotoMappings() {
 		photoHash := entry.Name()[:len(entry.Name())-4]
 
 		// Look for device metadata files to find which device sent this photo
-		metadataFiles, err := filepath.Glob(fmt.Sprintf("data/%s/cache/*_metadata.json", a.deviceUUID))
+		metadataFiles, err := filepath.Glob(fmt.Sprintf("data/%s/cache/*_metadata.json", a.hardwareUUID))
 		if err != nil {
 			continue
 		}
@@ -265,17 +272,17 @@ func (a *Android) Start() {
 		time.Sleep(500 * time.Millisecond)
 		scanner := a.manager.Adapter.GetBluetoothLeScanner()
 		scanner.StartScan(a)
-		logger.Info(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "Started scanning for devices")
+		logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Started scanning for devices")
 	}()
 
 	// Start periodic stale handshake checker
 	a.startStaleHandshakeChecker()
-	logger.Debug(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "Started stale handshake checker (60s threshold, 30s interval)")
+	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Started stale handshake checker (60s threshold, 30s interval)")
 }
 
 // Stop stops BLE operations and cleans up resources
 func (a *Android) Stop() {
-	fmt.Printf("[%s Android] Stopping BLE operations\n", a.deviceUUID[:8])
+	fmt.Printf("[%s Android] Stopping BLE operations\n", a.hardwareUUID[:8])
 	// Stop stale handshake checker
 	close(a.staleCheckDone)
 	// Future: stop scanning, disconnect, cleanup
@@ -286,9 +293,14 @@ func (a *Android) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
 	a.discoveryCallback = callback
 }
 
-// GetDeviceUUID returns the device's UUID
+// GetDeviceUUID returns the device's hardware UUID (for BLE operations)
 func (a *Android) GetDeviceUUID() string {
-	return a.deviceUUID
+	return a.hardwareUUID
+}
+
+// GetDeviceID returns the device's logical ID (8-char base36)
+func (a *Android) GetDeviceID() string {
+	return a.deviceID
 }
 
 // GetDeviceName returns the device's name
@@ -311,7 +323,7 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 
 	rssi := float64(result.Rssi)
 
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	logger.Debug(prefix, "📱 DISCOVERED device %s (%s)", result.Device.Address[:8], name)
 	logger.Debug(prefix, "   └─ RSSI: %.0f dBm", rssi)
 
@@ -371,8 +383,8 @@ func (a *Android) shouldActAsCentral(remoteUUID, remoteName string) bool {
 		return a.deviceName > remoteName
 	}
 
-	// Unknown platform: use UUID comparison as fallback
-	return a.deviceUUID > remoteUUID
+	// Unknown platform: use hardware UUID comparison as fallback
+	return a.hardwareUUID > remoteUUID
 }
 
 // SetProfilePhoto sets the profile photo and broadcasts the hash
@@ -388,8 +400,8 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	photoHash := hex.EncodeToString(hash[:])
 
 	// Cache photo to disk
-	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.deviceUUID)
-	cacheDir := fmt.Sprintf("data/%s/cache", a.deviceUUID)
+	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.hardwareUUID)
+	cacheDir := fmt.Sprintf("data/%s/cache", a.hardwareUUID)
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return fmt.Errorf("failed to create cache directory: %w", err)
 	}
@@ -405,7 +417,7 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	// Update advertising data to broadcast new hash
 	a.setupBLE()
 
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	logger.Info(prefix, "📸 Updated profile photo (hash: %s)", truncateHash(photoHash, 8))
 	logger.Debug(prefix, "   └─ Cached to disk and broadcasting TX hash in advertising data")
 
@@ -471,7 +483,7 @@ func (a *Android) UpdateLocalProfile(profile map[string]string) error {
 // BluetoothGattCallback methods
 
 func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int, newState int) {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	remoteUUID := gatt.GetRemoteUUID()
 
 	if newState == 2 { // STATE_CONNECTED
@@ -516,7 +528,7 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 }
 
 func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 	if status != 0 { // GATT_SUCCESS = 0
 		logger.Error(prefix, "❌ Service discovery failed")
@@ -564,7 +576,7 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 
 func (a *Android) OnCharacteristicWrite(gatt *kotlin.BluetoothGatt, characteristic *kotlin.BluetoothGattCharacteristic, status int) {
 	if status != 0 { // GATT_SUCCESS = 0
-		prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+		prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 		logger.Error(prefix, "❌ Write failed for characteristic %s", characteristic.UUID[:8])
 	}
 }
@@ -593,7 +605,7 @@ func (a *Android) OnCharacteristicChanged(gatt *kotlin.BluetoothGatt, characteri
 
 // sendHandshakeMessage sends a handshake to a connected device
 func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
@@ -617,7 +629,7 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 	a.mu.RUnlock()
 
 	msg := &proto.HandshakeMessage{
-		DeviceId:        a.deviceUUID,
+		DeviceId:        a.deviceID, // Send logical deviceID, not hardware UUID
 		FirstName:       firstName,
 		ProtocolVersion: 1,
 		TxPhotoHash:     hashStringToBytes(a.photoHash),
@@ -653,7 +665,7 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 
 // handleHandshakeMessage processes incoming handshake messages
 func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte) {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 	// Unmarshal binary protobuf
 	var handshake proto.HandshakeMessage
@@ -759,7 +771,7 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 
 // sendPhoto sends our profile photo to a connected device
 func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string) error {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	remoteUUID := gatt.GetRemoteUUID()
 
 	// Check if they already have our photo
@@ -787,7 +799,7 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 	}()
 
 	// Load our cached photo
-	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.deviceUUID)
+	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.hardwareUUID)
 	photoData, err := os.ReadFile(cachePath)
 	if err != nil {
 		return fmt.Errorf("failed to load photo: %w", err)
@@ -840,7 +852,7 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 
 // handlePhotoMessage processes incoming photo data
 func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	remoteUUID := gatt.GetRemoteUUID()
 
 	// Try to decode metadata
@@ -875,7 +887,7 @@ func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 
 // processPhotoChunks processes buffered photo chunks
 func (a *Android) processPhotoChunks() {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 	for {
 		if len(a.photoReceiveState.buffer) < phototransfer.ChunkHeaderSize {
@@ -906,7 +918,7 @@ func (a *Android) processPhotoChunks() {
 
 // reassembleAndSavePhoto reassembles chunks and saves the photo
 func (a *Android) reassembleAndSavePhoto() error {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 	// Reassemble in order
 	var photoData []byte
@@ -978,7 +990,7 @@ func (a *Android) reassembleAndSavePhoto() error {
 // manualReconnect implements Android's manual reconnect behavior (autoConnect=false)
 // Real Android apps must detect disconnect and call connectGatt() again manually
 func (a *Android) manualReconnect(deviceUUID string) {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 	// Wait before retrying (simulates app detecting disconnect and deciding to reconnect)
 	time.Sleep(3 * time.Second)
@@ -1027,7 +1039,7 @@ func (a *Android) startStaleHandshakeChecker() {
 
 // checkStaleHandshakes checks all connected devices for stale handshakes and re-handshakes if needed
 func (a *Android) checkStaleHandshakes() {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	now := time.Now()
 	staleThreshold := 60 * time.Second
 
@@ -1062,7 +1074,7 @@ func (a *Android) checkStaleHandshakes() {
 
 // loadLocalProfile loads our profile from disk cache
 func (a *Android) loadLocalProfile() *LocalProfile {
-	cachePath := filepath.Join("data", a.deviceUUID, "cache", "local_profile.json")
+	cachePath := filepath.Join("data", a.hardwareUUID, "cache", "local_profile.json")
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		// No profile yet, return empty
@@ -1079,7 +1091,7 @@ func (a *Android) loadLocalProfile() *LocalProfile {
 
 // saveLocalProfile saves our profile to disk cache
 func (a *Android) saveLocalProfile() error {
-	cachePath := filepath.Join("data", a.deviceUUID, "cache", "local_profile.json")
+	cachePath := filepath.Join("data", a.hardwareUUID, "cache", "local_profile.json")
 	data, err := json.MarshalIndent(a.localProfile, "", "  ")
 	if err != nil {
 		return err
@@ -1099,7 +1111,7 @@ func (a *Android) UpdateProfile(profile *LocalProfile) error {
 		return err
 	}
 
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	logger.Info(prefix, "📝 Updated local profile (version %d)", profile.ProfileVersion)
 
 	// Always send updated handshake (includes first_name and profile_version)
@@ -1127,7 +1139,7 @@ func (a *Android) UpdateProfile(profile *LocalProfile) error {
 
 // sendProfileMessage sends a ProfileMessage to a connected GATT
 func (a *Android) sendProfileMessage(gatt *kotlin.BluetoothGatt) error {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
@@ -1138,7 +1150,7 @@ func (a *Android) sendProfileMessage(gatt *kotlin.BluetoothGatt) error {
 	}
 
 	msg := &proto.ProfileMessage{
-		DeviceId:    a.deviceUUID,
+		DeviceId:    a.deviceID, // Send logical deviceID
 		LastName:    a.localProfile.LastName,
 		PhoneNumber: a.localProfile.IMessage, // Phone number = iMessage
 		Tagline:     a.localProfile.Tagline,
@@ -1177,7 +1189,7 @@ func (a *Android) sendProfileMessage(gatt *kotlin.BluetoothGatt) error {
 
 // handleProfileMessage processes incoming ProfileMessage
 func (a *Android) handleProfileMessage(gatt *kotlin.BluetoothGatt, data []byte) {
-	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 	var profileMsg proto.ProfileMessage
 	if err := proto2.Unmarshal(data, &profileMsg); err != nil {

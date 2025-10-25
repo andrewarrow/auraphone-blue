@@ -8,7 +8,6 @@ import (
 	"image"
 	"image/color"
 	_ "image/jpeg"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,6 +39,7 @@ type PhoneWindow struct {
 	window            fyne.Window
 	currentTab        string
 	app               fyne.App
+	hardwareUUID      string                            // Hardware UUID for this phone (for cleanup)
 	devicesMap        map[string]phone.DiscoveredDevice // Device ID -> Device
 	discoveredDevices []phone.DiscoveredDevice          // Sorted list for UI
 	devicesMutex      sync.RWMutex
@@ -57,15 +57,23 @@ type PhoneWindow struct {
 
 // NewPhoneWindow creates a new phone window
 func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
-	// Select random initial photo from face1.jpg to face12.jpg
-	// Use a unique random source for each phone instance to avoid collisions
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	photoNum := rng.Intn(12) + 1 // Random number from 1 to 12
-	selectedPhoto := fmt.Sprintf("testdata/face%d.jpg", photoNum)
+	// Allocate next hardware UUID from the pool
+	manager := phone.GetHardwareUUIDManager()
+	hardwareUUID, err := manager.AllocateNextUUID()
+	if err != nil {
+		fmt.Printf("ERROR: %v\n", err)
+		return nil
+	}
+
+	// Select photo that matches hardware UUID index (face1 for first UUID, face2 for second, etc.)
+	// This ensures each phone gets a consistent photo across restarts
+	allocatedCount := manager.GetAllocatedCount()
+	selectedPhoto := fmt.Sprintf("testdata/face%d.jpg", allocatedCount)
 
 	pw := &PhoneWindow{
 		currentTab:        "home",
 		app:               app,
+		hardwareUUID:      hardwareUUID,
 		devicesMap:        make(map[string]phone.DiscoveredDevice),
 		discoveredDevices: []phone.DiscoveredDevice{},
 		needsRefresh:      false,
@@ -75,11 +83,11 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 		deviceFirstNames:  make(map[string]string),
 	}
 
-	// Create platform-specific phone
+	// Create platform-specific phone with hardware UUID
 	if platformType == "iOS" {
-		pw.phone = iphone.NewIPhone()
+		pw.phone = iphone.NewIPhone(hardwareUUID)
 	} else {
-		pw.phone = android.NewAndroid()
+		pw.phone = android.NewAndroid(hardwareUUID)
 	}
 
 	if pw.phone == nil {
@@ -97,9 +105,11 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 	pw.window.SetContent(pw.buildUI())
 	pw.window.Resize(fyne.NewSize(375, 667)) // iPhone-like dimensions
 
-	// Cleanup on close
+	// Cleanup on close - release hardware UUID back to the pool
 	pw.window.SetOnClosed(func() {
 		pw.cleanup()
+		manager := phone.GetHardwareUUIDManager()
+		manager.ReleaseUUID(pw.hardwareUUID)
 	})
 
 	// Set initial profile photo
