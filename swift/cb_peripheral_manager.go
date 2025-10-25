@@ -389,14 +389,26 @@ func (pm *CBPeripheralManager) startListeningForRequests() {
 			case <-pm.stopListening:
 				return
 			case <-ticker.C:
-				// Read and consume incoming messages (automatically deleted by wire layer)
-				messages, err := pm.wire.ReadAndConsumeCharacteristicMessages()
+				// CRITICAL FIX: Use ReadCharacteristicMessages (without consume) to allow filtering
+				// Peripheral mode should NOT consume notify/indicate messages - those are for Central mode
+				messages, err := pm.wire.ReadCharacteristicMessages()
 				if err != nil {
 					continue
 				}
 
 				for _, msg := range messages {
+					// Only process and delete messages meant for peripheral mode (GATT server)
+					// Skip notify/indicate messages - they should be consumed by CBPeripheral.StartListening()
+					if msg.Operation == "notify" || msg.Operation == "indicate" {
+						continue // Leave these messages in inbox for central mode
+					}
+
+					// Process peripheral-mode operations (read, write, subscribe, unsubscribe)
 					pm.handleCharacteristicMessage(msg)
+
+					// Delete the message after processing (consume it)
+					filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
+					pm.wire.DeleteInboxFile(filename)
 				}
 			}
 		}
@@ -404,6 +416,8 @@ func (pm *CBPeripheralManager) startListeningForRequests() {
 }
 
 // handleCharacteristicMessage processes incoming GATT messages
+// NOTE: This should only be called for peripheral-mode operations (read, write, subscribe, unsubscribe)
+// Notify/indicate messages are filtered out in startListeningForRequests()
 func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.CharacteristicMessage) {
 	// Find the characteristic
 	var targetChar *CBMutableCharacteristic

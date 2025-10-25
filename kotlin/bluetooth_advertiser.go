@@ -251,17 +251,28 @@ func (a *BluetoothLeAdvertiser) startListeningForRequests() {
 			case <-a.stopListening:
 				return
 			case <-ticker.C:
-				// Read and consume incoming messages (automatically deleted by wire layer)
-				messages, err := a.wire.ReadAndConsumeCharacteristicMessages()
+				// CRITICAL FIX: Use ReadCharacteristicMessages (without consume) to allow filtering
+				// Peripheral mode should NOT consume notify/indicate messages - those are for Central mode
+				messages, err := a.wire.ReadCharacteristicMessages()
 				if err != nil {
 					continue
 				}
 
 				for _, msg := range messages {
-					// Forward to GATT server if available
+					// Only process and delete messages meant for peripheral mode (GATT server)
+					// Skip notify/indicate messages - they should be consumed by BluetoothGatt.StartListening()
+					if msg.Operation == "notify" || msg.Operation == "indicate" {
+						continue // Leave these messages in inbox for central mode
+					}
+
+					// Forward peripheral-mode operations to GATT server
 					if a.gattServer != nil {
 						a.gattServer.handleCharacteristicMessage(msg)
 					}
+
+					// Delete the message after processing (consume it)
+					filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
+					a.wire.DeleteInboxFile(filename)
 				}
 			}
 		}
