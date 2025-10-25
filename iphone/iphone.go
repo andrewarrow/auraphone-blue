@@ -43,7 +43,9 @@ type iPhone struct {
 	connectedPeripherals map[string]*swift.CBPeripheral // UUID -> peripheral
 	deviceIDToPhotoHash  map[string]string              // deviceID -> their TX photo hash
 	receivedPhotoHashes  map[string]string              // deviceID -> RX hash (photos we got from them)
+	lastHandshakeTime    map[string]time.Time           // deviceID -> last handshake timestamp
 	photoReceiveState    *photoReceiveState
+	staleCheckDone       chan struct{} // Signal channel for stopping background checker
 }
 
 // NewIPhone creates a new iPhone instance
@@ -57,6 +59,8 @@ func NewIPhone() *iPhone {
 		connectedPeripherals: make(map[string]*swift.CBPeripheral),
 		deviceIDToPhotoHash:  make(map[string]string),
 		receivedPhotoHashes:  make(map[string]string),
+		lastHandshakeTime:    make(map[string]time.Time),
+		staleCheckDone:       make(chan struct{}),
 		photoReceiveState: &photoReceiveState{
 			receivedChunks: make(map[uint16][]byte),
 		},
@@ -128,16 +132,23 @@ func (ip *iPhone) setupBLE() {
 
 // Start begins BLE advertising and scanning
 func (ip *iPhone) Start() {
+	// Start scanning for peripherals
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		ip.manager.ScanForPeripherals(nil, nil)
 		logger.Info(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "Started scanning for peripherals")
 	}()
+
+	// Start periodic stale handshake checker
+	ip.startStaleHandshakeChecker()
+	logger.Debug(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "Started stale handshake checker (60s threshold, 30s interval)")
 }
 
 // Stop stops BLE operations and cleans up resources
 func (ip *iPhone) Stop() {
 	fmt.Printf("[%s iOS] Stopping BLE operations\n", ip.deviceUUID[:8])
+	// Stop stale handshake checker
+	close(ip.staleCheckDone)
 	// Future: stop scanning, disconnect, cleanup
 }
 
@@ -274,8 +285,17 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	// Update advertising data to broadcast new hash
 	ip.setupBLE()
 
-	logger.Info(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "📸 Updated profile photo (hash: %s)", photoHash[:8])
-	logger.Debug(fmt.Sprintf("%s iOS", ip.deviceUUID[:8]), "   └─ Cached to disk and broadcasting TX hash in advertising data")
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	logger.Info(prefix, "📸 Updated profile photo (hash: %s)", photoHash[:8])
+	logger.Debug(prefix, "   └─ Cached to disk and broadcasting TX hash in advertising data")
+
+	// Re-send handshake to all connected devices to notify them of the new photo
+	if len(ip.connectedPeripherals) > 0 {
+		logger.Debug(prefix, "   └─ Notifying %d connected device(s) of photo change", len(ip.connectedPeripherals))
+		for _, peripheral := range ip.connectedPeripherals {
+			go ip.sendHandshakeMessage(peripheral)
+		}
+	}
 
 	return nil
 }
@@ -396,7 +416,12 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 	logger.Debug(prefix, "📤 TX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
 	// Handshake is critical - use withResponse to ensure delivery
-	return peripheral.WriteValue(data, textChar, swift.CBCharacteristicWriteWithResponse)
+	err = peripheral.WriteValue(data, textChar, swift.CBCharacteristicWriteWithResponse)
+	if err == nil {
+		// Record handshake timestamp on successful send
+		ip.lastHandshakeTime[peripheral.UUID] = time.Now()
+	}
+	return err
 }
 
 // handleHandshakeMessage processes incoming handshake messages
@@ -416,6 +441,9 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	}
 	jsonData, _ := marshaler.Marshal(&handshake)
 	logger.Debug(prefix, "📥 RX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
+
+	// Record handshake timestamp when received
+	ip.lastHandshakeTime[peripheral.UUID] = time.Now()
 
 	// Store their TX photo hash
 	if handshake.TxPhotoHash != "" {
@@ -614,4 +642,46 @@ func (ip *iPhone) reassembleAndSavePhoto() error {
 	}
 
 	return nil
+}
+
+// startStaleHandshakeChecker runs a background task to check for stale handshakes
+func (ip *iPhone) startStaleHandshakeChecker() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				ip.checkStaleHandshakes()
+			case <-ip.staleCheckDone:
+				return
+			}
+		}
+	}()
+}
+
+// checkStaleHandshakes checks all connected devices for stale handshakes and re-handshakes if needed
+func (ip *iPhone) checkStaleHandshakes() {
+	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
+	now := time.Now()
+	staleThreshold := 60 * time.Second
+
+	for peripheralUUID, peripheral := range ip.connectedPeripherals {
+		lastHandshake, exists := ip.lastHandshakeTime[peripheralUUID]
+
+		// If no handshake record or handshake is stale
+		if !exists || now.Sub(lastHandshake) > staleThreshold {
+			timeSince := "never"
+			if exists {
+				timeSince = fmt.Sprintf("%.0fs ago", now.Sub(lastHandshake).Seconds())
+			}
+
+			logger.Debug(prefix, "🔄 [STALE-HANDSHAKE] Handshake stale for %s (last: %s), re-handshaking",
+				peripheralUUID[:8], timeSince)
+
+			// Re-handshake in place (no need to reconnect, already connected)
+			go ip.sendHandshakeMessage(peripheral)
+		}
+	}
 }

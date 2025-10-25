@@ -44,8 +44,10 @@ type Android struct {
 	discoveredDevices    map[string]*kotlin.BluetoothDevice // UUID -> discovered device (for reconnect)
 	deviceIDToPhotoHash  map[string]string                  // deviceID -> their TX photo hash
 	receivedPhotoHashes  map[string]string                  // deviceID -> RX hash (photos we got from them)
+	lastHandshakeTime    map[string]time.Time               // deviceID -> last handshake timestamp
 	photoReceiveState    *photoReceiveState
-	useAutoConnect       bool // Whether to use autoConnect=true mode
+	useAutoConnect       bool          // Whether to use autoConnect=true mode
+	staleCheckDone       chan struct{} // Signal channel for stopping background checker
 }
 
 // NewAndroid creates a new Android instance
@@ -60,6 +62,8 @@ func NewAndroid() *Android {
 		discoveredDevices:    make(map[string]*kotlin.BluetoothDevice),
 		deviceIDToPhotoHash:  make(map[string]string),
 		receivedPhotoHashes:  make(map[string]string),
+		lastHandshakeTime:    make(map[string]time.Time),
+		staleCheckDone:       make(chan struct{}),
 		photoReceiveState: &photoReceiveState{
 			receivedChunks: make(map[uint16][]byte),
 		},
@@ -132,17 +136,24 @@ func (a *Android) setupBLE() {
 
 // Start begins BLE advertising and scanning
 func (a *Android) Start() {
+	// Start scanning for devices
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		scanner := a.manager.Adapter.GetBluetoothLeScanner()
 		scanner.StartScan(a)
 		logger.Info(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "Started scanning for devices")
 	}()
+
+	// Start periodic stale handshake checker
+	a.startStaleHandshakeChecker()
+	logger.Debug(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "Started stale handshake checker (60s threshold, 30s interval)")
 }
 
 // Stop stops BLE operations and cleans up resources
 func (a *Android) Stop() {
 	fmt.Printf("[%s Android] Stopping BLE operations\n", a.deviceUUID[:8])
+	// Stop stale handshake checker
+	close(a.staleCheckDone)
 	// Future: stop scanning, disconnect, cleanup
 }
 
@@ -231,8 +242,17 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	// Update advertising data to broadcast new hash
 	a.setupBLE()
 
-	logger.Info(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "📸 Updated profile photo (hash: %s)", photoHash[:8])
-	logger.Debug(fmt.Sprintf("%s Android", a.deviceUUID[:8]), "   └─ Cached to disk and broadcasting TX hash in advertising data")
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	logger.Info(prefix, "📸 Updated profile photo (hash: %s)", photoHash[:8])
+	logger.Debug(prefix, "   └─ Cached to disk and broadcasting TX hash in advertising data")
+
+	// Re-send handshake to all connected devices to notify them of the new photo
+	if len(a.connectedGatts) > 0 {
+		logger.Debug(prefix, "   └─ Notifying %d connected device(s) of photo change", len(a.connectedGatts))
+		for _, gatt := range a.connectedGatts {
+			go a.sendHandshakeMessage(gatt)
+		}
+	}
 
 	return nil
 }
@@ -384,7 +404,11 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 	// Handshake is critical - use withResponse to ensure delivery
 	textChar.Value = data
 	textChar.WriteType = kotlin.WRITE_TYPE_DEFAULT
-	gatt.WriteCharacteristic(textChar)
+	success := gatt.WriteCharacteristic(textChar)
+	if success {
+		// Record handshake timestamp on successful send
+		a.lastHandshakeTime[gatt.GetRemoteUUID()] = time.Now()
+	}
 	return nil
 }
 
@@ -407,6 +431,9 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	logger.Debug(prefix, "📥 RX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
 	remoteUUID := gatt.GetRemoteUUID()
+
+	// Record handshake timestamp when received
+	a.lastHandshakeTime[remoteUUID] = time.Now()
 
 	// Store their TX photo hash
 	if handshake.TxPhotoHash != "" {
@@ -638,4 +665,46 @@ func (a *Android) manualReconnect(deviceUUID string) {
 	logger.Info(prefix, "🔄 Manually calling connectGatt() for %s", deviceUUID[:8])
 	gatt := device.ConnectGatt(nil, a.useAutoConnect, a)
 	a.connectedGatts[deviceUUID] = gatt
+}
+
+// startStaleHandshakeChecker runs a background task to check for stale handshakes
+func (a *Android) startStaleHandshakeChecker() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				a.checkStaleHandshakes()
+			case <-a.staleCheckDone:
+				return
+			}
+		}
+	}()
+}
+
+// checkStaleHandshakes checks all connected devices for stale handshakes and re-handshakes if needed
+func (a *Android) checkStaleHandshakes() {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	now := time.Now()
+	staleThreshold := 60 * time.Second
+
+	for gattUUID, gatt := range a.connectedGatts {
+		lastHandshake, exists := a.lastHandshakeTime[gattUUID]
+
+		// If no handshake record or handshake is stale
+		if !exists || now.Sub(lastHandshake) > staleThreshold {
+			timeSince := "never"
+			if exists {
+				timeSince = fmt.Sprintf("%.0fs ago", now.Sub(lastHandshake).Seconds())
+			}
+
+			logger.Debug(prefix, "🔄 [STALE-HANDSHAKE] Handshake stale for %s (last: %s), re-handshaking",
+				gattUUID[:8], timeSince)
+
+			// Re-handshake in place (no need to reconnect, already connected)
+			go a.sendHandshakeMessage(gatt)
+		}
+	}
 }
