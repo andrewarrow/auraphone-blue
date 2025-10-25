@@ -1709,20 +1709,17 @@ func (ip *iPhone) reassembleAndSavePhotoFromServer(senderUUID string, state *pho
 	// Get the logical deviceID from the sender UUID
 	// For peripheral mode, we need to look this up from our cached handshakes
 	ip.mu.Lock()
-	deviceID := ""
-	// First try peripheralToDeviceID mapping (if they connected to us as central)
-	if id, exists := ip.peripheralToDeviceID[senderUUID]; exists {
-		deviceID = id
-		logger.Debug(prefix, "   └─ Found deviceID from peripheralToDeviceID: %s", deviceID[:8])
-	} else {
-		// If not found, scan through lastHandshakeTime to find the device that matches this UUID
-		// This happens when we're the peripheral and they're the central writing to us
-		// In this case, we should have received a handshake from them via write request
-		// For now, use senderUUID as fallback (will be mapped later on next handshake)
-		deviceID = senderUUID // Temporary until we get proper device ID from handshake
-		logger.Warn(prefix, "   └─ DeviceID not found for %s, using UUID as fallback", senderUUID[:8])
-	}
+	deviceID, exists := ip.peripheralToDeviceID[senderUUID]
 	ip.mu.Unlock()
+
+	if !exists || deviceID == "" {
+		// Reject photo from unknown device - handshake must complete first
+		// This ensures we always use base36 device IDs as primary keys (per CLAUDE.md)
+		logger.Warn(prefix, "⚠️  Rejecting photo from %s: no handshake received yet (deviceID unknown)", senderUUID[:8])
+		return fmt.Errorf("device ID unknown for %s, handshake required", senderUUID[:8])
+	}
+
+	logger.Debug(prefix, "   └─ Found deviceID from peripheralToDeviceID: %s", deviceID[:8])
 
 	logger.Debug(prefix, "   └─ Saving for deviceID=%s (senderUUID=%s)", deviceID[:8], senderUUID[:8])
 

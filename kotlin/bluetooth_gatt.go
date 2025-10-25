@@ -369,54 +369,51 @@ func (g *BluetoothGatt) StartListening() {
 					continue
 				}
 
-				// Process each notification in a separate goroutine (matches real BLE)
-				// This allows notifications to race and arrive out-of-order if handler is slow
+				// Process each notification synchronously to ensure proper ordering
+				// and prevent deletion before callback completes processing multi-chunk data
 				for _, msg := range messages {
-					// Copy message to avoid race condition
-					msgCopy := *msg
-					go func(m wire.CharacteristicMessage) {
-						// IMPORTANT: Only process messages from the device we're connected to
-						// Messages from other devices are intended for our GATT server, not this client
-						if m.SenderUUID != g.GetRemoteUUID() {
-							// This message is not from our connected peripheral, skip it
-							// (It's likely intended for our GATT server from a different device)
-							filename := fmt.Sprintf("msg_%d.json", m.Timestamp)
-							g.wire.DeleteInboxFile(filename)
-							return
-						}
-
-						// Find the characteristic this message is for
-						char := g.GetCharacteristic(m.ServiceUUID, m.CharUUID)
-						if char != nil {
-							// Deliver the message data
-							// - For "write" operations from remote, we receive the data
-							// - For "notify" operations, only deliver if notifications are enabled
-							shouldDeliver := false
-							if m.Operation == "write" || m.Operation == "write_no_response" {
-								// Always deliver incoming writes (remote wrote to our characteristic)
-								shouldDeliver = true
-							} else if m.Operation == "notify" || m.Operation == "indicate" {
-								// Only deliver notifications/indications if we subscribed
-								shouldDeliver = g.notifyingCharacteristics != nil && g.notifyingCharacteristics[char.UUID]
-							}
-
-							if shouldDeliver {
-								// Create a copy of data to prevent race conditions
-								dataCopy := make([]byte, len(m.Data))
-								copy(dataCopy, m.Data)
-								char.Value = dataCopy
-
-								if g.callback != nil {
-									// Callback may race with other notifications (realistic!)
-									g.callback.OnCharacteristicChanged(g, char)
-								}
-							}
-						}
-
-						// Delete message after processing
-						filename := fmt.Sprintf("msg_%d.json", m.Timestamp)
+					// IMPORTANT: Only process messages from the device we're connected to
+					// Messages from other devices are intended for our GATT server, not this client
+					if msg.SenderUUID != g.GetRemoteUUID() {
+						// This message is not from our connected peripheral, skip it
+						// (It's likely intended for our GATT server from a different device)
+						filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
 						g.wire.DeleteInboxFile(filename)
-					}(msgCopy)
+						continue
+					}
+
+					// Find the characteristic this message is for
+					char := g.GetCharacteristic(msg.ServiceUUID, msg.CharUUID)
+					if char != nil {
+						// Deliver the message data
+						// - For "write" operations from remote, we receive the data
+						// - For "notify" operations, only deliver if notifications are enabled
+						shouldDeliver := false
+						if msg.Operation == "write" || msg.Operation == "write_no_response" {
+							// Always deliver incoming writes (remote wrote to our characteristic)
+							shouldDeliver = true
+						} else if msg.Operation == "notify" || msg.Operation == "indicate" {
+							// Only deliver notifications/indications if we subscribed
+							shouldDeliver = g.notifyingCharacteristics != nil && g.notifyingCharacteristics[char.UUID]
+						}
+
+						if shouldDeliver {
+							// Create a copy of data to prevent race conditions
+							dataCopy := make([]byte, len(msg.Data))
+							copy(dataCopy, msg.Data)
+							char.Value = dataCopy
+
+							if g.callback != nil {
+								// Deliver callback synchronously to ensure processing completes
+								// before message is deleted (critical for multi-chunk photo transfers)
+								g.callback.OnCharacteristicChanged(g, char)
+							}
+						}
+					}
+
+					// Delete message after callback completes
+					filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
+					g.wire.DeleteInboxFile(filename)
 				}
 			}
 		}

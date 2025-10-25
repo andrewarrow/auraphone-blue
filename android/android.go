@@ -1882,18 +1882,15 @@ func (a *Android) reassembleAndSavePhotoFromServer(senderUUID string, state *pho
 	// Get the logical deviceID from the sender UUID
 	// For server mode, we need to look this up from our cached handshakes
 	a.mu.Lock()
-	deviceID := ""
-	// First try remoteUUIDToDeviceID mapping (if they connected to us as central)
-	if id, exists := a.remoteUUIDToDeviceID[senderUUID]; exists {
-		deviceID = id
-	} else {
-		// If not found, scan through lastHandshakeTime to find the device that matches this UUID
-		// This happens when we're the server and they're the central writing to us
-		// In this case, we should have received a handshake from them via write request
-		// For now, use senderUUID as fallback (will be mapped later on next handshake)
-		deviceID = senderUUID // Temporary until we get proper device ID from handshake
-	}
+	deviceID, exists := a.remoteUUIDToDeviceID[senderUUID]
 	a.mu.Unlock()
+
+	if !exists || deviceID == "" {
+		// Reject photo from unknown device - handshake must complete first
+		// This ensures we always use base36 device IDs as primary keys (per CLAUDE.md)
+		logger.Warn(prefix, "⚠️  Rejecting photo from %s: no handshake received yet (deviceID unknown)", senderUUID[:8])
+		return fmt.Errorf("device ID unknown for %s, handshake required", senderUUID[:8])
+	}
 
 	// Save photo using cache manager (persists deviceID -> photoHash mapping)
 	if err := a.cacheManager.SaveDevicePhoto(deviceID, photoData, hashStr); err != nil {
