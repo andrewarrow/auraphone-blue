@@ -867,23 +867,23 @@ type Launcher struct {
 	window fyne.Window
 }
 
-// NewLauncher creates a new launcher window
-func NewLauncher() *Launcher {
+// NewLauncher creates a new launcher window with the specified initial log level
+func NewLauncher(initialLogLevel string) *Launcher {
 	myApp := app.New()
 	launcher := &Launcher{
 		app:    myApp,
 		window: myApp.NewWindow("Auraphone Blue - Launcher"),
 	}
 
-	launcher.window.SetContent(launcher.buildUI())
+	launcher.window.SetContent(launcher.buildUI(initialLogLevel))
 	launcher.window.Resize(fyne.NewSize(400, 300))
 	launcher.window.CenterOnScreen()
 
 	return launcher
 }
 
-// buildUI creates the launcher menu UI
-func (l *Launcher) buildUI() fyne.CanvasObject {
+// buildUI creates the launcher menu UI with the specified initial log level
+func (l *Launcher) buildUI(initialLogLevel string) fyne.CanvasObject {
 	// Title
 	title := widget.NewLabelWithStyle(
 		"Auraphone Blue",
@@ -900,7 +900,7 @@ func (l *Launcher) buildUI() fyne.CanvasObject {
 		logger.SetLevel(logger.ParseLevel(selected))
 		fmt.Printf("Log level set to: %s\n", selected)
 	})
-	logLevelSelect.SetSelected("TRACE") // Default level
+	logLevelSelect.SetSelected(initialLogLevel) // Use CLI-provided log level
 
 	// Start iOS button
 	iosBtn := widget.NewButton("Start iOS Device", func() {
@@ -1095,6 +1095,6 @@ func main() {
 
 	// Otherwise, run the normal GUI launcher
 	fmt.Println("Starting launcher menu...")
-	launcher := NewLauncher()
+	launcher := NewLauncher(*logLevel)
 	launcher.Run()
 }
