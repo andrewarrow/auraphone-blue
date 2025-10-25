@@ -1218,7 +1218,7 @@ func (a *Android) startStalePhotoTransferChecker() {
 func (a *Android) checkStalePhotoTransfers() {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	now := time.Now()
-	staleTimeout := 30 * time.Second
+	staleTimeout := 5 * time.Second
 	maxRetransmits := 3
 
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
