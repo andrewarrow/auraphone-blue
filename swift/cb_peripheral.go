@@ -320,15 +320,22 @@ func (p *CBPeripheral) StartListening() {
 					char := p.GetCharacteristic(msg.ServiceUUID, msg.CharUUID)
 					if char != nil {
 						// Deliver the message data
-						// - For "notify" operations, only deliver if notifications are enabled
-						// - "write" operations are for GATT server (CBPeripheralManager), not client
+						// In real BLE:
+						// - "notify/indicate" operations come from peripheral notifications
+						// - "write" operations would be from Central to Peripheral (not here)
+						//
+						// But in our simulator, server mode uses WriteCharacteristic() to send
+						// data from Peripheral back to Central. So we need to accept "write"
+						// operations from our connected peripheral as data delivery.
 						shouldDeliver := false
 						if msg.Operation == "notify" || msg.Operation == "indicate" {
 							// Only deliver notifications/indications if we subscribed
 							shouldDeliver = p.notifyingCharacteristics != nil && p.notifyingCharacteristics[char.UUID]
+						} else if msg.Operation == "write" || msg.Operation == "write_no_response" {
+							// Accept writes from our connected peripheral (server mode data delivery)
+							// This is the peripheral sending data back to us as the central
+							shouldDeliver = true
 						}
-						// Note: We deliberately skip "write" operations here because those are
-						// meant for CBPeripheralManager (GATT server), not CBPeripheral (GATT client)
 
 						if shouldDeliver {
 							// Create a copy of data to prevent race conditions
