@@ -311,26 +311,25 @@ func (p *CBPeripheral) StartListening() {
 				// Process each notification synchronously to avoid race conditions
 				// where messages are deleted before being fully read
 				for _, msg := range messages {
-					// IMPORTANT: Only process messages from the peripheral we're connected to
-					// This prevents conflicts with CBPeripheralManager polling the same inbox
+					// Only process messages from the peripheral we're connected to
+					// This prevents processing messages meant for CBPeripheralManager
 					if msg.SenderUUID != p.remoteUUID {
-						continue // Skip messages from other senders, don't delete them
+						continue // Skip and don't delete - let peripheral manager handle it
 					}
 
 					// Find the characteristic this message is for
 					char := p.GetCharacteristic(msg.ServiceUUID, msg.CharUUID)
 					if char != nil {
 						// Deliver the message data
-						// - For "write" operations from remote, we receive the data
 						// - For "notify" operations, only deliver if notifications are enabled
+						// - "write" operations are for GATT server (CBPeripheralManager), not client
 						shouldDeliver := false
-						if msg.Operation == "write" || msg.Operation == "write_no_response" {
-							// Always deliver incoming writes (remote wrote to our characteristic)
-							shouldDeliver = true
-						} else if msg.Operation == "notify" || msg.Operation == "indicate" {
+						if msg.Operation == "notify" || msg.Operation == "indicate" {
 							// Only deliver notifications/indications if we subscribed
 							shouldDeliver = p.notifyingCharacteristics != nil && p.notifyingCharacteristics[char.UUID]
 						}
+						// Note: We deliberately skip "write" operations here because those are
+						// meant for CBPeripheralManager (GATT server), not CBPeripheral (GATT client)
 
 						if shouldDeliver {
 							// Create a copy of data to prevent race conditions
@@ -341,22 +340,14 @@ func (p *CBPeripheral) StartListening() {
 							if p.Delegate != nil {
 								// Deliver callback synchronously to ensure processing completes
 								// before message is deleted
-								// IMPORTANT: Make a copy of the characteristic to avoid race conditions
-								// where the characteristic object might be modified by another goroutine
-								charCopy := &CBCharacteristic{
-									UUID:       char.UUID,
-									Properties: char.Properties,
-									Service:    char.Service,
-									Value:      dataCopy,
-								}
-								p.Delegate.DidUpdateValueForCharacteristic(p, charCopy, nil)
+								p.Delegate.DidUpdateValueForCharacteristic(p, char, nil)
 							}
-						}
 
-						// Delete message after processing completes
-						// Only delete if this message was from our connected peripheral
-						filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
-						p.wire.DeleteInboxFile(filename)
+							// Delete message after successfully delivering notification
+							filename := fmt.Sprintf("msg_%d.json", msg.Timestamp)
+							p.wire.DeleteInboxFile(filename)
+						}
+						// If not delivered (e.g., write operations), don't delete - let peripheral manager handle it
 					}
 				}
 			}
