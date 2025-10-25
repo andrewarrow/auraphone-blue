@@ -29,6 +29,26 @@ func truncateHash(hash string, n int) string {
 	return hash[:n]
 }
 
+// hashStringToBytes converts a hex hash string to raw bytes for protobuf
+func hashStringToBytes(hashStr string) []byte {
+	if hashStr == "" {
+		return nil
+	}
+	bytes, err := hex.DecodeString(hashStr)
+	if err != nil {
+		return nil
+	}
+	return bytes
+}
+
+// hashBytesToString converts raw bytes from protobuf to hex hash string
+func hashBytesToString(hashBytes []byte) string {
+	if len(hashBytes) == 0 {
+		return ""
+	}
+	return hex.EncodeToString(hashBytes)
+}
+
 // photoReceiveState tracks photo reception progress
 type photoReceiveState struct {
 	isReceiving     bool
@@ -42,18 +62,19 @@ type photoReceiveState struct {
 
 // LocalProfile stores our local profile information
 type LocalProfile struct {
-	FirstName string
-	LastName  string
-	Tagline   string
-	Insta     string
-	LinkedIn  string
-	YouTube   string
-	TikTok    string
-	Gmail     string
-	IMessage  string
-	WhatsApp  string
-	Signal    string
-	Telegram  string
+	FirstName      string
+	LastName       string
+	Tagline        string
+	Insta          string
+	LinkedIn       string
+	YouTube        string
+	TikTok         string
+	Gmail          string
+	IMessage       string
+	WhatsApp       string
+	Signal         string
+	Telegram       string
+	ProfileVersion int32 // Increments on any profile change
 }
 
 // iPhone represents an iOS device with BLE capabilities
@@ -68,13 +89,14 @@ type iPhone struct {
 	photoHash            string
 	photoData            []byte
 	localProfile         *LocalProfile                  // Our local profile data
-	connectedPeripherals map[string]*swift.CBPeripheral // UUID -> peripheral
-	deviceIDToPhotoHash  map[string]string              // deviceID -> their TX photo hash
-	receivedPhotoHashes  map[string]string              // deviceID -> RX hash (photos we got from them)
-	lastHandshakeTime    map[string]time.Time           // deviceID -> last handshake timestamp
-	photoSendInProgress  map[string]bool                // deviceID -> true if photo send in progress
-	photoReceiveState    *photoReceiveState
-	staleCheckDone       chan struct{} // Signal channel for stopping background checker
+	connectedPeripherals  map[string]*swift.CBPeripheral // UUID -> peripheral
+	deviceIDToPhotoHash   map[string]string              // deviceID -> their TX photo hash
+	receivedPhotoHashes   map[string]string              // deviceID -> RX hash (photos we got from them)
+	receivedProfileVersion map[string]int32               // deviceID -> their profile version
+	lastHandshakeTime     map[string]time.Time           // deviceID -> last handshake timestamp
+	photoSendInProgress   map[string]bool                // deviceID -> true if photo send in progress
+	photoReceiveState     *photoReceiveState
+	staleCheckDone        chan struct{} // Signal channel for stopping background checker
 }
 
 // NewIPhone creates a new iPhone instance
@@ -83,14 +105,15 @@ func NewIPhone() *iPhone {
 	deviceName := "iOS Device"
 
 	ip := &iPhone{
-		deviceUUID:           deviceUUID,
-		deviceName:           deviceName,
-		connectedPeripherals: make(map[string]*swift.CBPeripheral),
-		deviceIDToPhotoHash:  make(map[string]string),
-		receivedPhotoHashes:  make(map[string]string),
-		lastHandshakeTime:    make(map[string]time.Time),
-		photoSendInProgress:  make(map[string]bool),
-		staleCheckDone:       make(chan struct{}),
+		deviceUUID:             deviceUUID,
+		deviceName:             deviceName,
+		connectedPeripherals:   make(map[string]*swift.CBPeripheral),
+		deviceIDToPhotoHash:    make(map[string]string),
+		receivedPhotoHashes:    make(map[string]string),
+		receivedProfileVersion: make(map[string]int32),
+		lastHandshakeTime:      make(map[string]time.Time),
+		photoSendInProgress:    make(map[string]bool),
+		staleCheckDone:         make(chan struct{}),
 		photoReceiveState: &photoReceiveState{
 			receivedChunks: make(map[uint16][]byte),
 		},
@@ -542,8 +565,9 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 		DeviceId:        ip.deviceUUID,
 		FirstName:       firstName,
 		ProtocolVersion: 1,
-		TxPhotoHash:     ip.photoHash,
-		RxPhotoHash:     ip.receivedPhotoHashes[peripheral.UUID],
+		TxPhotoHash:     hashStringToBytes(ip.photoHash),
+		RxPhotoHash:     hashStringToBytes(ip.receivedPhotoHashes[peripheral.UUID]),
+		ProfileVersion:  ip.localProfile.ProfileVersion,
 	}
 
 	// Marshal to binary protobuf (sent over the wire)
@@ -589,9 +613,13 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	// Record handshake timestamp when received
 	ip.lastHandshakeTime[peripheral.UUID] = time.Now()
 
+	// Convert photo hashes from bytes to hex strings
+	txPhotoHash := hashBytesToString(handshake.TxPhotoHash)
+	rxPhotoHash := hashBytesToString(handshake.RxPhotoHash)
+
 	// Store their TX photo hash
-	if handshake.TxPhotoHash != "" {
-		ip.deviceIDToPhotoHash[peripheral.UUID] = handshake.TxPhotoHash
+	if txPhotoHash != "" {
+		ip.deviceIDToPhotoHash[peripheral.UUID] = txPhotoHash
 	}
 
 	// Save first_name to device metadata
@@ -608,19 +636,30 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 
 	// Check if they have a new photo for us
 	// If their TxPhotoHash differs from what we've received, reply with handshake to trigger them to send
-	if handshake.TxPhotoHash != "" && handshake.TxPhotoHash != ip.receivedPhotoHashes[peripheral.UUID] {
-		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", handshake.TxPhotoHash[:8])
+	if txPhotoHash != "" && txPhotoHash != ip.receivedPhotoHashes[peripheral.UUID] {
+		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", truncateHash(txPhotoHash, 8))
 		// Reply with a handshake that shows we don't have their new photo yet
 		// This will trigger them to send it to us
 		go ip.sendHandshakeMessage(peripheral)
 	}
 
 	// Check if we need to send our photo
-	if handshake.RxPhotoHash != ip.photoHash {
+	if rxPhotoHash != ip.photoHash {
 		logger.Debug(prefix, "📸 Remote doesn't have our photo, sending...")
-		go ip.sendPhoto(peripheral, handshake.RxPhotoHash)
+		go ip.sendPhoto(peripheral, rxPhotoHash)
 	} else {
 		logger.Debug(prefix, "⏭️  Remote already has our photo")
+	}
+
+	// Check if they have a new profile version
+	// If their ProfileVersion differs from what we've received, request ProfileMessage
+	lastProfileVersion := ip.receivedProfileVersion[peripheral.UUID]
+	if handshake.ProfileVersion > lastProfileVersion {
+		logger.Debug(prefix, "📝 Remote has new profile (version %d > %d), requesting ProfileMessage",
+			handshake.ProfileVersion, lastProfileVersion)
+		ip.receivedProfileVersion[peripheral.UUID] = handshake.ProfileVersion
+		// Request their profile by sending handshake back (they'll see we need it)
+		go ip.sendHandshakeMessage(peripheral)
 	}
 }
 
@@ -893,6 +932,8 @@ func (ip *iPhone) saveLocalProfile() error {
 
 // UpdateProfile updates local profile and sends ProfileMessage to all connected devices
 func (ip *iPhone) UpdateProfile(profile *LocalProfile) error {
+	// Increment profile version on any change
+	profile.ProfileVersion++
 	ip.localProfile = profile
 
 	// Save to disk
@@ -901,7 +942,7 @@ func (ip *iPhone) UpdateProfile(profile *LocalProfile) error {
 	}
 
 	prefix := fmt.Sprintf("%s iOS", ip.deviceUUID[:8])
-	logger.Info(prefix, "📝 Updated local profile")
+	logger.Info(prefix, "📝 Updated local profile (version %d)", profile.ProfileVersion)
 
 	// Send ProfileMessage to all connected devices if contact methods changed
 	if profile.LinkedIn != "" || profile.Insta != "" || profile.YouTube != "" ||

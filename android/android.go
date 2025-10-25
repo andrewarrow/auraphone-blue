@@ -29,6 +29,26 @@ func truncateHash(hash string, n int) string {
 	return hash[:n]
 }
 
+// hashStringToBytes converts a hex hash string to raw bytes for protobuf
+func hashStringToBytes(hashStr string) []byte {
+	if hashStr == "" {
+		return nil
+	}
+	bytes, err := hex.DecodeString(hashStr)
+	if err != nil {
+		return nil
+	}
+	return bytes
+}
+
+// hashBytesToString converts raw bytes from protobuf to hex hash string
+func hashBytesToString(hashBytes []byte) string {
+	if len(hashBytes) == 0 {
+		return ""
+	}
+	return hex.EncodeToString(hashBytes)
+}
+
 // photoReceiveState tracks photo reception progress
 type photoReceiveState struct {
 	isReceiving     bool
@@ -42,18 +62,19 @@ type photoReceiveState struct {
 
 // LocalProfile stores our local profile information
 type LocalProfile struct {
-	FirstName string
-	LastName  string
-	Tagline   string
-	Insta     string
-	LinkedIn  string
-	YouTube   string
-	TikTok    string
-	Gmail     string
-	IMessage  string
-	WhatsApp  string
-	Signal    string
-	Telegram  string
+	FirstName      string
+	LastName       string
+	Tagline        string
+	Insta          string
+	LinkedIn       string
+	YouTube        string
+	TikTok         string
+	Gmail          string
+	IMessage       string
+	WhatsApp       string
+	Signal         string
+	Telegram       string
+	ProfileVersion int32 // Increments on any profile change
 }
 
 // Android represents an Android device with BLE capabilities
@@ -69,11 +90,12 @@ type Android struct {
 	photoData            []byte
 	localProfile         *LocalProfile                      // Our local profile data
 	connectedGatts       map[string]*kotlin.BluetoothGatt   // UUID -> GATT connection
-	discoveredDevices    map[string]*kotlin.BluetoothDevice // UUID -> discovered device (for reconnect)
-	deviceIDToPhotoHash  map[string]string                  // deviceID -> their TX photo hash
-	receivedPhotoHashes  map[string]string                  // deviceID -> RX hash (photos we got from them)
-	lastHandshakeTime    map[string]time.Time               // deviceID -> last handshake timestamp
-	photoSendInProgress  map[string]bool                    // deviceID -> true if photo send in progress
+	discoveredDevices      map[string]*kotlin.BluetoothDevice // UUID -> discovered device (for reconnect)
+	deviceIDToPhotoHash    map[string]string                  // deviceID -> their TX photo hash
+	receivedPhotoHashes    map[string]string                  // deviceID -> RX hash (photos we got from them)
+	receivedProfileVersion map[string]int32                   // deviceID -> their profile version
+	lastHandshakeTime      map[string]time.Time               // deviceID -> last handshake timestamp
+	photoSendInProgress    map[string]bool                    // deviceID -> true if photo send in progress
 	photoReceiveState    *photoReceiveState
 	useAutoConnect       bool          // Whether to use autoConnect=true mode
 	staleCheckDone       chan struct{} // Signal channel for stopping background checker
@@ -85,15 +107,16 @@ func NewAndroid() *Android {
 	deviceName := "Android Device"
 
 	a := &Android{
-		deviceUUID:           deviceUUID,
-		deviceName:           deviceName,
-		connectedGatts:       make(map[string]*kotlin.BluetoothGatt),
-		discoveredDevices:    make(map[string]*kotlin.BluetoothDevice),
-		deviceIDToPhotoHash:  make(map[string]string),
-		receivedPhotoHashes:  make(map[string]string),
-		lastHandshakeTime:    make(map[string]time.Time),
-		photoSendInProgress:  make(map[string]bool),
-		staleCheckDone:       make(chan struct{}),
+		deviceUUID:             deviceUUID,
+		deviceName:             deviceName,
+		connectedGatts:         make(map[string]*kotlin.BluetoothGatt),
+		discoveredDevices:      make(map[string]*kotlin.BluetoothDevice),
+		deviceIDToPhotoHash:    make(map[string]string),
+		receivedPhotoHashes:    make(map[string]string),
+		receivedProfileVersion: make(map[string]int32),
+		lastHandshakeTime:      make(map[string]time.Time),
+		photoSendInProgress:    make(map[string]bool),
+		staleCheckDone:         make(chan struct{}),
 		photoReceiveState: &photoReceiveState{
 			receivedChunks: make(map[uint16][]byte),
 		},
@@ -528,8 +551,9 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 		DeviceId:        a.deviceUUID,
 		FirstName:       firstName,
 		ProtocolVersion: 1,
-		TxPhotoHash:     a.photoHash,
-		RxPhotoHash:     a.receivedPhotoHashes[gatt.GetRemoteUUID()],
+		TxPhotoHash:     hashStringToBytes(a.photoHash),
+		RxPhotoHash:     hashStringToBytes(a.receivedPhotoHashes[gatt.GetRemoteUUID()]),
+		ProfileVersion:  a.localProfile.ProfileVersion,
 	}
 
 	// Marshal to binary protobuf (sent over the wire)
@@ -579,9 +603,13 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	// Record handshake timestamp when received
 	a.lastHandshakeTime[remoteUUID] = time.Now()
 
+	// Convert photo hashes from bytes to hex strings
+	txPhotoHash := hashBytesToString(handshake.TxPhotoHash)
+	rxPhotoHash := hashBytesToString(handshake.RxPhotoHash)
+
 	// Store their TX photo hash
-	if handshake.TxPhotoHash != "" {
-		a.deviceIDToPhotoHash[remoteUUID] = handshake.TxPhotoHash
+	if txPhotoHash != "" {
+		a.deviceIDToPhotoHash[remoteUUID] = txPhotoHash
 	}
 
 	// Save first_name to device metadata
@@ -598,19 +626,30 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 
 	// Check if they have a new photo for us
 	// If their TxPhotoHash differs from what we've received, reply with handshake to trigger them to send
-	if handshake.TxPhotoHash != "" && handshake.TxPhotoHash != a.receivedPhotoHashes[remoteUUID] {
-		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", truncateHash(handshake.TxPhotoHash, 8))
+	if txPhotoHash != "" && txPhotoHash != a.receivedPhotoHashes[remoteUUID] {
+		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", truncateHash(txPhotoHash, 8))
 		// Reply with a handshake that shows we don't have their new photo yet
 		// This will trigger them to send it to us
 		go a.sendHandshakeMessage(gatt)
 	}
 
 	// Check if we need to send our photo
-	if handshake.RxPhotoHash != a.photoHash {
+	if rxPhotoHash != a.photoHash {
 		logger.Debug(prefix, "📸 Remote doesn't have our photo, sending...")
-		go a.sendPhoto(gatt, handshake.RxPhotoHash)
+		go a.sendPhoto(gatt, rxPhotoHash)
 	} else {
 		logger.Debug(prefix, "⏭️  Remote already has our photo")
+	}
+
+	// Check if they have a new profile version
+	// If their ProfileVersion differs from what we've received, request ProfileMessage
+	lastProfileVersion := a.receivedProfileVersion[remoteUUID]
+	if handshake.ProfileVersion > lastProfileVersion {
+		logger.Debug(prefix, "📝 Remote has new profile (version %d > %d), requesting ProfileMessage",
+			handshake.ProfileVersion, lastProfileVersion)
+		a.receivedProfileVersion[remoteUUID] = handshake.ProfileVersion
+		// Request their profile by sending handshake back (they'll see we need it)
+		go a.sendHandshakeMessage(gatt)
 	}
 }
 
@@ -916,6 +955,8 @@ func (a *Android) saveLocalProfile() error {
 
 // UpdateProfile updates local profile and sends ProfileMessage to all connected devices
 func (a *Android) UpdateProfile(profile *LocalProfile) error {
+	// Increment profile version on any change
+	profile.ProfileVersion++
 	a.localProfile = profile
 
 	// Save to disk
@@ -924,7 +965,7 @@ func (a *Android) UpdateProfile(profile *LocalProfile) error {
 	}
 
 	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
-	logger.Info(prefix, "📝 Updated local profile")
+	logger.Info(prefix, "📝 Updated local profile (version %d)", profile.ProfileVersion)
 
 	// Send ProfileMessage to all connected devices if contact methods changed
 	if profile.LinkedIn != "" || profile.Insta != "" || profile.YouTube != "" ||

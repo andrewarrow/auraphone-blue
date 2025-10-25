@@ -4,14 +4,15 @@ package auraphone;
 
 option go_package = "github.com/andrewarrow/auraphone-blue/proto";
 
-// Handshake message - minimal, fits in small MTU (~150 bytes)
-// Exchanged immediately on connection to establish photo sync state
+// Handshake message - minimal, fits in single MTU (~128 bytes)
+// Exchanged immediately on connection to establish sync state
 message HandshakeMessage {
   string device_id = 1;
   string first_name = 2;
   int32 protocol_version = 3;
-  string rx_photo_hash = 4;  // Hash of photo we RECEIVED from remote device
-  string tx_photo_hash = 5;  // Hash of OUR photo available to send
+  bytes rx_photo_hash = 4;   // SHA-256 hash (32 bytes) of photo we RECEIVED from remote device
+  bytes tx_photo_hash = 5;   // SHA-256 hash (32 bytes) of OUR photo available to send
+  int32 profile_version = 6; // Profile version number, increments on any profile change
 }
 
 // Profile message - detailed info, sent after handshake

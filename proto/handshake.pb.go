@@ -21,15 +21,16 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Handshake message - minimal, fits in small MTU (~150 bytes)
-// Exchanged immediately on connection to establish photo sync state
+// Handshake message - minimal, fits in single MTU (~128 bytes)
+// Exchanged immediately on connection to establish sync state
 type HandshakeMessage struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	DeviceId        string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
 	FirstName       string                 `protobuf:"bytes,2,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`
 	ProtocolVersion int32                  `protobuf:"varint,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	RxPhotoHash     string                 `protobuf:"bytes,4,opt,name=rx_photo_hash,json=rxPhotoHash,proto3" json:"rx_photo_hash,omitempty"` // Hash of photo we RECEIVED from remote device
-	TxPhotoHash     string                 `protobuf:"bytes,5,opt,name=tx_photo_hash,json=txPhotoHash,proto3" json:"tx_photo_hash,omitempty"` // Hash of OUR photo available to send
+	RxPhotoHash     []byte                 `protobuf:"bytes,4,opt,name=rx_photo_hash,json=rxPhotoHash,proto3" json:"rx_photo_hash,omitempty"`         // SHA-256 hash (32 bytes) of photo we RECEIVED from remote device
+	TxPhotoHash     []byte                 `protobuf:"bytes,5,opt,name=tx_photo_hash,json=txPhotoHash,proto3" json:"tx_photo_hash,omitempty"`         // SHA-256 hash (32 bytes) of OUR photo available to send
+	ProfileVersion  int32                  `protobuf:"varint,6,opt,name=profile_version,json=profileVersion,proto3" json:"profile_version,omitempty"` // Profile version number, increments on any profile change
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -85,18 +86,25 @@ func (x *HandshakeMessage) GetProtocolVersion() int32 {
 	return 0
 }
 
-func (x *HandshakeMessage) GetRxPhotoHash() string {
+func (x *HandshakeMessage) GetRxPhotoHash() []byte {
 	if x != nil {
 		return x.RxPhotoHash
 	}
-	return ""
+	return nil
 }
 
-func (x *HandshakeMessage) GetTxPhotoHash() string {
+func (x *HandshakeMessage) GetTxPhotoHash() []byte {
 	if x != nil {
 		return x.TxPhotoHash
 	}
-	return ""
+	return nil
+}
+
+func (x *HandshakeMessage) GetProfileVersion() int32 {
+	if x != nil {
+		return x.ProfileVersion
+	}
+	return 0
 }
 
 // Profile message - detailed info, sent after handshake
@@ -306,14 +314,15 @@ var File_proto_handshake_proto protoreflect.FileDescriptor
 
 const file_proto_handshake_proto_rawDesc = "" +
 	"\n" +
-	"\x15proto/handshake.proto\x12\tauraphone\"\xc1\x01\n" +
+	"\x15proto/handshake.proto\x12\tauraphone\"\xea\x01\n" +
 	"\x10HandshakeMessage\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
 	"first_name\x18\x02 \x01(\tR\tfirstName\x12)\n" +
 	"\x10protocol_version\x18\x03 \x01(\x05R\x0fprotocolVersion\x12\"\n" +
-	"\rrx_photo_hash\x18\x04 \x01(\tR\vrxPhotoHash\x12\"\n" +
-	"\rtx_photo_hash\x18\x05 \x01(\tR\vtxPhotoHash\"\xed\x02\n" +
+	"\rrx_photo_hash\x18\x04 \x01(\fR\vrxPhotoHash\x12\"\n" +
+	"\rtx_photo_hash\x18\x05 \x01(\fR\vtxPhotoHash\x12'\n" +
+	"\x0fprofile_version\x18\x06 \x01(\x05R\x0eprofileVersion\"\xed\x02\n" +
 	"\x0eProfileMessage\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1b\n" +
 	"\tlast_name\x18\x02 \x01(\tR\blastName\x12!\n" +
