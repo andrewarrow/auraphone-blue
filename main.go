@@ -932,7 +932,7 @@ func runStressTest() {
 	fmt.Println("Starting 2 iOS and 2 Android devices in headless mode...")
 
 	// Set log level to INFO for stress test to reduce noise
-	logger.SetLevel(logger.INFO)
+	logger.SetLevel(logger.TRACE)
 
 	// Create device manager for hardware UUIDs
 	manager := phone.GetHardwareUUIDManager()
@@ -1021,9 +1021,14 @@ func runStressTest() {
 func main() {
 	// Parse CLI flags
 	stressTest := flag.Bool("stress-test", false, "Run headless stress test with 2 iPhones and 2 Android devices")
+	logLevel := flag.String("log-level", "TRACE", "Set log level (ERROR, WARN, INFO, DEBUG, TRACE)")
 	flag.Parse()
 
 	fmt.Println("=== Auraphone Blue ===")
+
+	// Set log level from CLI flag
+	logger.SetLevel(logger.ParseLevel(*logLevel))
+	fmt.Printf("Log level set to: %s\n", *logLevel)
 
 	// Clean up old device directories from previous runs
 	if err := cleanupOldDevices(); err != nil {
