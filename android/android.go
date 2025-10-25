@@ -401,15 +401,8 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 	_, alreadyConnected := a.connectedGatts[result.Device.Address]
 	a.mu.Unlock()
 
-	if a.discoveryCallback != nil {
-		a.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID:  result.Device.Address,
-			Name:      name,
-			RSSI:      rssi,
-			Platform:  "unknown",
-			PhotoHash: "", // Photo hash is now exchanged via protocol buffer handshake, not advertising
-		})
-	}
+	// Don't call discovery callback yet - we need to wait for handshake to get the logical device ID
+	// The callback will be triggered in handleHandshakeMessage once we have the actual device ID
 
 	// Auto-connect if not already connected AND we should act as Central
 	if !alreadyConnected {

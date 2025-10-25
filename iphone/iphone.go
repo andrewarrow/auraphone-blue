@@ -392,15 +392,8 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 		logger.Debug(prefix, "   └─ TX Photo Hash: (none)")
 	}
 
-	if ip.discoveryCallback != nil {
-		ip.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID:  peripheral.UUID,
-			Name:      name,
-			RSSI:      rssi,
-			Platform:  "unknown",
-			PhotoHash: txPhotoHash, // Remote device's TX hash (photo they have available)
-		})
-	}
+	// Don't call discovery callback yet - we need to wait for handshake to get the logical device ID
+	// The callback will be triggered in handleHandshakeMessage once we have the actual device ID
 
 	// Auto-connect if not already connected AND we should act as Central
 	ip.mu.RLock()
