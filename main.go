@@ -526,9 +526,20 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	// Add or update device in map (deduplicates by ID)
 	pw.devicesMap[device.DeviceID] = device
 
-	// If device has a photo hash, update the mapping and try to load photo
-	if device.PhotoHash != "" {
+	// If device has photo data (actually received via BLE), load it into memory
+	if device.PhotoData != nil && len(device.PhotoData) > 0 {
 		pw.devicePhotoHashes[device.DeviceID] = device.PhotoHash
+		// Decode the photo data directly from the callback
+		img, _, err := image.Decode(bytes.NewReader(device.PhotoData))
+		if err == nil {
+			pw.deviceImages[device.PhotoHash] = img
+			prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+			logger.Info(prefix, "📷 Received photo from %s via BLE (%d bytes)", device.DeviceID[:8], len(device.PhotoData))
+		}
+	} else if device.PhotoHash != "" {
+		// Device advertises a photo hash, but we haven't received it yet
+		pw.devicePhotoHashes[device.DeviceID] = device.PhotoHash
+		// Try to load from disk cache (from previous session)
 		pw.loadDevicePhoto(device.PhotoHash)
 	}
 
