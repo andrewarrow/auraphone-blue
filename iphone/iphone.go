@@ -393,8 +393,19 @@ func (ip *iPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 		logger.Debug(prefix, "   └─ TX Photo Hash: (none)")
 	}
 
-	// Don't call discovery callback yet - we need to wait for handshake to get the logical device ID
-	// The callback will be triggered in handleHandshakeMessage once we have the actual device ID
+	// Trigger discovery callback immediately with hardware UUID
+	// This ensures the device shows up in GUI right away
+	// Will be updated later with logical base36 deviceID after handshake
+	if ip.discoveryCallback != nil {
+		ip.discoveryCallback(phone.DiscoveredDevice{
+			DeviceID:     "", // Will be filled in after handshake
+			HardwareUUID: peripheral.UUID,
+			Name:         name,
+			RSSI:         rssi,
+			Platform:     "unknown", // Will be updated after handshake
+			PhotoHash:    txPhotoHash,
+		})
+	}
 
 	// Auto-connect if not already connected AND we should act as Central
 	ip.mu.RLock()
@@ -818,11 +829,12 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 			name = handshake.FirstName
 		}
 		ip.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID:  deviceID,
-			Name:      name,
-			RSSI:      -50, // Placeholder, actual RSSI not needed for handshake update
-			Platform:  "unknown",
-			PhotoHash: txPhotoHash,
+			DeviceID:     deviceID,
+			HardwareUUID: peripheral.UUID,
+			Name:         name,
+			RSSI:         -50, // Placeholder, actual RSSI not needed for handshake update
+			Platform:     "unknown",
+			PhotoHash:    txPhotoHash,
 		})
 	}
 }
@@ -1065,12 +1077,13 @@ func (ip *iPhone) reassembleAndSavePhoto(peripheralUUID string, state *photoRece
 			}
 
 			ip.discoveryCallback(phone.DiscoveredDevice{
-				DeviceID:  deviceID,
-				Name:      name,
-				RSSI:      -50, // Default RSSI, actual value not critical for photo update
-				Platform:  "unknown",
-				PhotoHash: hashStr,
-				PhotoData: photoData,
+				DeviceID:     deviceID,
+				HardwareUUID: peripheralUUID,
+				Name:         name,
+				RSSI:         -50, // Default RSSI, actual value not critical for photo update
+				Platform:     "unknown",
+				PhotoHash:    hashStr,
+				PhotoData:    photoData,
 			})
 			logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", peripheral.UUID[:8])
 		} else {
@@ -1399,11 +1412,12 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 						name = handshake.FirstName
 					}
 					d.iphone.discoveryCallback(phone.DiscoveredDevice{
-						DeviceID:  deviceID,
-						Name:      name,
-						RSSI:      -50,
-						Platform:  "unknown",
-						PhotoHash: txPhotoHash,
+						DeviceID:     deviceID,
+						HardwareUUID: senderUUID,
+						Name:         name,
+						RSSI:         -50,
+						Platform:     "unknown",
+						PhotoHash:    txPhotoHash,
 					})
 				}
 
@@ -1730,12 +1744,13 @@ func (ip *iPhone) reassembleAndSavePhotoFromServer(senderUUID string, state *pho
 		}
 
 		ip.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID:  deviceID,
-			Name:      name,
-			RSSI:      -50, // Default RSSI, actual value not critical for photo update
-			Platform:  "unknown",
-			PhotoHash: hashStr,
-			PhotoData: photoData,
+			DeviceID:     deviceID,
+			HardwareUUID: peripheralUUID,
+			Name:         name,
+			RSSI:         -50, // Default RSSI, actual value not critical for photo update
+			Platform:     "unknown",
+			PhotoHash:    hashStr,
+			PhotoData:    photoData,
 		})
 		logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", senderUUID[:8])
 	} else {

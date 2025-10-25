@@ -2,12 +2,13 @@ package phone
 
 // DiscoveredDevice represents a device discovered via BLE
 type DiscoveredDevice struct {
-	DeviceID  string
-	Name      string
-	RSSI      float64
-	Platform  string
-	PhotoHash string // SHA256 hash of profile photo
-	PhotoData []byte // JPEG photo data
+	DeviceID     string
+	HardwareUUID string // Hardware UUID (used as stable key before handshake)
+	Name         string
+	RSSI         float64
+	Platform     string
+	PhotoHash    string // SHA256 hash of profile photo
+	PhotoData    []byte // JPEG photo data
 }
 
 // DeviceDiscoveryCallback is called when a new device is discovered

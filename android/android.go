@@ -404,8 +404,19 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 	_, alreadyConnected := a.connectedGatts[result.Device.Address]
 	a.mu.Unlock()
 
-	// Don't call discovery callback yet - we need to wait for handshake to get the logical device ID
-	// The callback will be triggered in handleHandshakeMessage once we have the actual device ID
+	// Trigger discovery callback immediately with hardware UUID
+	// This ensures the device shows up in GUI right away
+	// Will be updated later with logical base36 deviceID after handshake
+	if a.discoveryCallback != nil {
+		a.discoveryCallback(phone.DiscoveredDevice{
+			DeviceID:     "", // Will be filled in after handshake
+			HardwareUUID: result.Device.Address,
+			Name:         name,
+			RSSI:         rssi,
+			Platform:     "unknown", // Will be updated after handshake
+			PhotoHash:    "",        // Will be filled in after handshake
+		})
+	}
 
 	// Auto-connect if not already connected AND we should act as Central
 	if !alreadyConnected {
@@ -823,11 +834,12 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 			name = handshake.FirstName
 		}
 		a.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID:  deviceID,
-			Name:      name,
-			RSSI:      -50, // Placeholder, actual RSSI not needed for handshake update
-			Platform:  "unknown",
-			PhotoHash: txPhotoHash,
+			DeviceID:     deviceID,
+			HardwareUUID: remoteUUID,
+			Name:         name,
+			RSSI:         -50, // Placeholder, actual RSSI not needed for handshake update
+			Platform:     "unknown",
+			PhotoHash:    txPhotoHash,
 		})
 	}
 }
@@ -1066,12 +1078,13 @@ func (a *Android) reassembleAndSavePhoto(remoteUUID string, state *photoReceiveS
 			}
 
 			a.discoveryCallback(phone.DiscoveredDevice{
-				DeviceID:  deviceID,
-				Name:      name,
-				RSSI:      -55, // Default RSSI, actual value not critical for photo update
-				Platform:  "unknown",
-				PhotoHash: hashStr,
-				PhotoData: photoData,
+				DeviceID:     deviceID,
+				HardwareUUID: remoteUUID,
+				Name:         name,
+				RSSI:         -55, // Default RSSI, actual value not critical for photo update
+				Platform:     "unknown",
+				PhotoHash:    hashStr,
+				PhotoData:    photoData,
 			})
 			logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", deviceID[:8])
 		}
@@ -1562,11 +1575,12 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 			name = handshake.FirstName
 		}
 		a.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID:  deviceID,
-			Name:      name,
-			RSSI:      -50,
-			Platform:  "unknown",
-			PhotoHash: txPhotoHash,
+			DeviceID:     deviceID,
+			HardwareUUID: senderUUID,
+			Name:         name,
+			RSSI:         -50,
+			Platform:     "unknown",
+			PhotoHash:    txPhotoHash,
 		})
 	}
 
@@ -1895,12 +1909,13 @@ func (a *Android) reassembleAndSavePhotoFromServer(senderUUID string, state *pho
 		}
 
 		a.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID:  deviceID,
-			Name:      name,
-			RSSI:      -50, // Default RSSI, actual value not critical for photo update
-			Platform:  "unknown",
-			PhotoHash: hashStr,
-			PhotoData: photoData,
+			DeviceID:     deviceID,
+			HardwareUUID: senderUUID,
+			Name:         name,
+			RSSI:         -50, // Default RSSI, actual value not critical for photo update
+			Platform:     "unknown",
+			PhotoHash:    hashStr,
+			PhotoData:    photoData,
 		})
 		logger.Debug(prefix, "🔔 Notified GUI about received photo from %s", senderUUID[:8])
 	}

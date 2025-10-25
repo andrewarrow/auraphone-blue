@@ -295,9 +295,15 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 						deviceIDText := textStack.Objects[1].(*canvas.Text)
 						rssiText := textStack.Objects[2].(*canvas.Text)
 
+						// Use HardwareUUID as key for lookups
+						key := device.HardwareUUID
+						if key == "" {
+							key = device.DeviceID
+						}
+
 						// Use first_name from cache if available, otherwise use device name
 						displayName := device.Name
-						if firstName, hasName := pw.deviceFirstNames[device.DeviceID]; hasName && firstName != "" {
+						if firstName, hasName := pw.deviceFirstNames[key]; hasName && firstName != "" {
 							displayName = firstName
 						}
 
@@ -306,7 +312,14 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 						nameText.Refresh()
 
 						// Set device info on separate lines
-						deviceIDText.Text = fmt.Sprintf("Device: %s", device.DeviceID[:8])
+						// Show deviceID if available, otherwise show hardware UUID
+						deviceLabel := device.DeviceID
+						if deviceLabel == "" {
+							deviceLabel = device.HardwareUUID[:8]
+						} else {
+							deviceLabel = deviceLabel[:8]
+						}
+						deviceIDText.Text = fmt.Sprintf("Device: %s", deviceLabel)
 						deviceIDText.Refresh()
 
 						rssiText.Text = fmt.Sprintf("RSSI: %.0f dBm, Connected: Yes", device.RSSI)
@@ -316,12 +329,12 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 					// Update profile image if available
 					if profileStack != nil && len(profileStack.Objects) >= 2 {
 						profileImage := profileStack.Objects[1].(*canvas.Image)
-						// Look up device's photo hash, then find image by hash
-						if photoHash, hasHash := pw.devicePhotoHashes[device.DeviceID]; hasHash {
+						// Look up device's photo hash using hardware UUID as key, then find image by hash
+						if photoHash, hasHash := pw.devicePhotoHashes[key]; hasHash {
 							if img, hasImage := pw.deviceImages[photoHash]; hasImage {
 								prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
-								logger.Debug(prefix, "🖼️  Rendering list item: deviceID=%s, photoHash=%s, imagePtr=%p",
-									device.DeviceID[:8], truncateHash(photoHash, 8), img)
+								logger.Debug(prefix, "🖼️  Rendering list item: key=%s, photoHash=%s, imagePtr=%p",
+									key[:8], truncateHash(photoHash, 8), img)
 								profileImage.Image = img
 							} else {
 								// Hash exists but image not loaded yet - clear any stale image from widget reuse
@@ -548,46 +561,56 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	defer pw.devicesMutex.Unlock()
 
 	prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
-	logger.Debug(prefix, "📱 onDeviceDiscovered: deviceID=%s, name=%s, photoHash=%s, photoDataLen=%d",
-		device.DeviceID[:8], device.Name, truncateHash(device.PhotoHash, 8), len(device.PhotoData))
+	logger.Debug(prefix, "📱 onDeviceDiscovered: deviceID=%s, hardwareUUID=%s, name=%s, photoHash=%s, photoDataLen=%d",
+		device.DeviceID[:8], device.HardwareUUID[:8], device.Name, truncateHash(device.PhotoHash, 8), len(device.PhotoData))
 
-	// Add or update device in map (deduplicates by ID)
-	pw.devicesMap[device.DeviceID] = device
+	// Use HardwareUUID as the primary key for deduplication
+	// This ensures the same device doesn't appear twice (once with hardware UUID, once with logical deviceID)
+	key := device.HardwareUUID
+	if key == "" {
+		// Fallback to deviceID if hardware UUID not available (shouldn't happen)
+		key = device.DeviceID
+	}
+
+	// Add or update device in map (deduplicates by hardware UUID)
+	pw.devicesMap[key] = device
 
 	// If device has photo data (actually received via BLE), load it into memory
 	if device.PhotoData != nil && len(device.PhotoData) > 0 {
-		pw.devicePhotoHashes[device.DeviceID] = device.PhotoHash
+		pw.devicePhotoHashes[key] = device.PhotoHash
 		logger.Debug(prefix, "   └─ Photo data present, decoding image...")
 		// Decode the photo data directly from the callback
 		img, _, err := image.Decode(bytes.NewReader(device.PhotoData))
 		if err == nil {
 			pw.deviceImages[device.PhotoHash] = img
-			logger.Info(prefix, "📷 Stored photo: deviceID=%s → photoHash=%s → imagePtr=%p",
-				device.DeviceID[:8], truncateHash(device.PhotoHash, 8), img)
+			logger.Info(prefix, "📷 Stored photo: key=%s → photoHash=%s → imagePtr=%p",
+				key[:8], truncateHash(device.PhotoHash, 8), img)
 			logger.Info(prefix, "📊 Current state: %d devices, %d hashes, %d images",
 				len(pw.devicesMap), len(pw.devicePhotoHashes), len(pw.deviceImages))
 			// Dump all mappings for debugging
-			for devID, hash := range pw.devicePhotoHashes {
-				logger.Debug(prefix, "   └─ Mapping: deviceID=%s → photoHash=%s", devID[:8], truncateHash(hash, 8))
+			for k, hash := range pw.devicePhotoHashes {
+				logger.Debug(prefix, "   └─ Mapping: key=%s → photoHash=%s", k[:8], truncateHash(hash, 8))
 			}
 		} else {
-			logger.Error(prefix, "❌ Failed to decode photo from %s: %v", device.DeviceID[:8], err)
+			logger.Error(prefix, "❌ Failed to decode photo from %s: %v", key[:8], err)
 		}
 	} else if device.PhotoHash != "" {
 		// Device advertises a photo hash, but we haven't received it yet
-		pw.devicePhotoHashes[device.DeviceID] = device.PhotoHash
+		pw.devicePhotoHashes[key] = device.PhotoHash
 		logger.Debug(prefix, "   └─ Photo hash present but no data, trying to load from cache...")
 		// Try to load from disk cache (from previous session)
 		pw.loadDevicePhoto(device.PhotoHash)
 	} else {
-		logger.Debug(prefix, "   └─ No photo hash or data for %s", device.DeviceID[:8])
+		logger.Debug(prefix, "   └─ No photo hash or data for %s", key[:8])
 	}
 
-	// Load first_name from device metadata cache
-	cacheManager := phone.NewDeviceCacheManager(pw.phone.GetDeviceUUID())
-	if metadata, err := cacheManager.LoadDeviceMetadata(device.DeviceID); err == nil && metadata != nil {
-		if metadata.FirstName != "" {
-			pw.deviceFirstNames[device.DeviceID] = metadata.FirstName
+	// Load first_name from device metadata cache (only if we have a deviceID)
+	if device.DeviceID != "" {
+		cacheManager := phone.NewDeviceCacheManager(pw.phone.GetDeviceUUID())
+		if metadata, err := cacheManager.LoadDeviceMetadata(device.DeviceID); err == nil && metadata != nil {
+			if metadata.FirstName != "" {
+				pw.deviceFirstNames[key] = metadata.FirstName
+			}
 		}
 	}
 
