@@ -1335,15 +1335,8 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 					d.iphone.cacheManager.SaveDeviceMetadata(metadata)
 				}
 
-				// Only send handshake back if this is the first time or it's been a while
-				if shouldReply {
-					// Send our handshake back
-					go d.iphone.sendHandshakeToDevice(senderUUID)
-				} else {
-					logger.Debug(prefix, "⏭️  Skipping handshake reply to %s (already handshaked recently)", deviceID[:8])
-				}
-
-				// Trigger discovery callback to update GUI
+				// Always trigger discovery callback to update GUI (even if we don't reply)
+				// This ensures the GUI updates when first_name changes
 				if d.iphone.discoveryCallback != nil {
 					name := deviceID[:8]
 					if handshake.FirstName != "" {
@@ -1356,6 +1349,14 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 						Platform:  "unknown",
 						PhotoHash: txPhotoHash,
 					})
+				}
+
+				// Only send handshake back if this is the first time or it's been a while
+				if shouldReply {
+					// Send our handshake back
+					go d.iphone.sendHandshakeToDevice(senderUUID)
+				} else {
+					logger.Debug(prefix, "⏭️  Skipping handshake reply to %s (already handshaked recently)", deviceID[:8])
 				}
 			}
 		case auraPhotoCharUUID:

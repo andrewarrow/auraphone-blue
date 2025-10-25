@@ -1439,6 +1439,22 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 
 	logger.Info(prefix, "✅ Processed handshake from GATT server: deviceID=%s, firstName=%s", deviceID, handshake.FirstName)
 
+	// Always trigger discovery callback to update GUI (even if we don't reply)
+	// This ensures the GUI updates when first_name changes
+	if a.discoveryCallback != nil {
+		name := deviceID[:8]
+		if handshake.FirstName != "" {
+			name = handshake.FirstName
+		}
+		a.discoveryCallback(phone.DiscoveredDevice{
+			DeviceID:  deviceID,
+			Name:      name,
+			RSSI:      -50,
+			Platform:  "unknown",
+			PhotoHash: txPhotoHash,
+		})
+	}
+
 	// Only send handshake back if this is the first time or it's been a while
 	if shouldReply {
 		// Send our handshake back to the central device
@@ -1482,21 +1498,6 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 	if rxPhotoHash != a.photoHash && a.photoHash != "" {
 		logger.Debug(prefix, "📸 Remote doesn't have our photo, need to send it")
 		// TODO: Send photo via wire.WriteCharacteristic
-	}
-
-	// Trigger discovery callback to update GUI
-	if a.discoveryCallback != nil {
-		name := deviceID[:8]
-		if handshake.FirstName != "" {
-			name = handshake.FirstName
-		}
-		a.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID:  deviceID,
-			Name:      name,
-			RSSI:      -50,
-			Platform:  "unknown",
-			PhotoHash: txPhotoHash,
-		})
 	}
 }
 
