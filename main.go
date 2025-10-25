@@ -313,11 +313,9 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 
 						// Set device info on separate lines
 						// Show deviceID if available, otherwise show hardware UUID
-						deviceLabel := device.DeviceID
+						deviceLabel := truncateHash(device.DeviceID, 8)
 						if deviceLabel == "" {
-							deviceLabel = device.HardwareUUID[:8]
-						} else {
-							deviceLabel = deviceLabel[:8]
+							deviceLabel = truncateHash(device.HardwareUUID, 8)
 						}
 						deviceIDText.Text = fmt.Sprintf("Device: %s", deviceLabel)
 						deviceIDText.Refresh()
@@ -334,7 +332,7 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 							if img, hasImage := pw.deviceImages[photoHash]; hasImage {
 								prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
 								logger.Debug(prefix, "🖼️  Rendering list item: key=%s, photoHash=%s, imagePtr=%p",
-									key[:8], truncateHash(photoHash, 8), img)
+									truncateHash(key, 8), truncateHash(photoHash, 8), img)
 								profileImage.Image = img
 							} else {
 								// Hash exists but image not loaded yet - clear any stale image from widget reuse
@@ -561,8 +559,15 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	defer pw.devicesMutex.Unlock()
 
 	prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+
+	// Safe device ID display (may be empty on initial discovery)
+	deviceIDDisplay := "(none)"
+	if device.DeviceID != "" {
+		deviceIDDisplay = truncateHash(device.DeviceID, 8)
+	}
+
 	logger.Debug(prefix, "📱 onDeviceDiscovered: deviceID=%s, hardwareUUID=%s, name=%s, photoHash=%s, photoDataLen=%d",
-		device.DeviceID[:8], device.HardwareUUID[:8], device.Name, truncateHash(device.PhotoHash, 8), len(device.PhotoData))
+		deviceIDDisplay, device.HardwareUUID[:8], device.Name, truncateHash(device.PhotoHash, 8), len(device.PhotoData))
 
 	// Use HardwareUUID as the primary key for deduplication
 	// This ensures the same device doesn't appear twice (once with hardware UUID, once with logical deviceID)
@@ -584,15 +589,15 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 		if err == nil {
 			pw.deviceImages[device.PhotoHash] = img
 			logger.Info(prefix, "📷 Stored photo: key=%s → photoHash=%s → imagePtr=%p",
-				key[:8], truncateHash(device.PhotoHash, 8), img)
+				truncateHash(key, 8), truncateHash(device.PhotoHash, 8), img)
 			logger.Info(prefix, "📊 Current state: %d devices, %d hashes, %d images",
 				len(pw.devicesMap), len(pw.devicePhotoHashes), len(pw.deviceImages))
 			// Dump all mappings for debugging
 			for k, hash := range pw.devicePhotoHashes {
-				logger.Debug(prefix, "   └─ Mapping: key=%s → photoHash=%s", k[:8], truncateHash(hash, 8))
+				logger.Debug(prefix, "   └─ Mapping: key=%s → photoHash=%s", truncateHash(k, 8), truncateHash(hash, 8))
 			}
 		} else {
-			logger.Error(prefix, "❌ Failed to decode photo from %s: %v", key[:8], err)
+			logger.Error(prefix, "❌ Failed to decode photo from %s: %v", truncateHash(key, 8), err)
 		}
 	} else if device.PhotoHash != "" {
 		// Device advertises a photo hash, but we haven't received it yet
@@ -601,7 +606,7 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 		// Try to load from disk cache (from previous session)
 		pw.loadDevicePhoto(device.PhotoHash)
 	} else {
-		logger.Debug(prefix, "   └─ No photo hash or data for %s", key[:8])
+		logger.Debug(prefix, "   └─ No photo hash or data for %s", truncateHash(key, 8))
 	}
 
 	// Load first_name from device metadata cache (only if we have a deviceID)
@@ -793,7 +798,11 @@ func (pw *PhoneWindow) showPersonModal(device phone.DiscoveredDevice) {
 	// Add device info at bottom
 	contactWays.Add(widget.NewLabel(""))
 	contactWays.Add(widget.NewSeparator())
-	contactWays.Add(widget.NewLabel(fmt.Sprintf("Device ID: %s", device.DeviceID[:8])))
+	deviceIDLabel := truncateHash(device.DeviceID, 8)
+	if deviceIDLabel == "" {
+		deviceIDLabel = truncateHash(device.HardwareUUID, 8)
+	}
+	contactWays.Add(widget.NewLabel(fmt.Sprintf("Device ID: %s", deviceIDLabel)))
 	contactWays.Add(widget.NewLabel(fmt.Sprintf("RSSI: %.0f dBm", device.RSSI)))
 
 	// Build modal content
@@ -842,7 +851,7 @@ func (pw *PhoneWindow) showPersonModal(device phone.DiscoveredDevice) {
 	if err == nil && metadata != nil {
 		fmt.Printf("Showing profile for %s\n", displayName)
 	} else {
-		fmt.Printf("Showing profile for device %s (limited info)\n", device.DeviceID[:8])
+		fmt.Printf("Showing profile for device %s (limited info)\n", deviceIDLabel)
 	}
 }
 
