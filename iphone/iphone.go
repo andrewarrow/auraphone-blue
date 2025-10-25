@@ -529,9 +529,24 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	ip.mu.RUnlock()
 
 	if len(peripheralsCopy) > 0 {
-		logger.Debug(prefix, "   └─ Notifying %d connected device(s) of photo change", len(peripheralsCopy))
+		logger.Debug(prefix, "   └─ Notifying %d central-mode connected device(s) of photo change", len(peripheralsCopy))
 		for _, peripheral := range peripheralsCopy {
 			go ip.sendHandshakeMessage(peripheral)
+		}
+	}
+
+	// Also notify devices connected in peripheral mode (where they are central to our peripheral)
+	ip.mu.RLock()
+	peripheralModeDevices := make([]string, 0, len(ip.peripheralToDeviceID))
+	for uuid := range ip.peripheralToDeviceID {
+		peripheralModeDevices = append(peripheralModeDevices, uuid)
+	}
+	ip.mu.RUnlock()
+
+	if len(peripheralModeDevices) > 0 {
+		logger.Debug(prefix, "   └─ Notifying %d peripheral-mode connected device(s) of photo change", len(peripheralModeDevices))
+		for _, uuid := range peripheralModeDevices {
+			go ip.sendHandshakeToDevice(uuid)
 		}
 	}
 
@@ -1372,7 +1387,20 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 					})
 				}
 
-				// Only send handshake back if this is the first time or it's been a while
+				// Check if they have a new photo for us
+				// If their TxPhotoHash differs from what we've received, reply with handshake to trigger them to send
+				d.iphone.mu.RLock()
+				ourReceivedHash := d.iphone.receivedPhotoHashes[deviceID]
+				d.iphone.mu.RUnlock()
+
+				if txPhotoHash != "" && txPhotoHash != ourReceivedHash {
+					logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", truncateHash(txPhotoHash, 8))
+					// Reply with a handshake that shows we don't have their new photo yet
+					// This will trigger them to send it to us
+					shouldReply = true // Force a reply to request the photo
+				}
+
+				// Only send handshake back if this is the first time or it's been a while (or if we need their new photo)
 				if shouldReply {
 					// Send our handshake back
 					go d.iphone.sendHandshakeToDevice(senderUUID)

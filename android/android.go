@@ -495,9 +495,24 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	a.mu.RUnlock()
 
 	if len(gattsCopy) > 0 {
-		logger.Debug(prefix, "   └─ Notifying %d connected device(s) of photo change", len(gattsCopy))
+		logger.Debug(prefix, "   └─ Notifying %d central-mode connected device(s) of photo change", len(gattsCopy))
 		for _, gatt := range gattsCopy {
 			go a.sendHandshakeMessage(gatt)
+		}
+	}
+
+	// Also notify devices connected in peripheral mode (where they are central to our peripheral)
+	a.mu.RLock()
+	peripheralModeDevices := make([]string, 0, len(a.connectedCentrals))
+	for uuid := range a.connectedCentrals {
+		peripheralModeDevices = append(peripheralModeDevices, uuid)
+	}
+	a.mu.RUnlock()
+
+	if len(peripheralModeDevices) > 0 {
+		logger.Debug(prefix, "   └─ Notifying %d peripheral-mode connected device(s) of photo change", len(peripheralModeDevices))
+		for _, uuid := range peripheralModeDevices {
+			go a.sendHandshakeToDevice(uuid)
 		}
 	}
 
@@ -1535,7 +1550,20 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 		})
 	}
 
-	// Only send handshake back if this is the first time or it's been a while
+	// Check if they have a new photo for us
+	// If their TxPhotoHash differs from what we've received, reply with handshake to trigger them to send
+	a.mu.RLock()
+	ourReceivedHash := a.receivedPhotoHashes[deviceID]
+	a.mu.RUnlock()
+
+	if txPhotoHash != "" && txPhotoHash != ourReceivedHash {
+		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", truncateHash(txPhotoHash, 8))
+		// Reply with a handshake that shows we don't have their new photo yet
+		// This will trigger them to send it to us
+		shouldReply = true // Force a reply to request the photo
+	}
+
+	// Only send handshake back if this is the first time or it's been a while (or if we need their new photo)
 	if shouldReply {
 		// Send our handshake back to the central device
 		const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
@@ -1562,16 +1590,6 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 		}
 	} else {
 		logger.Debug(prefix, "⏭️  Skipping handshake reply to %s (already handshaked recently)", deviceID[:8])
-	}
-
-	// Check if they have a new photo for us
-	a.mu.RLock()
-	ourReceivedHash := a.receivedPhotoHashes[deviceID]
-	a.mu.RUnlock()
-
-	if txPhotoHash != "" && txPhotoHash != ourReceivedHash {
-		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), need to request it", truncateHash(txPhotoHash, 8))
-		// TODO: Request photo via wire.WriteCharacteristic
 	}
 
 	// Check if we need to send our photo
@@ -1648,6 +1666,46 @@ func (a *Android) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 	}
 
 	logger.Info(prefix, "✅ Photo send complete to %s via server mode", targetUUID[:8])
+	return nil
+}
+
+// sendHandshakeToDevice sends a handshake to a device via wire layer (server/peripheral mode)
+func (a *Android) sendHandshakeToDevice(targetUUID string) error {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
+	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+
+	firstName := a.localProfile.FirstName
+	if firstName == "" {
+		firstName = "Android"
+	}
+
+	// Get the RxPhotoHash for this device (the hash of their photo that we have)
+	a.mu.RLock()
+	deviceID := a.remoteUUIDToDeviceID[targetUUID]
+	rxPhotoHash := a.receivedPhotoHashes[deviceID]
+	a.mu.RUnlock()
+
+	msg := &proto.HandshakeMessage{
+		DeviceId:        a.deviceID,
+		FirstName:       firstName,
+		ProtocolVersion: 1,
+		TxPhotoHash:     hashStringToBytes(a.photoHash),
+		RxPhotoHash:     hashStringToBytes(rxPhotoHash),
+		ProfileVersion:  a.localProfile.ProfileVersion,
+	}
+
+	data, err := proto2.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal handshake: %w", err)
+	}
+
+	if err := a.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraTextCharUUID, data); err != nil {
+		return fmt.Errorf("failed to send handshake: %w", err)
+	}
+
+	logger.Debug(prefix, "📤 Sent handshake to %s via server mode", targetUUID[:8])
 	return nil
 }
 
