@@ -14,8 +14,14 @@ but also ok to let them share code in phone/ pacakge
 testdata/hardware_uuids.txt are the never changing UUIDs of the bluetooth radio. Make sure
 no logic uses these to map a device when it should be using the base36 device id. The only time
 this hardware UUID is the main id for a device is before the 1st handshake that gives us the base36 id.
-But after that 1st handshake, in the rest of the code to map which photo goes to witch device, the
+But after that 1st handshake, in the rest of the code to map which photo goes to which device, the
 primary key is the base36 id.
+
+UUID/DeviceID Usage Rules:
+- Hardware UUIDs are used for: BLE wire communication, connection state, role negotiation, and all
+  connection-scoped state (like lastHandshakeTime, photoSendInProgress).
+- Device IDs (base36) are used for: persistent storage (photos, metadata), user-visible data, and
+  application-level mappings (deviceIDToPhotoHash, receivedPhotoHashes).
 
 
 # Auraphone Blue - Fake Bluetooth Simulator

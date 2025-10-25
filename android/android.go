@@ -96,12 +96,12 @@ type Android struct {
 	connectedGatts         map[string]*kotlin.BluetoothGatt   // remote UUID -> GATT connection (devices we connected to as Central)
 	connectedCentrals      map[string]bool                    // remote UUID -> true (devices that connected to us as Peripheral)
 	discoveredDevices      map[string]*kotlin.BluetoothDevice // remote UUID -> discovered device (for reconnect)
-	remoteUUIDToDeviceID   map[string]string                  // remote UUID -> logical device ID
+	remoteUUIDToDeviceID   map[string]string                  // hardware UUID -> logical device ID
 	deviceIDToPhotoHash    map[string]string                  // deviceID -> their TX photo hash
 	receivedPhotoHashes    map[string]string                  // deviceID -> RX hash (photos we got from them)
 	receivedProfileVersion map[string]int32                   // deviceID -> their profile version
-	lastHandshakeTime      map[string]time.Time               // deviceID -> last handshake timestamp
-	photoSendInProgress    map[string]bool                    // remote UUID -> true if photo send in progress
+	lastHandshakeTime      map[string]time.Time               // hardware UUID -> last handshake timestamp (connection-scoped)
+	photoSendInProgress    map[string]bool                    // hardware UUID -> true if photo send in progress (connection-scoped)
 	photoReceiveState      map[string]*photoReceiveState      // remote UUID -> receive state (central mode)
 	photoReceiveStateServer map[string]*photoReceiveState     // senderUUID -> receive state for server mode
 	useAutoConnect       bool          // Whether to use autoConnect=true mode
@@ -729,7 +729,7 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 	textChar.WriteType = kotlin.WRITE_TYPE_DEFAULT
 	success := gatt.WriteCharacteristic(textChar)
 	if success {
-		// Record handshake timestamp on successful send
+		// Record handshake timestamp on successful send (indexed by hardware UUID for connection-scoped state)
 		a.mu.Lock()
 		a.lastHandshakeTime[gatt.GetRemoteUUID()] = time.Now()
 		a.mu.Unlock()
@@ -763,9 +763,9 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	a.remoteUUIDToDeviceID[remoteUUID] = deviceID
 	a.mu.Unlock()
 
-	// Record handshake timestamp when received
+	// Record handshake timestamp when received (indexed by hardware UUID for connection-scoped state)
 	a.mu.Lock()
-	a.lastHandshakeTime[deviceID] = time.Now()
+	a.lastHandshakeTime[remoteUUID] = time.Now()
 	a.mu.Unlock()
 
 	// Convert photo hashes from bytes to hex strings
@@ -1158,19 +1158,14 @@ func (a *Android) checkStaleHandshakes() {
 	a.mu.RUnlock()
 
 	for gattUUID, gatt := range gattsToCheck {
-		// Look up deviceID for this GATT connection (lastHandshakeTime is indexed by deviceID)
+		// Look up deviceID for logging purposes only
 		a.mu.RLock()
 		deviceID := a.remoteUUIDToDeviceID[gattUUID]
 		a.mu.RUnlock()
 
-		// If we don't have a deviceID yet, use gattUUID as fallback
-		lookupKey := deviceID
-		if lookupKey == "" {
-			lookupKey = gattUUID
-		}
-
+		// lastHandshakeTime is now always indexed by hardware UUID (connection-scoped state)
 		a.mu.RLock()
-		lastHandshake, exists := a.lastHandshakeTime[lookupKey]
+		lastHandshake, exists := a.lastHandshakeTime[gattUUID]
 		a.mu.RUnlock()
 
 		// If no handshake record or handshake is stale
@@ -1180,8 +1175,13 @@ func (a *Android) checkStaleHandshakes() {
 				timeSince = fmt.Sprintf("%.0fs ago", now.Sub(lastHandshake).Seconds())
 			}
 
+			deviceIDStr := "unknown"
+			if deviceID != "" {
+				deviceIDStr = deviceID[:8]
+			}
+
 			logger.Debug(prefix, "🔄 [STALE-HANDSHAKE] Handshake stale for %s (deviceID: %s, last: %s), re-handshaking",
-				gattUUID[:8], lookupKey[:8], timeSince)
+				gattUUID[:8], deviceIDStr, timeSince)
 
 			// Re-handshake in place (no need to reconnect, already connected)
 			go a.sendHandshakeMessage(gatt)
@@ -1541,8 +1541,9 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 	deviceID := handshake.DeviceId
 
 	// Check if we've already handshaked recently (before updating timestamp)
+	// lastHandshakeTime is indexed by hardware UUID (connection-scoped state)
 	a.mu.RLock()
-	lastHandshake, alreadyHandshaked := a.lastHandshakeTime[deviceID]
+	lastHandshake, alreadyHandshaked := a.lastHandshakeTime[senderUUID]
 	a.mu.RUnlock()
 
 	shouldReply := !alreadyHandshaked || time.Since(lastHandshake) > 5*time.Second
@@ -1550,7 +1551,7 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 	// Update our state
 	a.mu.Lock()
 	a.remoteUUIDToDeviceID[senderUUID] = deviceID
-	a.lastHandshakeTime[deviceID] = time.Now()
+	a.lastHandshakeTime[senderUUID] = time.Now()
 	a.mu.Unlock()
 
 	// Convert photo hashes from bytes to hex strings

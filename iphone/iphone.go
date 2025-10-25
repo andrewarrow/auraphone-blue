@@ -94,12 +94,12 @@ type iPhone struct {
 	localProfile         *LocalProfile                  // Our local profile data
 	mu                   sync.RWMutex                   // Protects all maps below
 	connectedPeripherals  map[string]*swift.CBPeripheral // peripheral UUID -> peripheral
-	peripheralToDeviceID  map[string]string              // peripheral UUID -> logical device ID
+	peripheralToDeviceID  map[string]string              // hardware UUID -> logical device ID
 	deviceIDToPhotoHash   map[string]string              // deviceID -> their TX photo hash
 	receivedPhotoHashes   map[string]string              // deviceID -> RX hash (photos we got from them)
 	receivedProfileVersion map[string]int32               // deviceID -> their profile version
-	lastHandshakeTime     map[string]time.Time           // deviceID -> last handshake timestamp
-	photoSendInProgress   map[string]bool                // peripheral UUID -> true if photo send in progress
+	lastHandshakeTime     map[string]time.Time           // hardware UUID -> last handshake timestamp (connection-scoped)
+	photoSendInProgress   map[string]bool                // hardware UUID -> true if photo send in progress (connection-scoped)
 	photoReceiveState     map[string]*photoReceiveState  // peripheral UUID -> receive state (central mode)
 	photoReceiveStateServer map[string]*photoReceiveState // senderUUID -> receive state for peripheral mode
 	staleCheckDone        chan struct{} // Signal channel for stopping background checker
@@ -717,14 +717,9 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 	// Handshake is critical - use withResponse to ensure delivery
 	err = peripheral.WriteValue(data, textChar, swift.CBCharacteristicWriteWithResponse)
 	if err == nil {
-		// Record handshake timestamp on successful send (indexed by deviceID, not UUID)
+		// Record handshake timestamp on successful send (indexed by hardware UUID for connection-scoped state)
 		ip.mu.Lock()
-		// Use deviceID if we have it, otherwise use peripheral UUID temporarily
-		if deviceID != "" {
-			ip.lastHandshakeTime[deviceID] = time.Now()
-		} else {
-			ip.lastHandshakeTime[peripheral.UUID] = time.Now()
-		}
+		ip.lastHandshakeTime[peripheral.UUID] = time.Now()
 		ip.mu.Unlock()
 	}
 	return err
@@ -758,9 +753,9 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	ip.peripheralToDeviceID[peripheral.UUID] = deviceID
 	ip.mu.Unlock()
 
-	// Record handshake timestamp when received
+	// Record handshake timestamp when received (indexed by hardware UUID for connection-scoped state)
 	ip.mu.Lock()
-	ip.lastHandshakeTime[deviceID] = time.Now()
+	ip.lastHandshakeTime[peripheral.UUID] = time.Now()
 	ip.mu.Unlock()
 
 	// Convert photo hashes from bytes to hex strings
@@ -1128,19 +1123,14 @@ func (ip *iPhone) checkStaleHandshakes() {
 	ip.mu.RUnlock()
 
 	for peripheralUUID, peripheral := range peripheralsToCheck {
-		// Look up deviceID for this peripheral (lastHandshakeTime is indexed by deviceID)
+		// Look up deviceID for logging purposes only
 		ip.mu.RLock()
 		deviceID := ip.peripheralToDeviceID[peripheralUUID]
 		ip.mu.RUnlock()
 
-		// If we don't have a deviceID yet, use peripheralUUID as fallback
-		lookupKey := deviceID
-		if lookupKey == "" {
-			lookupKey = peripheralUUID
-		}
-
+		// lastHandshakeTime is now always indexed by hardware UUID (connection-scoped state)
 		ip.mu.RLock()
-		lastHandshake, exists := ip.lastHandshakeTime[lookupKey]
+		lastHandshake, exists := ip.lastHandshakeTime[peripheralUUID]
 		ip.mu.RUnlock()
 
 		// If no handshake record or handshake is stale
@@ -1150,8 +1140,13 @@ func (ip *iPhone) checkStaleHandshakes() {
 				timeSince = fmt.Sprintf("%.0fs ago", now.Sub(lastHandshake).Seconds())
 			}
 
+			deviceIDStr := "unknown"
+			if deviceID != "" {
+				deviceIDStr = deviceID[:8]
+			}
+
 			logger.Debug(prefix, "🔄 [STALE-HANDSHAKE] Handshake stale for %s (deviceID: %s, last: %s), re-handshaking",
-				peripheralUUID[:8], lookupKey[:8], timeSince)
+				peripheralUUID[:8], deviceIDStr, timeSince)
 
 			// Re-handshake in place (no need to reconnect, already connected)
 			go ip.sendHandshakeMessage(peripheral)
@@ -1386,8 +1381,9 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 				txPhotoHash := hashBytesToString(handshake.TxPhotoHash)
 
 				// Check if we've already handshaked recently (before updating timestamp)
+				// lastHandshakeTime is indexed by hardware UUID (connection-scoped state)
 				d.iphone.mu.RLock()
-				lastHandshake, alreadyHandshaked := d.iphone.lastHandshakeTime[deviceID]
+				lastHandshake, alreadyHandshaked := d.iphone.lastHandshakeTime[senderUUID]
 				d.iphone.mu.RUnlock()
 
 				shouldReply := !alreadyHandshaked || time.Since(lastHandshake) > 5*time.Second
@@ -1398,7 +1394,8 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 				if txPhotoHash != "" {
 					d.iphone.deviceIDToPhotoHash[deviceID] = txPhotoHash
 				}
-				d.iphone.lastHandshakeTime[deviceID] = time.Now()
+				// Record handshake timestamp (indexed by hardware UUID for connection-scoped state)
+				d.iphone.lastHandshakeTime[senderUUID] = time.Now()
 				d.iphone.mu.Unlock()
 
 				logger.Info(prefix, "📥 RX Handshake from peripheral write: deviceID=%s, firstName=%s", deviceID, handshake.FirstName)
