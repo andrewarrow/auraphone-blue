@@ -258,6 +258,12 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 					device := pw.discoveredDevices[id]
 					row := obj.(*fyne.Container)
 
+					// Use HardwareUUID as key for lookups (needed by both text and image rendering)
+					key := device.HardwareUUID
+					if key == "" {
+						key = device.DeviceID
+					}
+
 					// Border container structure: [center, top, bottom, left, right]
 					// Center = textStack, Left = profileStack
 					var textStack *fyne.Container
@@ -294,12 +300,6 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 						nameText := textStack.Objects[0].(*canvas.Text)
 						deviceIDText := textStack.Objects[1].(*canvas.Text)
 						rssiText := textStack.Objects[2].(*canvas.Text)
-
-						// Use HardwareUUID as key for lookups
-						key := device.HardwareUUID
-						if key == "" {
-							key = device.DeviceID
-						}
 
 						// Use first_name from cache if available, otherwise use device name
 						displayName := device.Name
