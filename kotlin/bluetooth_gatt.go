@@ -1,8 +1,6 @@
-
 package kotlin
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/user/auraphone-blue/wire"
@@ -17,7 +15,7 @@ type BluetoothGattDescriptor struct {
 
 // Write type constants (matches Android BLE API)
 const (
-	WRITE_TYPE_DEFAULT    = 0x02 // Write with response (wait for ACK)
+	WRITE_TYPE_DEFAULT     = 0x02 // Write with response (wait for ACK)
 	WRITE_TYPE_NO_RESPONSE = 0x01 // Write without response (fire and forget)
 	WRITE_TYPE_SIGNED      = 0x04 // Signed write (rarely used)
 )

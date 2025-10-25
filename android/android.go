@@ -963,6 +963,7 @@ func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 			state.receivedChunks = make(map[uint16][]byte)
 			state.senderDeviceID = remoteUUID
 			state.buffer = remaining
+			state.lastChunkTime = time.Now() // Initialize timeout tracking
 			state.mu.Unlock()
 
 			if len(remaining) > 0 {
@@ -1004,6 +1005,7 @@ func (a *Android) processPhotoChunks(remoteUUID string, state *photoReceiveState
 
 		state.receivedChunks[chunk.Index] = chunk.Data
 		state.buffer = state.buffer[consumed:]
+		state.lastChunkTime = time.Now() // Update last chunk time
 
 		if chunk.Index == 0 || chunk.Index == state.expectedChunks-1 {
 			logger.Debug(prefix, "📥 Received chunk %d/%d from %s",
@@ -1937,6 +1939,7 @@ func (a *Android) handlePhotoMessageFromServer(senderUUID string, data []byte) {
 			state.receivedChunks = make(map[uint16][]byte)
 			state.senderDeviceID = senderUUID
 			state.buffer = remaining
+			state.lastChunkTime = time.Now() // Initialize timeout tracking
 			state.mu.Unlock()
 
 			if len(remaining) > 0 {
@@ -1978,6 +1981,7 @@ func (a *Android) processPhotoChunksFromServer(senderUUID string, state *photoRe
 
 		state.receivedChunks[chunk.Index] = chunk.Data
 		state.buffer = state.buffer[consumed:]
+		state.lastChunkTime = time.Now() // Update last chunk time
 
 		if chunk.Index == 0 || chunk.Index == state.expectedChunks-1 {
 			logger.Debug(prefix, "📥 Received chunk %d/%d from %s",
