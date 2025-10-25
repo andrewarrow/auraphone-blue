@@ -73,6 +73,7 @@ type BluetoothGatt struct {
 	notifyingCharacteristics map[string]bool // characteristic UUID -> is notifying
 	writeQueue               chan writeRequest
 	writeQueueStop           chan struct{}
+	autoConnect              bool // Android autoConnect flag for auto-reconnect
 }
 
 func (g *BluetoothGatt) DiscoverServices() bool {
@@ -379,4 +380,38 @@ func (g *BluetoothGatt) StopListening() {
 
 func (g *BluetoothGatt) GetRemoteUUID() string {
 	return g.remoteUUID
+}
+
+// attemptReconnect implements Android's autoConnect=true behavior
+// Retries connection in background until it succeeds (matches real Android behavior)
+func (g *BluetoothGatt) attemptReconnect() {
+	if !g.autoConnect {
+		return // Only retry if autoConnect is enabled
+	}
+
+	// Wait before retrying (Android uses longer delays than iOS, typically 30s)
+	time.Sleep(5 * time.Second)
+
+	// Try to reconnect
+	// STATE_CONNECTING = 1
+	if g.callback != nil {
+		g.callback.OnConnectionStateChange(g, 0, 1)
+	}
+
+	err := g.wire.Connect(g.remoteUUID)
+	if err != nil {
+		// Failed again - notify disconnected and keep retrying
+		if g.callback != nil {
+			g.callback.OnConnectionStateChange(g, 1, 0) // status=1 (GATT_FAILURE)
+		}
+
+		// Keep retrying (Android autoConnect behavior)
+		go g.attemptReconnect()
+		return
+	}
+
+	// Success! Notify connected
+	if g.callback != nil {
+		g.callback.OnConnectionStateChange(g, 0, 2) // STATE_CONNECTED = 2
+	}
 }

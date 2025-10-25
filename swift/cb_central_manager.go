@@ -1,6 +1,8 @@
 package swift
 
 import (
+	"time"
+
 	"github.com/user/auraphone-blue/wire"
 )
 
@@ -13,21 +15,25 @@ type CBCentralManagerDelegate interface {
 }
 
 type CBCentralManager struct {
-	Delegate CBCentralManagerDelegate
-	State    string
-	uuid     string
-	wire     *wire.Wire
-	stopChan chan struct{}
+	Delegate            CBCentralManagerDelegate
+	State               string
+	uuid                string
+	wire                *wire.Wire
+	stopChan            chan struct{}
+	pendingPeripherals  map[string]*CBPeripheral // UUIDs of peripherals to auto-reconnect
+	autoReconnectActive bool                     // Whether auto-reconnect is enabled
 }
 
 func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string) *CBCentralManager {
 	w := wire.NewWire(uuid)
 
 	cm := &CBCentralManager{
-		Delegate: delegate,
-		State:    "poweredOn",
-		uuid:     uuid,
-		wire:     w,
+		Delegate:            delegate,
+		State:               "poweredOn",
+		uuid:                uuid,
+		wire:                w,
+		pendingPeripherals:  make(map[string]*CBPeripheral),
+		autoReconnectActive: true, // iOS auto-reconnect is always active
 	}
 
 	// Set up disconnect callback
@@ -37,6 +43,14 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string) *CBCent
 			delegate.DidDisconnectPeripheral(*cm, CBPeripheral{
 				UUID: deviceUUID,
 			}, nil) // nil error = clean disconnect (not an error, just interference/distance)
+		}
+
+		// iOS auto-reconnect: if this peripheral was in pendingPeripherals, try to reconnect
+		if cm.autoReconnectActive {
+			if peripheral, exists := cm.pendingPeripherals[deviceUUID]; exists {
+				// Automatically retry connection in background (matches real iOS behavior)
+				go cm.attemptReconnect(peripheral)
+			}
 		}
 	})
 
@@ -103,16 +117,59 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 	peripheral.wire = c.wire
 	peripheral.remoteUUID = peripheral.UUID
 
+	// iOS remembers this peripheral for auto-reconnect
+	c.pendingPeripherals[peripheral.UUID] = peripheral
+
 	// Attempt realistic connection with timing and potential failure
 	go func() {
 		err := c.wire.Connect(peripheral.UUID)
 		if err != nil {
 			// Connection failed
 			c.Delegate.DidFailToConnectPeripheral(*c, *peripheral, err)
+
+			// iOS auto-reconnect: retry connection in background
+			if c.autoReconnectActive {
+				go c.attemptReconnect(peripheral)
+			}
 			return
 		}
 
 		// Connection succeeded
 		c.Delegate.DidConnectPeripheral(*c, *peripheral)
 	}()
+}
+
+// attemptReconnect implements iOS's auto-reconnect behavior
+// iOS will keep retrying connection in the background until it succeeds
+func (c *CBCentralManager) attemptReconnect(peripheral *CBPeripheral) {
+	// Wait before retrying (real iOS uses exponential backoff, we'll use fixed 2s delay)
+	time.Sleep(2 * time.Second)
+
+	// Check if still in pending list (app might have cancelled)
+	if _, exists := c.pendingPeripherals[peripheral.UUID]; !exists {
+		return
+	}
+
+	// Try to reconnect
+	err := c.wire.Connect(peripheral.UUID)
+	if err != nil {
+		// Failed again, keep retrying (iOS behavior)
+		go c.attemptReconnect(peripheral)
+		return
+	}
+
+	// Success! Notify delegate
+	if c.Delegate != nil {
+		c.Delegate.DidConnectPeripheral(*c, *peripheral)
+	}
+}
+
+// CancelPeripheralConnection cancels a connection or pending connection
+// Stops auto-reconnect for this peripheral (matches real iOS API)
+func (c *CBCentralManager) CancelPeripheralConnection(peripheral *CBPeripheral) {
+	// Remove from pending peripherals to stop auto-reconnect
+	delete(c.pendingPeripherals, peripheral.UUID)
+
+	// Disconnect if currently connected
+	c.wire.Disconnect()
 }

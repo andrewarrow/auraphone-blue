@@ -60,6 +60,11 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
    - **Android → iOS**: Acts as Peripheral (waits for iOS to connect)
    - **Android → Android**: Lexicographic device name comparison - device with LARGER name acts as Central
 
+7. **✅ Platform-Specific Reconnection Behavior** - iOS and Android have completely different reconnection behaviors:
+   - **iOS Auto-Reconnect**: When you call `Connect()`, iOS remembers the peripheral. If connection drops, iOS automatically retries in background until it succeeds. App just waits for `DidConnectPeripheral` callback again.
+   - **Android Manual Reconnect**: By default (autoConnect=false), Android does NOT auto-reconnect. App must detect disconnect and manually call `connectGatt()` again.
+   - **Android Auto-Reconnect Mode**: Optional autoConnect=true parameter makes Android retry in background like iOS (but with longer delays ~5s vs iOS ~2s).
+
 ### Intentional Simplifications:
 - **Polling for reads (50ms)** - Real BLE uses notifications/indications, but filesystem polling is reasonable here. Alternatives like filesystem watchers are OS-specific, and Go channels would bypass the wire abstraction.
 
@@ -83,6 +88,7 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 ✅ **MTU negotiation** - Packet size limits with automatic fragmentation
 ✅ **Packet loss & retries** - ~98.4% overall success rate with realistic radio interference
 ✅ **RSSI variance** - Distance-based signal strength with realistic fluctuations
+✅ **Platform-specific reconnection** - iOS auto-reconnect vs Android manual/auto modes
 
 ## Design Principles
 - **Use real platform API names** - CBCentralManager, BluetoothGatt, etc.

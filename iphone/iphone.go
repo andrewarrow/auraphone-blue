@@ -239,8 +239,9 @@ func (ip *iPhone) DidDisconnectPeripheral(central swift.CBCentralManager, periph
 		delete(ip.connectedPeripherals, peripheral.UUID)
 	}
 
-	// In a real app, you might want to try reconnecting here
-	// For now, we just log the disconnect
+	// iOS auto-reconnect: CBCentralManager will automatically retry connection
+	// The app just waits for DidConnectPeripheral callback again
+	logger.Info(prefix, "🔄 iOS will auto-reconnect to %s in background...", peripheral.UUID[:8])
 }
 
 // SetProfilePhoto sets the profile photo and broadcasts the hash

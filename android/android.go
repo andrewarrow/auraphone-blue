@@ -32,18 +32,20 @@ type photoReceiveState struct {
 
 // Android represents an Android device with BLE capabilities
 type Android struct {
-	deviceUUID        string
-	deviceName        string
-	wire              *wire.Wire
-	manager           *kotlin.BluetoothManager
-	discoveryCallback phone.DeviceDiscoveryCallback
-	photoPath         string
-	photoHash         string
-	photoData         []byte
-	connectedGatts    map[string]*kotlin.BluetoothGatt // UUID -> GATT connection
-	deviceIDToPhotoHash  map[string]string              // deviceID -> their TX photo hash
-	receivedPhotoHashes  map[string]string              // deviceID -> RX hash (photos we got from them)
+	deviceUUID           string
+	deviceName           string
+	wire                 *wire.Wire
+	manager              *kotlin.BluetoothManager
+	discoveryCallback    phone.DeviceDiscoveryCallback
+	photoPath            string
+	photoHash            string
+	photoData            []byte
+	connectedGatts       map[string]*kotlin.BluetoothGatt   // UUID -> GATT connection
+	discoveredDevices    map[string]*kotlin.BluetoothDevice // UUID -> discovered device (for reconnect)
+	deviceIDToPhotoHash  map[string]string                  // deviceID -> their TX photo hash
+	receivedPhotoHashes  map[string]string                  // deviceID -> RX hash (photos we got from them)
 	photoReceiveState    *photoReceiveState
+	useAutoConnect       bool // Whether to use autoConnect=true mode
 }
 
 // NewAndroid creates a new Android instance
@@ -55,11 +57,13 @@ func NewAndroid() *Android {
 		deviceUUID:           deviceUUID,
 		deviceName:           deviceName,
 		connectedGatts:       make(map[string]*kotlin.BluetoothGatt),
+		discoveredDevices:    make(map[string]*kotlin.BluetoothDevice),
 		deviceIDToPhotoHash:  make(map[string]string),
 		receivedPhotoHashes:  make(map[string]string),
 		photoReceiveState: &photoReceiveState{
 			receivedChunks: make(map[uint16][]byte),
 		},
+		useAutoConnect: false, // Default: manual reconnect (matches real Android apps)
 	}
 
 	// Initialize wire
@@ -176,6 +180,9 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 	logger.Debug(prefix, "📱 DISCOVERED device %s (%s)", result.Device.Address[:8], name)
 	logger.Debug(prefix, "   └─ RSSI: %.0f dBm", rssi)
 
+	// Store discovered device for potential reconnect
+	a.discoveredDevices[result.Device.Address] = result.Device
+
 	if a.discoveryCallback != nil {
 		a.discoveryCallback(phone.DiscoveredDevice{
 			DeviceID:  result.Device.Address,
@@ -188,8 +195,8 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 
 	// Auto-connect if not already connected
 	if _, exists := a.connectedGatts[result.Device.Address]; !exists {
-		logger.Debug(prefix, "🔌 Connecting to %s", result.Device.Address[:8])
-		gatt := result.Device.ConnectGatt(nil, false, a)
+		logger.Debug(prefix, "🔌 Connecting to %s (autoConnect=%v)", result.Device.Address[:8], a.useAutoConnect)
+		gatt := result.Device.ConnectGatt(nil, a.useAutoConnect, a)
 		a.connectedGatts[result.Device.Address] = gatt
 	}
 }
@@ -239,16 +246,21 @@ func (a *Android) GetProfilePhotoHash() string {
 
 func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int, newState int) {
 	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+	remoteUUID := gatt.GetRemoteUUID()
 
 	if newState == 2 { // STATE_CONNECTED
 		logger.Info(prefix, "✅ Connected to device")
+
+		// Re-add to connected list (might have been removed on disconnect)
+		a.connectedGatts[remoteUUID] = gatt
+
 		// Discover services
 		gatt.DiscoverServices()
 	} else if newState == 0 { // STATE_DISCONNECTED
 		if status != 0 {
-			logger.Error(prefix, "❌ Disconnected from device with error (status=%d)", status)
+			logger.Error(prefix, "❌ Disconnected from %s with error (status=%d)", remoteUUID[:8], status)
 		} else {
-			logger.Info(prefix, "📡 Disconnected from device (interference/distance)")
+			logger.Info(prefix, "📡 Disconnected from %s (interference/distance)", remoteUUID[:8])
 		}
 
 		// Stop listening and write queue on the gatt
@@ -256,12 +268,20 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 		gatt.StopWriteQueue()
 
 		// Remove from connected list
-		remoteUUID := gatt.GetRemoteUUID()
 		if _, exists := a.connectedGatts[remoteUUID]; exists {
 			delete(a.connectedGatts, remoteUUID)
 		}
 
-		// In a real app, you might want to try reconnecting here
+		// Android reconnect behavior depends on autoConnect parameter:
+		// - If autoConnect=true: BluetoothGatt will retry automatically in background
+		// - If autoConnect=false: App must manually call connectGatt() again
+		if a.useAutoConnect {
+			logger.Info(prefix, "🔄 Android autoConnect=true: Will retry in background...")
+		} else {
+			logger.Info(prefix, "💡 Android autoConnect=false: App will manually reconnect...")
+			// Manually reconnect after a delay (simulates real Android app behavior)
+			go a.manualReconnect(remoteUUID)
+		}
 	}
 }
 
@@ -591,4 +611,31 @@ func (a *Android) reassembleAndSavePhoto() error {
 	}
 
 	return nil
+}
+
+// manualReconnect implements Android's manual reconnect behavior (autoConnect=false)
+// Real Android apps must detect disconnect and call connectGatt() again manually
+func (a *Android) manualReconnect(deviceUUID string) {
+	prefix := fmt.Sprintf("%s Android", a.deviceUUID[:8])
+
+	// Wait before retrying (simulates app detecting disconnect and deciding to reconnect)
+	time.Sleep(3 * time.Second)
+
+	// Check if we have the device in our discovered list
+	device, exists := a.discoveredDevices[deviceUUID]
+	if !exists {
+		logger.Debug(prefix, "⚠️  Cannot reconnect to %s: device not in discovered list", deviceUUID[:8])
+		return
+	}
+
+	// Check if already reconnected
+	if _, exists := a.connectedGatts[deviceUUID]; exists {
+		logger.Debug(prefix, "⏭️  Already reconnected to %s", deviceUUID[:8])
+		return
+	}
+
+	// Manually call connectGatt() again (Android requires this!)
+	logger.Info(prefix, "🔄 Manually calling connectGatt() for %s", deviceUUID[:8])
+	gatt := device.ConnectGatt(nil, a.useAutoConnect, a)
+	a.connectedGatts[deviceUUID] = gatt
 }
