@@ -7,6 +7,14 @@ import (
 	"github.com/user/auraphone-blue/wire"
 )
 
+// CBCharacteristicWriteType matches iOS CoreBluetooth write types
+type CBCharacteristicWriteType int
+
+const (
+	CBCharacteristicWriteWithResponse    CBCharacteristicWriteType = 0 // Wait for ACK (default)
+	CBCharacteristicWriteWithoutResponse CBCharacteristicWriteType = 1 // Fire and forget (fast)
+)
+
 // CBCharacteristic represents a BLE characteristic
 type CBCharacteristic struct {
 	UUID       string
@@ -32,6 +40,7 @@ type CBPeripheralDelegate interface {
 type writeRequest struct {
 	data           []byte
 	characteristic *CBCharacteristic
+	writeType      CBCharacteristicWriteType
 }
 
 type CBPeripheral struct {
@@ -137,16 +146,27 @@ func (p *CBPeripheral) StartWriteQueue() {
 			case req := <-p.writeQueue:
 				// Process write asynchronously
 				go func(r writeRequest) {
-					err := p.wire.WriteCharacteristic(p.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.data)
-					if err != nil {
+					var err error
+					if r.writeType == CBCharacteristicWriteWithoutResponse {
+						// Fire and forget - don't wait for ACK
+						err = p.wire.WriteCharacteristicNoResponse(p.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.data)
+						// Callback comes immediately (doesn't wait for delivery)
 						if p.Delegate != nil {
 							p.Delegate.DidWriteValueForCharacteristic(p, r.characteristic, err)
 						}
-						return
-					}
+					} else {
+						// With response - wait for ACK
+						err = p.wire.WriteCharacteristic(p.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.data)
+						if err != nil {
+							if p.Delegate != nil {
+								p.Delegate.DidWriteValueForCharacteristic(p, r.characteristic, err)
+							}
+							return
+						}
 
-					if p.Delegate != nil {
-						p.Delegate.DidWriteValueForCharacteristic(p, r.characteristic, nil)
+						if p.Delegate != nil {
+							p.Delegate.DidWriteValueForCharacteristic(p, r.characteristic, nil)
+						}
 					}
 				}(req)
 
@@ -167,7 +187,8 @@ func (p *CBPeripheral) StopWriteQueue() {
 	}
 }
 
-func (p *CBPeripheral) WriteValue(data []byte, characteristic *CBCharacteristic) error {
+// WriteValue writes data to characteristic with specified write type (matches real iOS API)
+func (p *CBPeripheral) WriteValue(data []byte, characteristic *CBCharacteristic, writeType CBCharacteristicWriteType) error {
 	if p.wire == nil {
 		return fmt.Errorf("peripheral not connected")
 	}
@@ -178,7 +199,7 @@ func (p *CBPeripheral) WriteValue(data []byte, characteristic *CBCharacteristic)
 	// If write queue is active, queue the write (async like real iOS)
 	if p.writeQueue != nil {
 		select {
-		case p.writeQueue <- writeRequest{data: data, characteristic: characteristic}:
+		case p.writeQueue <- writeRequest{data: data, characteristic: characteristic, writeType: writeType}:
 			// Queued successfully - callback will come later
 			return nil
 		default:
@@ -188,7 +209,13 @@ func (p *CBPeripheral) WriteValue(data []byte, characteristic *CBCharacteristic)
 	}
 
 	// Fallback: synchronous write (if queue not started)
-	err := p.wire.WriteCharacteristic(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID, data)
+	var err error
+	if writeType == CBCharacteristicWriteWithoutResponse {
+		err = p.wire.WriteCharacteristicNoResponse(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID, data)
+	} else {
+		err = p.wire.WriteCharacteristic(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID, data)
+	}
+
 	if err != nil {
 		if p.Delegate != nil {
 			p.Delegate.DidWriteValueForCharacteristic(p, characteristic, err)

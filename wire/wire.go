@@ -710,7 +710,7 @@ func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) 
 	return &advData, nil
 }
 
-// WriteCharacteristic sends a characteristic operation message to target device
+// WriteCharacteristic sends a characteristic write WITH response (waits for ACK)
 func (w *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
 	msg := CharacteristicMessage{
 		Operation:   "write",
@@ -722,10 +722,35 @@ func (w *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, dat
 	}
 
 	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-		fmt.Sprintf("📤 TX Write Characteristic (to %s, svc=%s, char=%s, %d bytes)",
+		fmt.Sprintf("📤 TX Write WITH Response (to %s, svc=%s, char=%s, %d bytes)",
 			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
 
 	return w.sendCharacteristicMessage(targetUUID, &msg)
+}
+
+// WriteCharacteristicNoResponse sends a characteristic write WITHOUT response (fire and forget)
+// Does not wait for ACK - faster but no delivery guarantee (matches real BLE)
+func (w *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID string, data []byte) error {
+	msg := CharacteristicMessage{
+		Operation:   "write_no_response",
+		ServiceUUID: serviceUUID,
+		CharUUID:    charUUID,
+		Data:        data,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  w.localUUID,
+	}
+
+	logger.DebugJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
+		fmt.Sprintf("📤 TX Write NO Response (to %s, svc=%s, char=%s, %d bytes)",
+			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
+
+	// Send without waiting - fire and forget
+	// Note: Still goes through SendToDevice which has retries, but we don't wait for completion
+	go func() {
+		w.sendCharacteristicMessage(targetUUID, &msg)
+	}()
+
+	return nil // Returns immediately
 }
 
 // ReadCharacteristic sends a read request to target device

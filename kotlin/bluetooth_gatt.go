@@ -14,12 +14,20 @@ type BluetoothGattDescriptor struct {
 	Value []byte
 }
 
+// Write type constants (matches Android BLE API)
+const (
+	WRITE_TYPE_DEFAULT    = 0x02 // Write with response (wait for ACK)
+	WRITE_TYPE_NO_RESPONSE = 0x01 // Write without response (fire and forget)
+	WRITE_TYPE_SIGNED      = 0x04 // Signed write (rarely used)
+)
+
 // BluetoothGattCharacteristic represents a BLE characteristic
 type BluetoothGattCharacteristic struct {
 	UUID        string
 	Properties  int // Bitmask of properties
 	Service     *BluetoothGattService
 	Value       []byte
+	WriteType   int // WRITE_TYPE_DEFAULT or WRITE_TYPE_NO_RESPONSE
 	Descriptors []*BluetoothGattDescriptor
 }
 
@@ -128,6 +136,7 @@ func (g *BluetoothGatt) DiscoverServices() bool {
 					Properties: properties,
 					Service:    service,
 					Value:      nil,
+					WriteType:  WRITE_TYPE_DEFAULT, // Default to withResponse
 				}
 				service.Characteristics = append(service.Characteristics, char)
 			}
@@ -173,16 +182,31 @@ func (g *BluetoothGatt) StartWriteQueue() {
 			case req := <-g.writeQueue:
 				// Process write asynchronously
 				go func(r writeRequest) {
-					err := g.wire.WriteCharacteristic(g.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.characteristic.Value)
-					if err != nil {
+					var err error
+					if r.characteristic.WriteType == WRITE_TYPE_NO_RESPONSE {
+						// Fire and forget - don't wait for ACK
+						err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.characteristic.Value)
+						// Callback comes immediately (doesn't wait for delivery)
 						if g.callback != nil {
-							g.callback.OnCharacteristicWrite(g, r.characteristic, 1) // GATT_FAILURE = 1
+							if err != nil {
+								g.callback.OnCharacteristicWrite(g, r.characteristic, 1) // GATT_FAILURE = 1
+							} else {
+								g.callback.OnCharacteristicWrite(g, r.characteristic, 0) // GATT_SUCCESS = 0
+							}
 						}
-						return
-					}
+					} else {
+						// With response - wait for ACK
+						err = g.wire.WriteCharacteristic(g.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.characteristic.Value)
+						if err != nil {
+							if g.callback != nil {
+								g.callback.OnCharacteristicWrite(g, r.characteristic, 1) // GATT_FAILURE = 1
+							}
+							return
+						}
 
-					if g.callback != nil {
-						g.callback.OnCharacteristicWrite(g, r.characteristic, 0) // GATT_SUCCESS = 0
+						if g.callback != nil {
+							g.callback.OnCharacteristicWrite(g, r.characteristic, 0) // GATT_SUCCESS = 0
+						}
 					}
 				}(req)
 
@@ -227,7 +251,13 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 	}
 
 	// Fallback: synchronous write (if queue not started)
-	err := g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, characteristic.Value)
+	var err error
+	if characteristic.WriteType == WRITE_TYPE_NO_RESPONSE {
+		err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, characteristic.Value)
+	} else {
+		err = g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, characteristic.Value)
+	}
+
 	if err != nil {
 		if g.callback != nil {
 			g.callback.OnCharacteristicWrite(g, characteristic, 1) // GATT_FAILURE = 1

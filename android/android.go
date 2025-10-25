@@ -361,7 +361,9 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 	jsonData, _ := marshaler.Marshal(msg)
 	logger.Debug(prefix, "📤 TX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
+	// Handshake is critical - use withResponse to ensure delivery
 	textChar.Value = data
+	textChar.WriteType = kotlin.WRITE_TYPE_DEFAULT
 	gatt.WriteCharacteristic(textChar)
 	return nil
 }
@@ -435,17 +437,20 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 		return fmt.Errorf("photo characteristic not found")
 	}
 
-	// Send metadata packet
+	// Send metadata packet - critical, use withResponse
 	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
 	photoChar.Value = metadata
+	photoChar.WriteType = kotlin.WRITE_TYPE_DEFAULT
 	if !gatt.WriteCharacteristic(photoChar) {
 		return fmt.Errorf("failed to send metadata")
 	}
 
-	// Send chunks with delays
+	// Send chunks with NO_RESPONSE for speed (fire and forget)
+	// This is realistic - photo chunks use fast writes, app-level CRC catches errors
 	for i, chunk := range chunks {
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
 		photoChar.Value = chunkPacket
+		photoChar.WriteType = kotlin.WRITE_TYPE_NO_RESPONSE
 		if !gatt.WriteCharacteristic(photoChar) {
 			return fmt.Errorf("failed to send chunk %d", i)
 		}

@@ -394,7 +394,8 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 	jsonData, _ := marshaler.Marshal(msg)
 	logger.Debug(prefix, "📤 TX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
-	return peripheral.WriteValue(data, textChar)
+	// Handshake is critical - use withResponse to ensure delivery
+	return peripheral.WriteValue(data, textChar, swift.CBCharacteristicWriteWithResponse)
 }
 
 // handleHandshakeMessage processes incoming handshake messages
@@ -463,16 +464,17 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 		return fmt.Errorf("photo characteristic not found")
 	}
 
-	// Send metadata packet
+	// Send metadata packet - critical, use withResponse
 	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
-	if err := peripheral.WriteValue(metadata, photoChar); err != nil {
+	if err := peripheral.WriteValue(metadata, photoChar, swift.CBCharacteristicWriteWithResponse); err != nil {
 		return fmt.Errorf("failed to send metadata: %w", err)
 	}
 
-	// Send chunks with delays
+	// Send chunks with withoutResponse for speed (fire and forget)
+	// This is realistic - photo chunks use fast writes, app-level CRC catches errors
 	for i, chunk := range chunks {
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
-		if err := peripheral.WriteValue(chunkPacket, photoChar); err != nil {
+		if err := peripheral.WriteValue(chunkPacket, photoChar, swift.CBCharacteristicWriteWithoutResponse); err != nil {
 			return fmt.Errorf("failed to send chunk %d: %w", i, err)
 		}
 		time.Sleep(10 * time.Millisecond)
