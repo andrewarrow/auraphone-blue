@@ -319,6 +319,9 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 						// Look up device's photo hash, then find image by hash
 						if photoHash, hasHash := pw.devicePhotoHashes[device.DeviceID]; hasHash {
 							if img, hasImage := pw.deviceImages[photoHash]; hasImage {
+								prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+								logger.Debug(prefix, "🖼️  Rendering list item: deviceID=%s, photoHash=%s, imagePtr=%p",
+									device.DeviceID[:8], truncateHash(photoHash, 8), img)
 								profileImage.Image = img
 							} else {
 								// Hash exists but image not loaded yet - clear any stale image from widget reuse
@@ -559,7 +562,14 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 		img, _, err := image.Decode(bytes.NewReader(device.PhotoData))
 		if err == nil {
 			pw.deviceImages[device.PhotoHash] = img
-			logger.Info(prefix, "📷 Received photo from %s via BLE (%d bytes)", device.DeviceID[:8], len(device.PhotoData))
+			logger.Info(prefix, "📷 Stored photo: deviceID=%s → photoHash=%s → imagePtr=%p",
+				device.DeviceID[:8], truncateHash(device.PhotoHash, 8), img)
+			logger.Info(prefix, "📊 Current state: %d devices, %d hashes, %d images",
+				len(pw.devicesMap), len(pw.devicePhotoHashes), len(pw.deviceImages))
+			// Dump all mappings for debugging
+			for devID, hash := range pw.devicePhotoHashes {
+				logger.Debug(prefix, "   └─ Mapping: deviceID=%s → photoHash=%s", devID[:8], truncateHash(hash, 8))
+			}
 		} else {
 			logger.Error(prefix, "❌ Failed to decode photo from %s: %v", device.DeviceID[:8], err)
 		}
@@ -652,7 +662,12 @@ func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
 // sortAndRefreshDevices sorts devices by RSSI and refreshes the UI
 func (pw *PhoneWindow) sortAndRefreshDevices() {
 	sort.Slice(pw.discoveredDevices, func(i, j int) bool {
-		return pw.discoveredDevices[i].RSSI > pw.discoveredDevices[j].RSSI
+		// Primary sort: RSSI (descending)
+		if pw.discoveredDevices[i].RSSI != pw.discoveredDevices[j].RSSI {
+			return pw.discoveredDevices[i].RSSI > pw.discoveredDevices[j].RSSI
+		}
+		// Secondary sort: DeviceID (ascending) for stable ordering when RSSI is equal
+		return pw.discoveredDevices[i].DeviceID < pw.discoveredDevices[j].DeviceID
 	})
 
 	// Mark that we need a refresh (ticker will pick this up)
