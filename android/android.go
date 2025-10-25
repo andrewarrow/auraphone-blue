@@ -1728,6 +1728,16 @@ func (a *Android) processPhotoChunksFromServer(senderUUID string, state *photoRe
 			delete(a.photoReceiveStateServer, senderUUID)
 			a.mu.Unlock()
 			break
+		} else if chunk.Index == state.expectedChunks-1 {
+			// Received last chunk but still incomplete - log missing chunks
+			var missing []uint16
+			for i := uint16(0); i < state.expectedChunks; i++ {
+				if _, exists := state.receivedChunks[i]; !exists {
+					missing = append(missing, i)
+				}
+			}
+			logger.Warn(prefix, "⚠️  Received final chunk %d but only have %d/%d chunks. Missing: %v",
+				chunk.Index, len(state.receivedChunks), state.expectedChunks, missing)
 		}
 	}
 }
