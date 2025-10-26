@@ -121,6 +121,7 @@ type Wire struct {
 	// Graceful shutdown
 	stopChan             chan struct{}
 	wg                   sync.WaitGroup
+	sendMutex            sync.Mutex
 }
 
 // NewWire creates a new wire with default platform (generic)
@@ -491,6 +492,9 @@ func (sw *Wire) Disconnect(targetUUID string) error {
 
 // SendToDevice sends data to a target device via socket
 func (sw *Wire) SendToDevice(targetUUID string, data []byte) error {
+	sw.sendMutex.Lock()
+	defer sw.sendMutex.Unlock()
+
 	sw.connMutex.RLock()
 	conn, exists := sw.connections[targetUUID]
 	sw.connMutex.RUnlock()
