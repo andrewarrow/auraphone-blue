@@ -35,6 +35,9 @@ type DeviceCommon interface {
 
 	// Platform-specific disconnect (iOS uses CBCentralManager, Android uses BluetoothGatt)
 	DisconnectFromDevice(hardwareUUID string) error
+
+	// Discovery callback - triggers GUI update when device info changes
+	TriggerDiscoveryUpdate(hardwareUUID, deviceID, photoHash string, photoData []byte)
 }
 
 // GossipHandler handles gossip protocol logic (shared between iOS and Android)

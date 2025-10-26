@@ -267,6 +267,36 @@ func (a *Android) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
 	a.discoveryCallback = callback
 }
 
+// TriggerDiscoveryUpdate triggers the discovery callback to update the GUI
+func (a *Android) TriggerDiscoveryUpdate(hardwareUUID, deviceID, photoHash string, photoData []byte) {
+	if a.discoveryCallback != nil {
+		// Look up device name from remoteUUIDToDeviceID map
+		a.mu.RLock()
+		// Default name
+		name := "Unknown Device"
+		// Try to get a better name from discovered devices
+		for rUUID, dID := range a.remoteUUIDToDeviceID {
+			if rUUID == hardwareUUID || dID == deviceID {
+				if device, exists := a.discoveredDevices[rUUID]; exists {
+					name = device.Name
+					break
+				}
+			}
+		}
+		a.mu.RUnlock()
+
+		a.discoveryCallback(phone.DiscoveredDevice{
+			DeviceID:     deviceID,
+			HardwareUUID: hardwareUUID,
+			Name:         name,
+			RSSI:         0, // RSSI not relevant for cached photo updates
+			Platform:     "unknown",
+			PhotoHash:    photoHash,
+			PhotoData:    photoData,
+		})
+	}
+}
+
 func (a *Android) GetDeviceUUID() string { return a.hardwareUUID }
 
 func (a *Android) SetProfilePhoto(photoPath string) error {

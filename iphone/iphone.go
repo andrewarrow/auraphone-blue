@@ -256,6 +256,36 @@ func (ip *iPhone) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
 	ip.discoveryCallback = callback
 }
 
+// TriggerDiscoveryUpdate triggers the discovery callback to update the GUI
+func (ip *iPhone) TriggerDiscoveryUpdate(hardwareUUID, deviceID, photoHash string, photoData []byte) {
+	if ip.discoveryCallback != nil {
+		// Look up device name from peripheralToDeviceID map
+		ip.mu.RLock()
+		// Default name
+		name := "Unknown Device"
+		// Try to get a better name from discovered peripherals or connected devices
+		for pUUID, dID := range ip.peripheralToDeviceID {
+			if pUUID == hardwareUUID || dID == deviceID {
+				if peripheral, exists := ip.connectedPeripherals[pUUID]; exists {
+					name = peripheral.Name
+					break
+				}
+			}
+		}
+		ip.mu.RUnlock()
+
+		ip.discoveryCallback(phone.DiscoveredDevice{
+			DeviceID:     deviceID,
+			HardwareUUID: hardwareUUID,
+			Name:         name,
+			RSSI:         0, // RSSI not relevant for cached photo updates
+			Platform:     "unknown",
+			PhotoHash:    photoHash,
+			PhotoData:    photoData,
+		})
+	}
+}
+
 func (ip *iPhone) GetDeviceUUID() string { return ip.hardwareUUID }
 
 func (ip *iPhone) SetProfilePhoto(photoPath string) error {

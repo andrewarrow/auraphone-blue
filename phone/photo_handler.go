@@ -154,29 +154,21 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 			return
 		}
 
-		// Save to cache
-		cacheManager := device.GetCacheManager()
-		photoPath := filepath.Join("data", device.GetHardwareUUID(), "cache", "photos", deviceID+".jpg")
-		if err := os.MkdirAll(filepath.Dir(photoPath), 0755); err != nil {
-			logger.Warn(prefix, "❌ Failed to create photo directory: %v", err)
-			coordinator.FailReceive(deviceID, fmt.Sprintf("failed to create directory: %v", err))
-			return
-		}
+		// Mark receive as complete
+		coordinator.CompleteReceive(deviceID, recvState.PhotoHash)
 
-		if err := os.WriteFile(photoPath, photoData, 0644); err != nil {
-			logger.Warn(prefix, "❌ Failed to save photo: %v", err)
+		// Save photo to cache manager (creates photos/{hash}.jpg and updates metadata)
+		cacheManager := device.GetCacheManager()
+		if err := cacheManager.SaveDevicePhoto(deviceID, photoData, recvState.PhotoHash); err != nil {
+			logger.Warn(prefix, "⚠️  Failed to save photo to cache: %v", err)
 			coordinator.FailReceive(deviceID, fmt.Sprintf("failed to save photo: %v", err))
 			return
 		}
 
-		// Mark receive as complete
-		coordinator.CompleteReceive(deviceID, recvState.PhotoHash)
-
-		// Save photo to cache manager (file already written above)
-		if err := cacheManager.SaveDevicePhoto(deviceID, photoData, recvState.PhotoHash); err != nil {
-			logger.Warn(prefix, "⚠️  Failed to update cache metadata: %v", err)
-		}
-
 		logger.Info(prefix, "🎉 Photo from %s saved successfully (%d bytes)", deviceID[:8], len(photoData))
+
+		// Trigger discovery callback to notify GUI that photo is now available
+		device.TriggerDiscoveryUpdate(senderUUID, deviceID, recvState.PhotoHash, photoData)
+		logger.Debug(prefix, "📱 Triggered GUI update for %s with photo %s", deviceID[:8], recvState.PhotoHash[:8])
 	}
 }
