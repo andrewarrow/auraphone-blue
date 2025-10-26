@@ -156,16 +156,16 @@ else:
 
 ### Phase 1: Protocol Updates (Protobuf)
 
-**Step 1.1**: Update `proto/handshake.proto`
-- [x] `DevicePhotoState` already exists (rename to `DeviceState`)
-- [ ] Add `profile_version` field to `DeviceState`
-- [ ] Add `profile_summary_hash` field to `DeviceState` (optional, for optimization)
-- [ ] Add `ProfileRequestMessage` (requester_device_id, target_device_id, expected_version)
-- [ ] Keep `ProfileMessage` as-is (response message)
+**Step 1.1**: Update `proto/handshake.proto` ✅ COMPLETE (commit f6c65bb)
+- [x] `DevicePhotoState` renamed to `DeviceState`
+- [x] Add `profile_version` field to `DeviceState`
+- [x] Add `profile_summary_hash` field to `DeviceState` (optional, for optimization)
+- [x] Add `ProfileRequestMessage` (requester_device_id, target_device_id, expected_version)
+- [x] Keep `ProfileMessage` as-is (response message)
 - [x] `GossipMessage` already exists
 - [x] `PhotoRequestMessage` already exists
 
-**Step 1.2**: Regenerate protobuf
+**Step 1.2**: Regenerate protobuf ✅ COMPLETE (commit f6c65bb)
 ```bash
 cd proto
 protoc --go_out=. --go_opt=paths=source_relative handshake.proto
