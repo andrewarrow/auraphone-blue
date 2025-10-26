@@ -154,7 +154,7 @@ func (a *BluetoothLeAdvertiser) StartAdvertising(
 	if a.gattServer != nil {
 		gattTable := a.gattServer.buildGATTTable()
 		if err := a.wire.WriteGATTTable(gattTable); err != nil {
-			logger.Trace(fmt.Sprintf("%s Android", a.uuid[:8]), fmt.Sprintf("⚠️  Failed to write GATT table: %v", err))
+			logger.Trace(fmt.Sprintf("%s Android", a.uuid[:8]), "⚠️  Failed to write GATT table: %v", err)
 		}
 	}
 
@@ -255,11 +255,18 @@ func (a *BluetoothLeAdvertiser) startListeningForRequests() {
 					continue
 				}
 
+				if len(messages) > 0 {
+					logger.Debug(fmt.Sprintf("%s Android", a.uuid[:8]), "📬 Peripheral inbox: received %d messages", len(messages))
+				}
+
 				// Process peripheral-mode operations - all messages are meant for us
 				for _, msg := range messages {
+					logger.Debug(fmt.Sprintf("%s Android", a.uuid[:8]), "📬 Processing message: op=%s, char=%s, from=%s", msg.Operation, msg.CharUUID[:8], msg.SenderUUID[:8])
 					// Forward to GATT server
 					if a.gattServer != nil {
 						a.gattServer.handleCharacteristicMessage(msg)
+					} else {
+						logger.Warn(fmt.Sprintf("%s Android", a.uuid[:8]), "⚠️  GATT server is nil, cannot process message!")
 					}
 				}
 			}
@@ -318,7 +325,7 @@ func (s *BluetoothGattServer) AddService(service *BluetoothGattService) bool {
 	// Write GATT table to wire layer
 	gattTable := s.buildGATTTable()
 	if err := s.wire.WriteGATTTable(gattTable); err != nil {
-		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), fmt.Sprintf("⚠️  Failed to add service: %v", err))
+		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Failed to add service: %v", err)
 		return false
 	}
 
@@ -356,7 +363,7 @@ func (s *BluetoothGattServer) ClearServices() {
 func (s *BluetoothGattServer) SendResponse(device *BluetoothDevice, requestId int, status int, offset int, value []byte) bool {
 	// In the simulator, we handle requests synchronously
 	// Real Android would send ATT response packets back to the device
-	logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), fmt.Sprintf("📨 Sent response to device %s (reqId=%d, status=%d)", device.Address[:8], requestId, status))
+	logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), "📨 Sent response to device %s (reqId=%d, status=%d)", device.Address[:8], requestId, status)
 	return true
 }
 
@@ -388,11 +395,11 @@ func (s *BluetoothGattServer) NotifyCharacteristicChanged(device *BluetoothDevic
 
 	err := s.wire.NotifyCharacteristic(device.Address, serviceUUID, characteristic.UUID, characteristic.Value)
 	if err != nil {
-		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), fmt.Sprintf("⚠️  Failed to notify device %s: %v", device.Address[:8], err))
+		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Failed to notify device %s: %v", device.Address[:8], err)
 		return false
 	}
 
-	logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), fmt.Sprintf("📤 Sent notification to device %s (%d bytes)", device.Address[:8], len(characteristic.Value)))
+	logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), "📤 Sent notification to device %s (%d bytes)", device.Address[:8], len(characteristic.Value))
 	return true
 }
 
@@ -474,7 +481,7 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 	}
 
 	if targetChar == nil {
-		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), fmt.Sprintf("⚠️  Received request for unknown characteristic %s", msg.CharUUID))
+		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Received request for unknown characteristic %s", msg.CharUUID)
 		return
 	}
 

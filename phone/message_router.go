@@ -3,6 +3,7 @@ package phone
 import (
 	"fmt"
 
+	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/proto"
 	protobuf "google.golang.org/protobuf/proto"
 )
@@ -79,6 +80,9 @@ func (mr *MessageRouter) HandleProtocolMessage(senderUUID string, data []byte) e
 
 // handleGossipMessage processes incoming gossip messages
 func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.GossipMessage) error {
+	logger.Debug("MessageRouter", "📨 Received gossip from %s (deviceID=%s, meshViewSize=%d)",
+		senderUUID[:8], gossip.SenderDeviceId[:8], len(gossip.MeshView))
+
 	// Store the mapping: hardware UUID → device ID
 	// This allows us to send requests to devices we learn about via gossip
 	if mr.onDeviceIDDiscovered != nil && gossip.SenderDeviceId != "" {
@@ -87,6 +91,8 @@ func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.Go
 
 	// Merge gossip into mesh view
 	newDiscoveries := mr.meshView.MergeGossip(gossip)
+	logger.Debug("MessageRouter", "📊 Merged gossip: %d new discoveries, total mesh size=%d",
+		len(newDiscoveries), len(mr.meshView.GetAllDevices()))
 
 	// Log new discoveries (caller can handle logging with proper prefix)
 	_ = newDiscoveries

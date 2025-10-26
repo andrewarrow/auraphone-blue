@@ -1002,6 +1002,9 @@ func (sw *Wire) dispatchMessage(msg *CharacteristicMessage) {
 		// No specific handler, queue for polling
 		sw.queueMutex.Lock()
 		sw.messageQueue = append(sw.messageQueue, msg)
+		logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"📥 Queued message: op=%s, char=%s, from=%s, queueLen=%d",
+			msg.Operation, msg.CharUUID[:8], msg.SenderUUID[:8], len(sw.messageQueue))
 		sw.queueMutex.Unlock()
 	}
 }

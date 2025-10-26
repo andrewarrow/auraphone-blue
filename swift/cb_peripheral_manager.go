@@ -296,10 +296,10 @@ func (pm *CBPeripheralManager) UpdateValue(value []byte, characteristic *CBMutab
 
 		err := pm.wire.NotifyCharacteristic(central.UUID, characteristic.Service.UUID, characteristic.UUID, value)
 		if err != nil {
-			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("⚠️  Failed to notify central %s: %v", central.UUID[:8], err))
+			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "⚠️  Failed to notify central %s: %v", central.UUID[:8], err)
 			success = false
 		} else {
-			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("📤 Sent notification to central %s (%d bytes)", central.UUID[:8], len(value)))
+			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📤 Sent notification to central %s (%d bytes)", central.UUID[:8], len(value))
 		}
 	}
 
@@ -311,7 +311,7 @@ func (pm *CBPeripheralManager) UpdateValue(value []byte, characteristic *CBMutab
 func (pm *CBPeripheralManager) RespondToRequest(request *CBATTRequest, result int) {
 	// In the simulator, we handle requests synchronously
 	// Real iOS would send ATT response packets back to the central
-	logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("📨 Responded to request from central %s (result=%d)", request.Central.UUID[:8], result))
+	logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📨 Responded to request from central %s (result=%d)", request.Central.UUID[:8], result)
 }
 
 // buildGATTTable converts services to wire.GATTTable format
@@ -393,9 +393,14 @@ func (pm *CBPeripheralManager) startListeningForRequests() {
 					continue
 				}
 
+				if len(messages) > 0 {
+					logger.Debug(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📬 Peripheral inbox: received %d messages", len(messages))
+				}
+
 				// Process peripheral-mode operations (read, write, subscribe, unsubscribe)
 				// All messages in peripheral_inbox are meant for us - no filtering needed
 				for _, msg := range messages {
+					logger.Debug(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📬 Processing message: op=%s, char=%s, from=%s", msg.Operation, msg.CharUUID[:8], msg.SenderUUID[:8])
 					pm.handleCharacteristicMessage(msg)
 				}
 			}
@@ -424,7 +429,7 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 	}
 
 	if targetChar == nil {
-		logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), fmt.Sprintf("⚠️  Received request for unknown characteristic %s", msg.CharUUID))
+		logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "⚠️  Received request for unknown characteristic %s", msg.CharUUID)
 		return
 	}
 
