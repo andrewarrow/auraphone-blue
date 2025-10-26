@@ -39,3 +39,31 @@ message PhotoCompletionAck {
   fixed32 transfer_crc = 2;  // CRC-32 of complete photo data
   bool success = 3;
 }
+
+// Gossip Protocol Messages - For mesh network photo distribution
+// =================================================================
+
+// Single device's photo state in the mesh
+message DevicePhotoState {
+  string device_id = 1;           // Logical base36 ID
+  bytes photo_hash = 2;           // SHA-256 hash (32 bytes) of their current photo
+  int64 last_seen_timestamp = 3;  // Unix timestamp when this state was last observed
+  string first_name = 4;          // Cached first name
+}
+
+// Gossip message - exchanged periodically between neighbors
+// Contains sender's complete view of the mesh network
+message GossipMessage {
+  string sender_device_id = 1;           // Who is sending this gossip
+  int64 timestamp = 2;                   // When this gossip was created
+  repeated DevicePhotoState mesh_view = 3; // Sender's view of all devices in network
+  int32 gossip_round = 4;                // Increments with each gossip broadcast
+}
+
+// Request for specific photo based on gossip information
+// Sent when device learns about a photo it doesn't have
+message PhotoRequestMessage {
+  string requester_device_id = 1;  // Who wants the photo
+  string target_device_id = 2;     // Whose photo we want
+  bytes photo_hash = 3;            // Hash of the photo we want
+}

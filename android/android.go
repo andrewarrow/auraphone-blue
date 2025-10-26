@@ -181,10 +181,6 @@ type androidGattServerDelegate struct {
 
 // initializePeripheralMode sets up advertiser and GATT server for peripheral role
 func (a *Android) initializePeripheralMode() {
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	// Create GATT server with wrapper callback, passing shared wire
 	delegate := &androidGattServerDelegate{android: a}
@@ -192,21 +188,21 @@ func (a *Android) initializePeripheralMode() {
 
 	// Add the Aura service
 	service := &kotlin.BluetoothGattService{
-		UUID: auraServiceUUID,
+		UUID: phone.AuraServiceUUID,
 		Type: kotlin.SERVICE_TYPE_PRIMARY,
 	}
 
 	// Add characteristics (no Permissions field, it's server-side so properties are enough)
 	textChar := &kotlin.BluetoothGattCharacteristic{
-		UUID:       auraTextCharUUID,
+		UUID:       phone.AuraProtocolCharUUID,
 		Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
 	}
 	photoChar := &kotlin.BluetoothGattCharacteristic{
-		UUID:       auraPhotoCharUUID,
+		UUID:       phone.AuraPhotoCharUUID,
 		Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
 	}
 	profileChar := &kotlin.BluetoothGattCharacteristic{
-		UUID:       auraProfileCharUUID,
+		UUID:       phone.AuraProfileCharUUID,
 		Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
 	}
 
@@ -220,28 +216,24 @@ func (a *Android) initializePeripheralMode() {
 
 // setupBLE configures GATT table and advertising data
 func (a *Android) setupBLE() {
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"      // Handshake messages
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"    // Photo transfer
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C" // Profile messages
 
 	// Create GATT table
 	gattTable := &wire.GATTTable{
 		Services: []wire.GATTService{
 			{
-				UUID: auraServiceUUID,
+				UUID: phone.AuraServiceUUID,
 				Type: "primary",
 				Characteristics: []wire.GATTCharacteristic{
 					{
-						UUID:       auraTextCharUUID,
+						UUID:       phone.AuraProtocolCharUUID,
 						Properties: []string{"read", "write", "notify"},
 					},
 					{
-						UUID:       auraPhotoCharUUID,
+						UUID:       phone.AuraPhotoCharUUID,
 						Properties: []string{"read", "write", "notify"},
 					},
 					{
-						UUID:       auraProfileCharUUID,
+						UUID:       phone.AuraProfileCharUUID,
 						Properties: []string{"read", "write", "notify"},
 					},
 				},
@@ -258,7 +250,7 @@ func (a *Android) setupBLE() {
 	txPowerLevel := 0
 	advertisingData := &wire.AdvertisingData{
 		DeviceName:    a.deviceName,
-		ServiceUUIDs:  []string{auraServiceUUID},
+		ServiceUUIDs:  []string{phone.AuraServiceUUID},
 		TxPowerLevel:  &txPowerLevel,
 		IsConnectable: true,
 	}
@@ -333,7 +325,6 @@ func (a *Android) Start() {
 	}()
 
 	// Start advertising and GATT server (Peripheral mode)
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	settings := &kotlin.AdvertiseSettings{
 		AdvertiseMode: kotlin.ADVERTISE_MODE_LOW_LATENCY,
 		Connectable:   true,
@@ -342,7 +333,7 @@ func (a *Android) Start() {
 	}
 
 	advertiseData := &kotlin.AdvertiseData{
-		ServiceUUIDs:        []string{auraServiceUUID},
+		ServiceUUIDs:        []string{phone.AuraServiceUUID},
 		IncludeDeviceName:   true,
 		IncludeTxPowerLevel: true,
 	}
@@ -622,27 +613,23 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 
 	logger.Debug(prefix, "🔍 Discovered %d services", len(gatt.GetServices()))
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	// Enable notifications for characteristics (matches real Android behavior)
-	textChar := gatt.GetCharacteristic(auraServiceUUID, auraTextCharUUID)
+	textChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
 	if textChar != nil {
 		if !gatt.SetCharacteristicNotification(textChar, true) {
 			logger.Error(prefix, "❌ Failed to enable notifications for text characteristic")
 		}
 	}
 
-	photoChar := gatt.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+	photoChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraPhotoCharUUID)
 	if photoChar != nil {
 		if !gatt.SetCharacteristicNotification(photoChar, true) {
 			logger.Error(prefix, "❌ Failed to enable notifications for photo characteristic")
 		}
 	}
 
-	profileChar := gatt.GetCharacteristic(auraServiceUUID, auraProfileCharUUID)
+	profileChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProfileCharUUID)
 	if profileChar != nil {
 		if !gatt.SetCharacteristicNotification(profileChar, true) {
 			logger.Error(prefix, "❌ Failed to enable notifications for profile characteristic")
@@ -671,18 +658,15 @@ func (a *Android) OnCharacteristicRead(gatt *kotlin.BluetoothGatt, characteristi
 }
 
 func (a *Android) OnCharacteristicChanged(gatt *kotlin.BluetoothGatt, characteristic *kotlin.BluetoothGattCharacteristic) {
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	// Handle based on characteristic type
-	if characteristic.UUID == auraTextCharUUID {
+	if characteristic.UUID == phone.AuraProtocolCharUUID {
 		// Text characteristic is for HandshakeMessage only
 		a.handleHandshakeMessage(gatt, characteristic.Value)
-	} else if characteristic.UUID == auraPhotoCharUUID {
+	} else if characteristic.UUID == phone.AuraPhotoCharUUID {
 		// Photo characteristic is for photo transfer
 		a.handlePhotoMessage(gatt, characteristic.Value)
-	} else if characteristic.UUID == auraProfileCharUUID {
+	} else if characteristic.UUID == phone.AuraProfileCharUUID {
 		// Profile characteristic is for ProfileMessage
 		a.handleProfileMessage(gatt, characteristic.Value)
 	}
@@ -692,11 +676,9 @@ func (a *Android) OnCharacteristicChanged(gatt *kotlin.BluetoothGatt, characteri
 func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
 
 	// Get the text characteristic
-	textChar := gatt.GetCharacteristic(auraServiceUUID, auraTextCharUUID)
+	textChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
 	if textChar == nil {
 		return fmt.Errorf("text characteristic not found")
 	}
@@ -916,10 +898,8 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] Loaded photo: size=%d, chunks=%d, crc=%08X",
 		len(photoData), len(chunks), totalCRC)
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 
-	photoChar := gatt.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+	photoChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraPhotoCharUUID)
 	if photoChar == nil {
 		err = fmt.Errorf("photo characteristic not found")
 		return err
@@ -1296,8 +1276,6 @@ func (a *Android) checkStalePhotoTransfers() {
 	staleTimeout := 5 * time.Second
 	maxRetransmits := 3
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 
 	// Check central mode transfers (receiving from remote GATT servers)
 	a.mu.Lock()
@@ -1347,7 +1325,7 @@ func (a *Android) checkStalePhotoTransfers() {
 				retransReq := phototransfer.EncodeRetransmitRequest(chunks)
 				gatt := a.connectedGatts[rUUID]
 				if gatt != nil {
-					char := gatt.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+					char := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraPhotoCharUUID)
 					if char != nil {
 						char.Value = retransReq
 						if !gatt.WriteCharacteristic(char) {
@@ -1412,7 +1390,7 @@ func (a *Android) checkStalePhotoTransfers() {
 			// Send retransmit request via wire (server mode)
 			go func(sUUID string, chunks []uint16) {
 				retransReq := phototransfer.EncodeRetransmitRequest(chunks)
-				if err := a.wire.WriteCharacteristic(sUUID, auraServiceUUID, auraPhotoCharUUID, retransReq); err != nil {
+				if err := a.wire.WriteCharacteristic(sUUID, phone.AuraServiceUUID, phone.AuraPhotoCharUUID, retransReq); err != nil {
 					logger.Warn(prefix, "❌ Failed to send retransmit request to %s (server mode): %v", sUUID[:8], err)
 				}
 			}(senderUUID, missingChunks)
@@ -1498,9 +1476,6 @@ func (a *Android) UpdateProfile(profile *LocalProfile) error {
 	}
 
 	// Send via wire (for devices that connected to us as Peripheral)
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	firstName := profile.FirstName
 	if firstName == "" {
@@ -1518,7 +1493,7 @@ func (a *Android) UpdateProfile(profile *LocalProfile) error {
 				ProfileVersion:  profile.ProfileVersion,
 			}
 			data, _ := proto2.Marshal(msg)
-			if err := a.wire.WriteCharacteristic(uuid, auraServiceUUID, auraTextCharUUID, data); err != nil {
+			if err := a.wire.WriteCharacteristic(uuid, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data); err != nil {
 				logger.Error(prefix, "❌ Failed to send handshake to central %s: %v", uuid[:8], err)
 			} else {
 				logger.Debug(prefix, "📤 Sent handshake to central %s", uuid[:8])
@@ -1543,7 +1518,7 @@ func (a *Android) UpdateProfile(profile *LocalProfile) error {
 				Telegram:    profile.Telegram,
 			}
 			data, _ := proto2.Marshal(profileMsg)
-			if err := a.wire.WriteCharacteristic(uuid, auraServiceUUID, auraProfileCharUUID, data); err != nil {
+			if err := a.wire.WriteCharacteristic(uuid, phone.AuraServiceUUID, phone.AuraProfileCharUUID, data); err != nil {
 				logger.Error(prefix, "❌ Failed to send profile to central %s: %v", uuid[:8], err)
 			} else {
 				logger.Debug(prefix, "📤 Sent profile to central %s", uuid[:8])
@@ -1558,10 +1533,8 @@ func (a *Android) UpdateProfile(profile *LocalProfile) error {
 func (a *Android) sendProfileMessage(gatt *kotlin.BluetoothGatt) error {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
-	profileChar := gatt.GetCharacteristic(auraServiceUUID, auraProfileCharUUID)
+	profileChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProfileCharUUID)
 	if profileChar == nil {
 		return fmt.Errorf("profile characteristic not found")
 	}
@@ -1717,9 +1690,6 @@ func (d *androidGattServerDelegate) OnCharacteristicReadRequest(device *kotlin.B
 func (d *androidGattServerDelegate) OnCharacteristicWriteRequest(device *kotlin.BluetoothDevice, requestId int, characteristic *kotlin.BluetoothGattCharacteristic, preparedWrite bool, responseNeeded bool, offset int, value []byte) {
 	prefix := fmt.Sprintf("%s Android", d.android.hardwareUUID[:8])
 
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	logger.Debug(prefix, "📥 GATT server: Write request from %s to char %s (%d bytes)", device.Address[:8], characteristic.UUID[:8], len(value))
 
@@ -1727,15 +1697,15 @@ func (d *androidGattServerDelegate) OnCharacteristicWriteRequest(device *kotlin.
 	// We use specialized handlers that work with device UUID instead of requiring a GATT connection
 	senderUUID := device.Address
 	switch characteristic.UUID {
-	case auraTextCharUUID:
+	case phone.AuraProtocolCharUUID:
 		// Handshake message
 		d.android.handleHandshakeMessageFromServer(senderUUID, value)
-	case auraPhotoCharUUID:
+	case phone.AuraPhotoCharUUID:
 		// Photo chunk - copy data before passing to goroutine to avoid race condition
 		dataCopy := make([]byte, len(value))
 		copy(dataCopy, value)
 		go d.android.handlePhotoMessageFromServer(senderUUID, dataCopy)
-	case auraProfileCharUUID:
+	case phone.AuraProfileCharUUID:
 		// Profile message - copy data before passing to goroutine
 		dataCopy := make([]byte, len(value))
 		copy(dataCopy, value)
@@ -1856,8 +1826,6 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 	// Only send handshake back if this is the first time or it's been a while (or if we need their new photo)
 	if shouldReply {
 		// Send our handshake back to the central device
-		const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-		const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
 
 		firstName := a.localProfile.FirstName
 		if firstName == "" {
@@ -1873,7 +1841,7 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 		}
 
 		replyData, _ := proto2.Marshal(replyMsg)
-		if err := a.wire.WriteCharacteristic(senderUUID, auraServiceUUID, auraTextCharUUID, replyData); err != nil {
+		if err := a.wire.WriteCharacteristic(senderUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, replyData); err != nil {
 			logger.Error(prefix, "❌ Failed to send handshake back: %v", err)
 		} else {
 			logger.Debug(prefix, "📤 Sent handshake back to %s", senderUUID[:8])
@@ -1935,19 +1903,17 @@ func (a *Android) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 	logger.Info(prefix, "📸 Sending photo to %s via server mode (%d bytes, %d chunks, CRC: %08X)",
 		targetUUID[:8], len(photoData), len(chunks), totalCRC)
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 
 	// Send metadata packet via notification (server mode sends to subscribed centrals)
 	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
-	if err = a.wire.NotifyCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, metadata); err != nil {
+	if err = a.wire.NotifyCharacteristic(targetUUID, phone.AuraServiceUUID, phone.AuraPhotoCharUUID, metadata); err != nil {
 		return fmt.Errorf("failed to send metadata: %w", err)
 	}
 
 	// Send chunks via notifications
 	for i, chunk := range chunks {
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
-		if err = a.wire.NotifyCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, chunkPacket); err != nil {
+		if err = a.wire.NotifyCharacteristic(targetUUID, phone.AuraServiceUUID, phone.AuraPhotoCharUUID, chunkPacket); err != nil {
 			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s (server mode): %v", i+1, len(chunks), targetUUID[:8], err)
 			return fmt.Errorf("failed to send chunk %d: %w", i, err)
 		}
@@ -1973,8 +1939,6 @@ func (a *Android) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 func (a *Android) sendHandshakeToDevice(targetUUID string) error {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
 
 	firstName := a.localProfile.FirstName
 	if firstName == "" {
@@ -2001,7 +1965,7 @@ func (a *Android) sendHandshakeToDevice(targetUUID string) error {
 		return fmt.Errorf("failed to marshal handshake: %w", err)
 	}
 
-	if err := a.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraTextCharUUID, data); err != nil {
+	if err := a.wire.WriteCharacteristic(targetUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data); err != nil {
 		return fmt.Errorf("failed to send handshake: %w", err)
 	}
 

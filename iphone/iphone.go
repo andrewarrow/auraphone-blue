@@ -173,10 +173,6 @@ func NewIPhone(hardwareUUID string) *iPhone {
 
 // initializePeripheralMode sets up CBPeripheralManager for peripheral role
 func (ip *iPhone) initializePeripheralMode() {
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	// Create peripheral manager with wrapper delegate, passing shared wire
 	delegate := &iPhonePeripheralDelegate{iphone: ip}
@@ -184,25 +180,25 @@ func (ip *iPhone) initializePeripheralMode() {
 
 	// Create the Aura service
 	service := &swift.CBMutableService{
-		UUID:      auraServiceUUID,
+		UUID:      phone.AuraServiceUUID,
 		IsPrimary: true,
 	}
 
 	// Add characteristics and store references for sending notifications
 	ip.textChar = &swift.CBMutableCharacteristic{
-		UUID:       auraTextCharUUID,
+		UUID:       phone.AuraProtocolCharUUID,
 		Properties: swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
 		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
 		Service:    service,
 	}
 	ip.photoChar = &swift.CBMutableCharacteristic{
-		UUID:       auraPhotoCharUUID,
+		UUID:       phone.AuraPhotoCharUUID,
 		Properties: swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
 		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
 		Service:    service,
 	}
 	ip.profileChar = &swift.CBMutableCharacteristic{
-		UUID:       auraProfileCharUUID,
+		UUID:       phone.AuraProfileCharUUID,
 		Properties: swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
 		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
 		Service:    service,
@@ -215,28 +211,23 @@ func (ip *iPhone) initializePeripheralMode() {
 
 // setupBLE configures GATT table and advertising data
 func (ip *iPhone) setupBLE() {
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"      // Handshake messages
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"    // Photo transfer
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C" // Profile messages
-
 	// Create GATT table
 	gattTable := &wire.GATTTable{
 		Services: []wire.GATTService{
 			{
-				UUID: auraServiceUUID,
+				UUID: phone.AuraServiceUUID,
 				Type: "primary",
 				Characteristics: []wire.GATTCharacteristic{
 					{
-						UUID:       auraTextCharUUID,
+						UUID:       phone.AuraProtocolCharUUID,
 						Properties: []string{"read", "write", "notify"},
 					},
 					{
-						UUID:       auraPhotoCharUUID,
+						UUID:       phone.AuraPhotoCharUUID,
 						Properties: []string{"read", "write", "notify"},
 					},
 					{
-						UUID:       auraProfileCharUUID,
+						UUID:       phone.AuraProfileCharUUID,
 						Properties: []string{"read", "write", "notify"},
 					},
 				},
@@ -253,7 +244,7 @@ func (ip *iPhone) setupBLE() {
 	txPowerLevel := 0
 	advertisingData := &wire.AdvertisingData{
 		DeviceName:    ip.deviceName,
-		ServiceUUIDs:  []string{auraServiceUUID},
+		ServiceUUIDs:  []string{phone.AuraServiceUUID},
 		TxPowerLevel:  &txPowerLevel,
 		IsConnectable: true,
 	}
@@ -327,10 +318,9 @@ func (ip *iPhone) Start() {
 	}()
 
 	// Start advertising (Peripheral mode)
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	advertisingData := map[string]interface{}{
 		"kCBAdvDataLocalName":    ip.deviceName,
-		"kCBAdvDataServiceUUIDs": []string{auraServiceUUID},
+		"kCBAdvDataServiceUUIDs": []string{phone.AuraServiceUUID},
 	}
 
 	ip.peripheralManager.StartAdvertising(advertisingData)
@@ -456,8 +446,7 @@ func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, periphera
 	peripheral.Delegate = ip
 
 	// Discover services
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	peripheral.DiscoverServices([]string{auraServiceUUID})
+	peripheral.DiscoverServices([]string{phone.AuraServiceUUID})
 }
 
 func (ip *iPhone) DidFailToConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, err error) {
@@ -610,12 +599,9 @@ func (ip *iPhone) DidDiscoverServices(peripheral *swift.CBPeripheral, services [
 	logger.Debug(prefix, "🔍 Discovered %d services", len(services))
 
 	// Discover characteristics for all services
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	for _, service := range services {
-		peripheral.DiscoverCharacteristics([]string{auraTextCharUUID, auraPhotoCharUUID, auraProfileCharUUID}, service)
+		peripheral.DiscoverCharacteristics([]string{phone.AuraProtocolCharUUID, phone.AuraPhotoCharUUID, phone.AuraProfileCharUUID}, service)
 	}
 }
 
@@ -628,13 +614,10 @@ func (ip *iPhone) DidDiscoverCharacteristics(peripheral *swift.CBPeripheral, ser
 
 	logger.Debug(prefix, "🔍 Discovered %d characteristics", len(service.Characteristics))
 
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	// Enable notifications for characteristics (matches real iOS behavior)
 	for _, char := range service.Characteristics {
-		if char.UUID == auraTextCharUUID || char.UUID == auraPhotoCharUUID || char.UUID == auraProfileCharUUID {
+		if char.UUID == phone.AuraProtocolCharUUID || char.UUID == phone.AuraPhotoCharUUID || char.UUID == phone.AuraProfileCharUUID {
 			if err := peripheral.SetNotifyValue(true, char); err != nil {
 				logger.Error(prefix, "❌ Failed to enable notifications for %s: %v", char.UUID[:8], err)
 			}
@@ -665,18 +648,15 @@ func (ip *iPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral
 		return
 	}
 
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	// Handle based on characteristic type
-	if characteristic.UUID == auraTextCharUUID {
+	if characteristic.UUID == phone.AuraProtocolCharUUID {
 		// Text characteristic is for HandshakeMessage only
 		ip.handleHandshakeMessage(peripheral, characteristic.Value)
-	} else if characteristic.UUID == auraPhotoCharUUID {
+	} else if characteristic.UUID == phone.AuraPhotoCharUUID {
 		// Photo characteristic is for photo transfer
 		ip.handlePhotoMessage(peripheral, characteristic.Value)
-	} else if characteristic.UUID == auraProfileCharUUID {
+	} else if characteristic.UUID == phone.AuraProfileCharUUID {
 		// Profile characteristic is for ProfileMessage
 		ip.handleProfileMessage(peripheral, characteristic.Value)
 	}
@@ -686,11 +666,9 @@ func (ip *iPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral
 func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
 
 	// Get the text characteristic
-	textChar := peripheral.GetCharacteristic(auraServiceUUID, auraTextCharUUID)
+	textChar := peripheral.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
 	if textChar == nil {
 		return fmt.Errorf("text characteristic not found")
 	}
@@ -908,10 +886,8 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] Loaded photo: size=%d, chunks=%d, crc=%08X",
 		len(photoData), len(chunks), totalCRC)
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 
-	photoChar := peripheral.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+	photoChar := peripheral.GetCharacteristic(phone.AuraServiceUUID, phone.AuraPhotoCharUUID)
 	if photoChar == nil {
 		err = fmt.Errorf("photo characteristic not found")
 		return err
@@ -970,9 +946,7 @@ func (ip *iPhone) handleRetransmitRequest(peripheral *swift.CBPeripheral, missin
 
 	logger.Info(prefix, "🔄 Retransmitting %d chunks to %s", len(missingChunks), peripheral.UUID[:8])
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
-	photoChar := peripheral.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+	photoChar := peripheral.GetCharacteristic(phone.AuraServiceUUID, phone.AuraPhotoCharUUID)
 	if photoChar == nil {
 		return fmt.Errorf("photo characteristic not found")
 	}
@@ -1121,8 +1095,6 @@ func (ip *iPhone) processPhotoChunks(peripheralUUID string, state *photoReceiveS
 		if uint16(len(state.receivedChunks)) == state.expectedChunks {
 			logger.Debug(prefix, "📸 [PHOTO-RX-STATE] CHUNK_ACCUMULATING → COMPLETE (all %d chunks received)", state.expectedChunks)
 			// Send acknowledgment before cleanup
-			const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-			const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 			ackPacket := phototransfer.EncodeAck(state.expectedCRC)
 
 			ip.mu.RLock()
@@ -1131,7 +1103,7 @@ func (ip *iPhone) processPhotoChunks(peripheralUUID string, state *photoReceiveS
 
 			if peripheral != nil {
 				go func() {
-					photoChar := peripheral.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+					photoChar := peripheral.GetCharacteristic(phone.AuraServiceUUID, phone.AuraPhotoCharUUID)
 					if photoChar != nil {
 						peripheral.WriteValue(ackPacket, photoChar, swift.CBCharacteristicWriteWithResponse)
 					}
@@ -1336,8 +1308,6 @@ func (ip *iPhone) checkStalePhotoTransfers() {
 	staleTimeout := 5 * time.Second
 	maxRetransmits := 3
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 
 	// Check central mode transfers (receiving from peripherals)
 	ip.mu.Lock()
@@ -1387,7 +1357,7 @@ func (ip *iPhone) checkStalePhotoTransfers() {
 				retransReq := phototransfer.EncodeRetransmitRequest(chunks)
 				peripheral := ip.connectedPeripherals[pUUID]
 				if peripheral != nil {
-					photoChar := peripheral.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
+					photoChar := peripheral.GetCharacteristic(phone.AuraServiceUUID, phone.AuraPhotoCharUUID)
 					if photoChar != nil {
 						if err := peripheral.WriteValue(retransReq, photoChar, swift.CBCharacteristicWriteWithResponse); err != nil {
 							logger.Warn(prefix, "❌ Failed to send retransmit request to %s: %v", pUUID[:8], err)
@@ -1451,7 +1421,7 @@ func (ip *iPhone) checkStalePhotoTransfers() {
 			// Send retransmit request via wire (server mode)
 			go func(sUUID string, chunks []uint16) {
 				retransReq := phototransfer.EncodeRetransmitRequest(chunks)
-				if err := ip.wire.WriteCharacteristic(sUUID, auraServiceUUID, auraPhotoCharUUID, retransReq); err != nil {
+				if err := ip.wire.WriteCharacteristic(sUUID, phone.AuraServiceUUID, phone.AuraPhotoCharUUID, retransReq); err != nil {
 					logger.Warn(prefix, "❌ Failed to send retransmit request to %s (server mode): %v", sUUID[:8], err)
 				}
 			}(senderUUID, missingChunks)
@@ -1537,10 +1507,8 @@ func (ip *iPhone) UpdateProfile(profile *LocalProfile) error {
 func (ip *iPhone) sendProfileMessage(peripheral *swift.CBPeripheral) error {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
-	profileChar := peripheral.GetCharacteristic(auraServiceUUID, auraProfileCharUUID)
+	profileChar := peripheral.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProfileCharUUID)
 	if profileChar == nil {
 		return fmt.Errorf("profile characteristic not found")
 	}
@@ -1674,9 +1642,6 @@ func (d *iPhonePeripheralDelegate) DidReceiveReadRequest(peripheralManager *swif
 func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *swift.CBPeripheralManager, requests []*swift.CBATTRequest) {
 	prefix := fmt.Sprintf("%s iOS", d.iphone.hardwareUUID[:8])
 
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
-	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
 	for _, request := range requests {
 		logger.Debug(prefix, "📥 Peripheral GATT write from %s to char %s (%d bytes)",
@@ -1687,7 +1652,7 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 
 		// Process based on characteristic - use existing handler methods
 		switch request.Characteristic.UUID {
-		case auraTextCharUUID:
+		case phone.AuraProtocolCharUUID:
 			// Handshake message - decode and process
 			handshake := &proto.HandshakeMessage{}
 			if err := proto2.Unmarshal(request.Value, handshake); err == nil {
@@ -1771,12 +1736,12 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 					go d.iphone.sendPhotoToDevice(senderUUID, rxPhotoHash)
 				}
 			}
-		case auraPhotoCharUUID:
+		case phone.AuraPhotoCharUUID:
 			// Photo chunk - copy data before passing to goroutine to avoid race condition
 			dataCopy := make([]byte, len(request.Value))
 			copy(dataCopy, request.Value)
 			go d.iphone.handlePhotoMessageFromUUID(senderUUID, dataCopy)
-		case auraProfileCharUUID:
+		case phone.AuraProfileCharUUID:
 			// Profile message - copy data before passing to goroutine
 			dataCopy := make([]byte, len(request.Value))
 			copy(dataCopy, request.Value)
@@ -2041,12 +2006,10 @@ func (ip *iPhone) processPhotoChunksFromServer(senderUUID string, state *photoRe
 		// Check if complete
 		if uint16(len(state.receivedChunks)) == state.expectedChunks {
 			// Send acknowledgment before cleanup
-			const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-			const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 			ackPacket := phototransfer.EncodeAck(state.expectedCRC)
 
 			go func() {
-				ip.wire.WriteCharacteristic(senderUUID, auraServiceUUID, auraPhotoCharUUID, ackPacket)
+				ip.wire.WriteCharacteristic(senderUUID, phone.AuraServiceUUID, phone.AuraPhotoCharUUID, ackPacket)
 			}()
 
 			ip.reassembleAndSavePhotoFromServer(senderUUID, state)
