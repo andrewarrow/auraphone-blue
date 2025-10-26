@@ -302,11 +302,11 @@ func (mv *MeshView) BuildGossipMessage(ourPhotoHashHex, ourFirstName string) *pr
 	mv.lastGossipTime = time.Now()
 
 	// Build device states including ourselves
-	meshView := []*proto.DevicePhotoState{}
+	meshView := []*proto.DeviceState{}
 
 	// Add ourselves first
 	ourHashBytes, _ := hex.DecodeString(ourPhotoHashHex)
-	meshView = append(meshView, &proto.DevicePhotoState{
+	meshView = append(meshView, &proto.DeviceState{
 		DeviceId:          mv.ourDeviceID,
 		PhotoHash:         ourHashBytes,
 		LastSeenTimestamp: time.Now().Unix(),
@@ -316,7 +316,7 @@ func (mv *MeshView) BuildGossipMessage(ourPhotoHashHex, ourFirstName string) *pr
 	// Add all known devices
 	for _, device := range mv.devices {
 		hashBytes, _ := hex.DecodeString(device.PhotoHash)
-		meshView = append(meshView, &proto.DevicePhotoState{
+		meshView = append(meshView, &proto.DeviceState{
 			DeviceId:          device.DeviceID,
 			PhotoHash:         hashBytes,
 			LastSeenTimestamp: device.LastSeenTime.Unix(),

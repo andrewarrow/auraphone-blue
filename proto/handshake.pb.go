@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.33.0
-// source: proto/handshake.proto
+// source: handshake.proto
 
 package proto
 
@@ -37,7 +37,7 @@ type HandshakeMessage struct {
 
 func (x *HandshakeMessage) Reset() {
 	*x = HandshakeMessage{}
-	mi := &file_proto_handshake_proto_msgTypes[0]
+	mi := &file_handshake_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -49,7 +49,7 @@ func (x *HandshakeMessage) String() string {
 func (*HandshakeMessage) ProtoMessage() {}
 
 func (x *HandshakeMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[0]
+	mi := &file_handshake_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -62,7 +62,7 @@ func (x *HandshakeMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HandshakeMessage.ProtoReflect.Descriptor instead.
 func (*HandshakeMessage) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{0}
+	return file_handshake_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *HandshakeMessage) GetDeviceId() string {
@@ -130,7 +130,7 @@ type ProfileMessage struct {
 
 func (x *ProfileMessage) Reset() {
 	*x = ProfileMessage{}
-	mi := &file_proto_handshake_proto_msgTypes[1]
+	mi := &file_handshake_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -142,7 +142,7 @@ func (x *ProfileMessage) String() string {
 func (*ProfileMessage) ProtoMessage() {}
 
 func (x *ProfileMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[1]
+	mi := &file_handshake_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -155,7 +155,7 @@ func (x *ProfileMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProfileMessage.ProtoReflect.Descriptor instead.
 func (*ProfileMessage) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{1}
+	return file_handshake_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ProfileMessage) GetDeviceId() string {
@@ -261,7 +261,7 @@ type PhotoCompletionAck struct {
 
 func (x *PhotoCompletionAck) Reset() {
 	*x = PhotoCompletionAck{}
-	mi := &file_proto_handshake_proto_msgTypes[2]
+	mi := &file_handshake_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -273,7 +273,7 @@ func (x *PhotoCompletionAck) String() string {
 func (*PhotoCompletionAck) ProtoMessage() {}
 
 func (x *PhotoCompletionAck) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[2]
+	mi := &file_handshake_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -286,7 +286,7 @@ func (x *PhotoCompletionAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PhotoCompletionAck.ProtoReflect.Descriptor instead.
 func (*PhotoCompletionAck) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{2}
+	return file_handshake_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PhotoCompletionAck) GetDeviceId() string {
@@ -310,32 +310,34 @@ func (x *PhotoCompletionAck) GetSuccess() bool {
 	return false
 }
 
-// Single device's photo state in the mesh
-type DevicePhotoState struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	DeviceId          string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`                               // Logical base36 ID
-	PhotoHash         []byte                 `protobuf:"bytes,2,opt,name=photo_hash,json=photoHash,proto3" json:"photo_hash,omitempty"`                            // SHA-256 hash (32 bytes) of their current photo
-	LastSeenTimestamp int64                  `protobuf:"varint,3,opt,name=last_seen_timestamp,json=lastSeenTimestamp,proto3" json:"last_seen_timestamp,omitempty"` // Unix timestamp when this state was last observed
-	FirstName         string                 `protobuf:"bytes,4,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`                            // Cached first name
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+// Single device's state in the mesh (photo + profile)
+type DeviceState struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	DeviceId           string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`                                 // Logical base36 ID
+	PhotoHash          []byte                 `protobuf:"bytes,2,opt,name=photo_hash,json=photoHash,proto3" json:"photo_hash,omitempty"`                              // SHA-256 hash (32 bytes) of their current photo
+	LastSeenTimestamp  int64                  `protobuf:"varint,3,opt,name=last_seen_timestamp,json=lastSeenTimestamp,proto3" json:"last_seen_timestamp,omitempty"`   // Unix timestamp when this state was last observed
+	FirstName          string                 `protobuf:"bytes,4,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`                              // Cached first name
+	ProfileVersion     int32                  `protobuf:"varint,5,opt,name=profile_version,json=profileVersion,proto3" json:"profile_version,omitempty"`              // Profile version number, increments on ANY profile change
+	ProfileSummaryHash []byte                 `protobuf:"bytes,6,opt,name=profile_summary_hash,json=profileSummaryHash,proto3" json:"profile_summary_hash,omitempty"` // SHA-256 hash of all profile fields for change detection
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
-func (x *DevicePhotoState) Reset() {
-	*x = DevicePhotoState{}
-	mi := &file_proto_handshake_proto_msgTypes[3]
+func (x *DeviceState) Reset() {
+	*x = DeviceState{}
+	mi := &file_handshake_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *DevicePhotoState) String() string {
+func (x *DeviceState) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*DevicePhotoState) ProtoMessage() {}
+func (*DeviceState) ProtoMessage() {}
 
-func (x *DevicePhotoState) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[3]
+func (x *DeviceState) ProtoReflect() protoreflect.Message {
+	mi := &file_handshake_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -346,37 +348,51 @@ func (x *DevicePhotoState) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use DevicePhotoState.ProtoReflect.Descriptor instead.
-func (*DevicePhotoState) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{3}
+// Deprecated: Use DeviceState.ProtoReflect.Descriptor instead.
+func (*DeviceState) Descriptor() ([]byte, []int) {
+	return file_handshake_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *DevicePhotoState) GetDeviceId() string {
+func (x *DeviceState) GetDeviceId() string {
 	if x != nil {
 		return x.DeviceId
 	}
 	return ""
 }
 
-func (x *DevicePhotoState) GetPhotoHash() []byte {
+func (x *DeviceState) GetPhotoHash() []byte {
 	if x != nil {
 		return x.PhotoHash
 	}
 	return nil
 }
 
-func (x *DevicePhotoState) GetLastSeenTimestamp() int64 {
+func (x *DeviceState) GetLastSeenTimestamp() int64 {
 	if x != nil {
 		return x.LastSeenTimestamp
 	}
 	return 0
 }
 
-func (x *DevicePhotoState) GetFirstName() string {
+func (x *DeviceState) GetFirstName() string {
 	if x != nil {
 		return x.FirstName
 	}
 	return ""
+}
+
+func (x *DeviceState) GetProfileVersion() int32 {
+	if x != nil {
+		return x.ProfileVersion
+	}
+	return 0
+}
+
+func (x *DeviceState) GetProfileSummaryHash() []byte {
+	if x != nil {
+		return x.ProfileSummaryHash
+	}
+	return nil
 }
 
 // Gossip message - exchanged periodically between neighbors
@@ -385,7 +401,7 @@ type GossipMessage struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	SenderDeviceId string                 `protobuf:"bytes,1,opt,name=sender_device_id,json=senderDeviceId,proto3" json:"sender_device_id,omitempty"` // Who is sending this gossip
 	Timestamp      int64                  `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                                  // When this gossip was created
-	MeshView       []*DevicePhotoState    `protobuf:"bytes,3,rep,name=mesh_view,json=meshView,proto3" json:"mesh_view,omitempty"`                     // Sender's view of all devices in network
+	MeshView       []*DeviceState         `protobuf:"bytes,3,rep,name=mesh_view,json=meshView,proto3" json:"mesh_view,omitempty"`                     // Sender's view of all devices in network
 	GossipRound    int32                  `protobuf:"varint,4,opt,name=gossip_round,json=gossipRound,proto3" json:"gossip_round,omitempty"`           // Increments with each gossip broadcast
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -393,7 +409,7 @@ type GossipMessage struct {
 
 func (x *GossipMessage) Reset() {
 	*x = GossipMessage{}
-	mi := &file_proto_handshake_proto_msgTypes[4]
+	mi := &file_handshake_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -405,7 +421,7 @@ func (x *GossipMessage) String() string {
 func (*GossipMessage) ProtoMessage() {}
 
 func (x *GossipMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[4]
+	mi := &file_handshake_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -418,7 +434,7 @@ func (x *GossipMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipMessage.ProtoReflect.Descriptor instead.
 func (*GossipMessage) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{4}
+	return file_handshake_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GossipMessage) GetSenderDeviceId() string {
@@ -435,7 +451,7 @@ func (x *GossipMessage) GetTimestamp() int64 {
 	return 0
 }
 
-func (x *GossipMessage) GetMeshView() []*DevicePhotoState {
+func (x *GossipMessage) GetMeshView() []*DeviceState {
 	if x != nil {
 		return x.MeshView
 	}
@@ -462,7 +478,7 @@ type PhotoRequestMessage struct {
 
 func (x *PhotoRequestMessage) Reset() {
 	*x = PhotoRequestMessage{}
-	mi := &file_proto_handshake_proto_msgTypes[5]
+	mi := &file_handshake_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -474,7 +490,7 @@ func (x *PhotoRequestMessage) String() string {
 func (*PhotoRequestMessage) ProtoMessage() {}
 
 func (x *PhotoRequestMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[5]
+	mi := &file_handshake_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -487,7 +503,7 @@ func (x *PhotoRequestMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PhotoRequestMessage.ProtoReflect.Descriptor instead.
 func (*PhotoRequestMessage) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{5}
+	return file_handshake_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PhotoRequestMessage) GetRequesterDeviceId() string {
@@ -511,11 +527,73 @@ func (x *PhotoRequestMessage) GetPhotoHash() []byte {
 	return nil
 }
 
-var File_proto_handshake_proto protoreflect.FileDescriptor
+// Request for profile details based on gossip information
+// Sent when device learns about a profile version it doesn't have
+type ProfileRequestMessage struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	RequesterDeviceId string                 `protobuf:"bytes,1,opt,name=requester_device_id,json=requesterDeviceId,proto3" json:"requester_device_id,omitempty"` // Who wants the profile
+	TargetDeviceId    string                 `protobuf:"bytes,2,opt,name=target_device_id,json=targetDeviceId,proto3" json:"target_device_id,omitempty"`          // Whose profile we want
+	ExpectedVersion   int32                  `protobuf:"varint,3,opt,name=expected_version,json=expectedVersion,proto3" json:"expected_version,omitempty"`        // Version number we're requesting
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
 
-const file_proto_handshake_proto_rawDesc = "" +
+func (x *ProfileRequestMessage) Reset() {
+	*x = ProfileRequestMessage{}
+	mi := &file_handshake_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileRequestMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileRequestMessage) ProtoMessage() {}
+
+func (x *ProfileRequestMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_handshake_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileRequestMessage.ProtoReflect.Descriptor instead.
+func (*ProfileRequestMessage) Descriptor() ([]byte, []int) {
+	return file_handshake_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ProfileRequestMessage) GetRequesterDeviceId() string {
+	if x != nil {
+		return x.RequesterDeviceId
+	}
+	return ""
+}
+
+func (x *ProfileRequestMessage) GetTargetDeviceId() string {
+	if x != nil {
+		return x.TargetDeviceId
+	}
+	return ""
+}
+
+func (x *ProfileRequestMessage) GetExpectedVersion() int32 {
+	if x != nil {
+		return x.ExpectedVersion
+	}
+	return 0
+}
+
+var File_handshake_proto protoreflect.FileDescriptor
+
+const file_handshake_proto_rawDesc = "" +
 	"\n" +
-	"\x15proto/handshake.proto\x12\tauraphone\"\xea\x01\n" +
+	"\x0fhandshake.proto\x12\tauraphone\"\xea\x01\n" +
 	"\x10HandshakeMessage\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
@@ -542,48 +620,55 @@ const file_proto_handshake_proto_rawDesc = "" +
 	"\x12PhotoCompletionAck\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12!\n" +
 	"\ftransfer_crc\x18\x02 \x01(\aR\vtransferCrc\x12\x18\n" +
-	"\asuccess\x18\x03 \x01(\bR\asuccess\"\x9d\x01\n" +
-	"\x10DevicePhotoState\x12\x1b\n" +
+	"\asuccess\x18\x03 \x01(\bR\asuccess\"\xf3\x01\n" +
+	"\vDeviceState\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
 	"photo_hash\x18\x02 \x01(\fR\tphotoHash\x12.\n" +
 	"\x13last_seen_timestamp\x18\x03 \x01(\x03R\x11lastSeenTimestamp\x12\x1d\n" +
 	"\n" +
-	"first_name\x18\x04 \x01(\tR\tfirstName\"\xb4\x01\n" +
+	"first_name\x18\x04 \x01(\tR\tfirstName\x12'\n" +
+	"\x0fprofile_version\x18\x05 \x01(\x05R\x0eprofileVersion\x120\n" +
+	"\x14profile_summary_hash\x18\x06 \x01(\fR\x12profileSummaryHash\"\xaf\x01\n" +
 	"\rGossipMessage\x12(\n" +
 	"\x10sender_device_id\x18\x01 \x01(\tR\x0esenderDeviceId\x12\x1c\n" +
-	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x128\n" +
-	"\tmesh_view\x18\x03 \x03(\v2\x1b.auraphone.DevicePhotoStateR\bmeshView\x12!\n" +
+	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x123\n" +
+	"\tmesh_view\x18\x03 \x03(\v2\x16.auraphone.DeviceStateR\bmeshView\x12!\n" +
 	"\fgossip_round\x18\x04 \x01(\x05R\vgossipRound\"\x8e\x01\n" +
 	"\x13PhotoRequestMessage\x12.\n" +
 	"\x13requester_device_id\x18\x01 \x01(\tR\x11requesterDeviceId\x12(\n" +
 	"\x10target_device_id\x18\x02 \x01(\tR\x0etargetDeviceId\x12\x1d\n" +
 	"\n" +
-	"photo_hash\x18\x03 \x01(\fR\tphotoHashB-Z+github.com/andrewarrow/auraphone-blue/protob\x06proto3"
+	"photo_hash\x18\x03 \x01(\fR\tphotoHash\"\x9c\x01\n" +
+	"\x15ProfileRequestMessage\x12.\n" +
+	"\x13requester_device_id\x18\x01 \x01(\tR\x11requesterDeviceId\x12(\n" +
+	"\x10target_device_id\x18\x02 \x01(\tR\x0etargetDeviceId\x12)\n" +
+	"\x10expected_version\x18\x03 \x01(\x05R\x0fexpectedVersionB-Z+github.com/andrewarrow/auraphone-blue/protob\x06proto3"
 
 var (
-	file_proto_handshake_proto_rawDescOnce sync.Once
-	file_proto_handshake_proto_rawDescData []byte
+	file_handshake_proto_rawDescOnce sync.Once
+	file_handshake_proto_rawDescData []byte
 )
 
-func file_proto_handshake_proto_rawDescGZIP() []byte {
-	file_proto_handshake_proto_rawDescOnce.Do(func() {
-		file_proto_handshake_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_handshake_proto_rawDesc), len(file_proto_handshake_proto_rawDesc)))
+func file_handshake_proto_rawDescGZIP() []byte {
+	file_handshake_proto_rawDescOnce.Do(func() {
+		file_handshake_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_handshake_proto_rawDesc), len(file_handshake_proto_rawDesc)))
 	})
-	return file_proto_handshake_proto_rawDescData
+	return file_handshake_proto_rawDescData
 }
 
-var file_proto_handshake_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
-var file_proto_handshake_proto_goTypes = []any{
-	(*HandshakeMessage)(nil),    // 0: auraphone.HandshakeMessage
-	(*ProfileMessage)(nil),      // 1: auraphone.ProfileMessage
-	(*PhotoCompletionAck)(nil),  // 2: auraphone.PhotoCompletionAck
-	(*DevicePhotoState)(nil),    // 3: auraphone.DevicePhotoState
-	(*GossipMessage)(nil),       // 4: auraphone.GossipMessage
-	(*PhotoRequestMessage)(nil), // 5: auraphone.PhotoRequestMessage
+var file_handshake_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_handshake_proto_goTypes = []any{
+	(*HandshakeMessage)(nil),      // 0: auraphone.HandshakeMessage
+	(*ProfileMessage)(nil),        // 1: auraphone.ProfileMessage
+	(*PhotoCompletionAck)(nil),    // 2: auraphone.PhotoCompletionAck
+	(*DeviceState)(nil),           // 3: auraphone.DeviceState
+	(*GossipMessage)(nil),         // 4: auraphone.GossipMessage
+	(*PhotoRequestMessage)(nil),   // 5: auraphone.PhotoRequestMessage
+	(*ProfileRequestMessage)(nil), // 6: auraphone.ProfileRequestMessage
 }
-var file_proto_handshake_proto_depIdxs = []int32{
-	3, // 0: auraphone.GossipMessage.mesh_view:type_name -> auraphone.DevicePhotoState
+var file_handshake_proto_depIdxs = []int32{
+	3, // 0: auraphone.GossipMessage.mesh_view:type_name -> auraphone.DeviceState
 	1, // [1:1] is the sub-list for method output_type
 	1, // [1:1] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
@@ -591,26 +676,26 @@ var file_proto_handshake_proto_depIdxs = []int32{
 	0, // [0:1] is the sub-list for field type_name
 }
 
-func init() { file_proto_handshake_proto_init() }
-func file_proto_handshake_proto_init() {
-	if File_proto_handshake_proto != nil {
+func init() { file_handshake_proto_init() }
+func file_handshake_proto_init() {
+	if File_handshake_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_handshake_proto_rawDesc), len(file_proto_handshake_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_handshake_proto_rawDesc), len(file_handshake_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_proto_handshake_proto_goTypes,
-		DependencyIndexes: file_proto_handshake_proto_depIdxs,
-		MessageInfos:      file_proto_handshake_proto_msgTypes,
+		GoTypes:           file_handshake_proto_goTypes,
+		DependencyIndexes: file_handshake_proto_depIdxs,
+		MessageInfos:      file_handshake_proto_msgTypes,
 	}.Build()
-	File_proto_handshake_proto = out.File
-	file_proto_handshake_proto_goTypes = nil
-	file_proto_handshake_proto_depIdxs = nil
+	File_handshake_proto = out.File
+	file_handshake_proto_goTypes = nil
+	file_handshake_proto_depIdxs = nil
 }

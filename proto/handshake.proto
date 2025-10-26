@@ -43,12 +43,14 @@ message PhotoCompletionAck {
 // Gossip Protocol Messages - For mesh network photo distribution
 // =================================================================
 
-// Single device's photo state in the mesh
-message DevicePhotoState {
+// Single device's state in the mesh (photo + profile)
+message DeviceState {
   string device_id = 1;           // Logical base36 ID
   bytes photo_hash = 2;           // SHA-256 hash (32 bytes) of their current photo
   int64 last_seen_timestamp = 3;  // Unix timestamp when this state was last observed
   string first_name = 4;          // Cached first name
+  int32 profile_version = 5;      // Profile version number, increments on ANY profile change
+  bytes profile_summary_hash = 6; // SHA-256 hash of all profile fields for change detection
 }
 
 // Gossip message - exchanged periodically between neighbors
@@ -56,7 +58,7 @@ message DevicePhotoState {
 message GossipMessage {
   string sender_device_id = 1;           // Who is sending this gossip
   int64 timestamp = 2;                   // When this gossip was created
-  repeated DevicePhotoState mesh_view = 3; // Sender's view of all devices in network
+  repeated DeviceState mesh_view = 3;    // Sender's view of all devices in network
   int32 gossip_round = 4;                // Increments with each gossip broadcast
 }
 
@@ -66,4 +68,12 @@ message PhotoRequestMessage {
   string requester_device_id = 1;  // Who wants the photo
   string target_device_id = 2;     // Whose photo we want
   bytes photo_hash = 3;            // Hash of the photo we want
+}
+
+// Request for profile details based on gossip information
+// Sent when device learns about a profile version it doesn't have
+message ProfileRequestMessage {
+  string requester_device_id = 1;  // Who wants the profile
+  string target_device_id = 2;     // Whose profile we want
+  int32 expected_version = 3;      // Version number we're requesting
 }
