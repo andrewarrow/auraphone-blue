@@ -26,7 +26,7 @@ func (ph *PhotoHandler) HandlePhotoRequest(senderUUID string, req *auraphone.Pho
 
 	// Load our photo from cache (stored as my_photo.jpg by SetProfilePhoto)
 	cacheManager := device.GetCacheManager()
-	photoPath := filepath.Join("data", device.GetHardwareUUID(), "cache", "my_photo.jpg")
+	photoPath := filepath.Join(GetDeviceCacheDir(device.GetHardwareUUID()), "my_photo.jpg")
 	photoData, err := os.ReadFile(photoPath)
 	if err != nil {
 		logger.Warn(prefix, "❌ Failed to read our photo: %v", err)

@@ -34,7 +34,7 @@ func GenerateBase36ID() string {
 // LoadOrGenerateDeviceID loads the cached device ID or generates a new one
 // The device ID is stored in cache/device_id.json and persists across app restarts
 func LoadOrGenerateDeviceID(hardwareUUID string) (string, error) {
-	cachePath := filepath.Join("data", hardwareUUID, "cache", "device_id.json")
+	cachePath := filepath.Join(GetDeviceCacheDir(hardwareUUID), "device_id.json")
 
 	// Try to load existing device ID
 	data, err := os.ReadFile(cachePath)

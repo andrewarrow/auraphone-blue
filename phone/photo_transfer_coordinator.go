@@ -79,7 +79,7 @@ type PhotoTransferCoordinator struct {
 
 // NewPhotoTransferCoordinator creates a new coordinator and loads persistent state from disk
 func NewPhotoTransferCoordinator(hardwareUUID string) *PhotoTransferCoordinator {
-	devicePath := filepath.Join("data", hardwareUUID, "cache")
+	devicePath := GetDeviceCacheDir(hardwareUUID)
 	statePath := filepath.Join(devicePath, "photo_transfer_state.json")
 
 	coordinator := &PhotoTransferCoordinator{
