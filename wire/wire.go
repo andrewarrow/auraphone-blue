@@ -286,8 +286,15 @@ func (sw *Wire) handleConnection(conn net.Conn) {
 	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 		"📞 Accepted connection from %s", remoteUUID[:8])
 
-	// Store connection
+	// Store connection (close any existing duplicate connection first)
 	sw.connMutex.Lock()
+	if existingConn, exists := sw.connections[remoteUUID]; exists {
+		// Close the old connection before accepting new one
+		// This prevents multiple readLoop goroutines from fragmenting the message stream
+		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"🔌 Closing duplicate connection from %s (new connection will replace it)", remoteUUID[:8])
+		existingConn.Close()
+	}
 	sw.connections[remoteUUID] = conn
 	sw.connectionStates[remoteUUID] = StateConnected
 	sw.connMutex.Unlock()

@@ -140,8 +140,8 @@ func NewAndroid(hardwareUUID string) *Android {
 		useAutoConnect: false, // Default: manual reconnect (matches real Android apps)
 	}
 
-	// Initialize wire with hardware UUID
-	a.wire = wire.NewWire(hardwareUUID)
+	// Initialize wire with hardware UUID and device name
+	a.wire = wire.NewWireWithPlatform(hardwareUUID, wire.PlatformAndroid, deviceName, nil)
 	if err := a.wire.InitializeDevice(); err != nil {
 		fmt.Printf("Failed to initialize Android device: %v\n", err)
 		return nil

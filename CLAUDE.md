@@ -1,4 +1,4 @@
-please do not run go build or go run yourself. Just edit the code and tell me when you are done.
+you can edit the code just please do not run go build or go run yourself. Just edit the code and tell me when you are done and I'll run go run or go build.
 
 make sure never to write logic that cheats. this program is a simulator to simulate real phones
 using real bluetooth. if you cheat and do things like instantly transfer a photo from one phone

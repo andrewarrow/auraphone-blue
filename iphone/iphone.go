@@ -134,8 +134,8 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		photoReceiveStateServer: make(map[string]*photoReceiveState),
 	}
 
-	// Initialize wire with hardware UUID
-	ip.wire = wire.NewWire(hardwareUUID)
+	// Initialize wire with hardware UUID and device name
+	ip.wire = wire.NewWireWithPlatform(hardwareUUID, wire.PlatformIOS, deviceName, nil)
 	if err := ip.wire.InitializeDevice(); err != nil {
 		fmt.Printf("Failed to initialize iOS device: %v\n", err)
 		return nil
