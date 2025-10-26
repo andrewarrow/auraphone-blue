@@ -5,11 +5,16 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/user/auraphone-blue/phone"
 )
 
 // TestDualRoleMessageDelivery verifies that messages are correctly delivered
 // in a dual-role scenario where both devices act as Central and Peripheral
 func TestDualRoleMessageDelivery(t *testing.T) {
+	// Clean up any leftover test data to prevent cross-test contamination
+	phone.CleanupDataDir()
+
 	// Use perfect simulation config for deterministic testing
 	config := PerfectSimulationConfig()
 
@@ -142,6 +147,9 @@ func TestDualRoleMessageDelivery(t *testing.T) {
 
 // TestNotificationDelivery verifies that notifications flow correctly in the opposite direction
 func TestNotificationDelivery(t *testing.T) {
+	// Clean up any leftover test data to prevent cross-test contamination
+	phone.CleanupDataDir()
+
 	config := PerfectSimulationConfig()
 
 	device1UUID := "33333333-3333-3333-3333-333333333333"
@@ -266,6 +274,9 @@ func TestNotificationDelivery(t *testing.T) {
 // TestConcurrentPollingDoesNotLoseMessages verifies that when both
 // CBPeripheral and CBPeripheralManager poll simultaneously, no messages are lost
 func TestConcurrentPollingDoesNotLoseMessages(t *testing.T) {
+	// Clean up any leftover test data to prevent cross-test contamination
+	phone.CleanupDataDir()
+
 	config := PerfectSimulationConfig()
 
 	device1UUID := "55555555-5555-5555-5555-555555555555"

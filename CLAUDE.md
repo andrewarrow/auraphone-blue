@@ -24,6 +24,8 @@ UUID/DeviceID Usage Rules:
 - Device IDs (base36) are used for: persistent storage (photos, metadata), user-visible data, and
   application-level mappings (deviceIDToPhotoHash, receivedPhotoHashes).
 
+data directory is ~/.auraphone-blue-data
+
 
 # Auraphone Blue - Fake Bluetooth Simulator
 
