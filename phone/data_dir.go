@@ -48,3 +48,15 @@ func GetDeviceDir(deviceUUID string) string {
 func GetDeviceCacheDir(deviceUUID string) string {
 	return filepath.Join(GetDeviceDir(deviceUUID), "cache")
 }
+
+// CleanupDataDir removes all data from the centralized data directory
+// This is primarily used for testing to ensure clean state between test runs
+func CleanupDataDir() error {
+	return os.RemoveAll(GetDataDir())
+}
+
+// CleanupDeviceDir removes data for a specific device
+// This is primarily used for testing to clean up individual device data
+func CleanupDeviceDir(deviceUUID string) error {
+	return os.RemoveAll(GetDeviceDir(deviceUUID))
+}

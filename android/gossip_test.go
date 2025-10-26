@@ -13,7 +13,7 @@ import (
 // TestAndroidGossipExchange verifies that gossip protocol works end-to-end with Android devices
 func TestAndroidGossipExchange(t *testing.T) {
 	// Clean up any leftover test data to prevent cross-test contamination
-	os.RemoveAll("data")
+	phone.CleanupDataDir()
 	os.RemoveAll("/tmp/auraphone-device1-uuid-peripheral.sock")
 	os.RemoveAll("/tmp/auraphone-device1-uuid-central.sock")
 	os.RemoveAll("/tmp/auraphone-device2-uuid-peripheral.sock")
@@ -107,7 +107,7 @@ func TestAndroidGossipExchange(t *testing.T) {
 // TestAndroidGossipPersistence verifies that mesh view survives device restart
 func TestAndroidGossipPersistence(t *testing.T) {
 	// Clean up any leftover test data to prevent cross-test contamination
-	os.RemoveAll("data")
+	phone.CleanupDataDir()
 
 	// Create device and get mesh view
 	device1 := NewAndroid("device1-persist-uuid")
@@ -169,7 +169,7 @@ func TestAndroidGossipPersistence(t *testing.T) {
 // TestAndroidGossipNeighborSelection verifies that Android devices select neighbors deterministically
 func TestAndroidGossipNeighborSelection(t *testing.T) {
 	// Clean up any leftover test data to prevent cross-test contamination
-	os.RemoveAll("data")
+	phone.CleanupDataDir()
 
 	device := NewAndroid("device-neighbor-uuid")
 	if device == nil {

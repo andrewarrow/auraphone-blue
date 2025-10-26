@@ -14,7 +14,7 @@ import (
 // TestAndroidPhotoTransfer verifies end-to-end photo transfer between Android devices
 func TestAndroidPhotoTransfer(t *testing.T) {
 	// Clean up any leftover test data to prevent cross-test contamination
-	os.RemoveAll("data")
+	phone.CleanupDataDir()
 	os.RemoveAll("/tmp/auraphone-sender-uuid-peripheral.sock")
 	os.RemoveAll("/tmp/auraphone-sender-uuid-central.sock")
 	os.RemoveAll("/tmp/auraphone-receiver-uuid-peripheral.sock")
