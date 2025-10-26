@@ -37,6 +37,12 @@ const (
 	RetransMagicByte3 = 0x34
 
 	ChunkHeaderSize = 8
+
+	// Exponential backoff parameters
+	InitialRetryDelay = 1 * time.Second  // First retry after 1s
+	MaxRetryDelay     = 60 * time.Second // Cap at 60s
+	MaxRetryAttempts  = 10               // Give up after 10 retries
+	TransferTimeout   = 30 * time.Second // Mark transfer as stale after 30s inactivity
 )
 
 // SendState tracks an in-progress photo send operation
@@ -85,6 +91,10 @@ type PhotoTransferCoordinator struct {
 	// Transient state (only in memory)
 	inProgressSends   map[string]*SendState    // deviceID -> current send state
 	inProgressReceives map[string]*ReceiveState // deviceID -> current receive state
+
+	// Background monitoring
+	stopMonitor       chan struct{}
+	monitorWg         sync.WaitGroup
 }
 
 // NewPhotoTransferCoordinator creates a new coordinator and loads persistent state from disk
@@ -99,10 +109,14 @@ func NewPhotoTransferCoordinator(hardwareUUID string) *PhotoTransferCoordinator 
 		completedReceives:  make(map[string]string),
 		inProgressSends:    make(map[string]*SendState),
 		inProgressReceives: make(map[string]*ReceiveState),
+		stopMonitor:        make(chan struct{}),
 	}
 
 	// Load persistent state from disk
 	coordinator.loadState()
+
+	// Start background timeout monitor
+	coordinator.startTimeoutMonitor()
 
 	return coordinator
 }
@@ -436,6 +450,121 @@ func (c *PhotoTransferCoordinator) InvalidateAllSends() {
 	}
 
 	logger.Debug(c.hardwareUUID[:8], "🔄 Invalidated all send records (our photo changed)")
+}
+
+// CalculateRetryDelay calculates exponential backoff delay for a transfer
+// Returns the delay duration and whether we should give up (exceeded max retries)
+func (c *PhotoTransferCoordinator) CalculateRetryDelay(retryAttempts int) (time.Duration, bool) {
+	if retryAttempts >= MaxRetryAttempts {
+		return 0, true // Give up
+	}
+
+	// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s (capped)
+	delay := InitialRetryDelay * time.Duration(1<<uint(retryAttempts))
+	if delay > MaxRetryDelay {
+		delay = MaxRetryDelay
+	}
+
+	return delay, false
+}
+
+// CanRetry checks if a transfer can be retried (based on backoff timing)
+func (c *PhotoTransferCoordinator) CanRetry(deviceID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	state, exists := c.inProgressSends[deviceID]
+	if !exists {
+		return true // No send in progress, can start new one
+	}
+
+	return time.Now().After(state.NextRetryTime)
+}
+
+// IncrementRetryAttempt increments the retry counter and calculates next retry time
+// Returns false if max retries exceeded
+func (c *PhotoTransferCoordinator) IncrementRetryAttempt(deviceID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	state, exists := c.inProgressSends[deviceID]
+	if !exists {
+		return false
+	}
+
+	state.RetryAttempts++
+	delay, giveUp := c.CalculateRetryDelay(state.RetryAttempts)
+
+	if giveUp {
+		logger.Warn(c.hardwareUUID[:8],
+			"❌ Photo send to %s exceeded max retries (%d attempts), giving up",
+			deviceID, state.RetryAttempts)
+		delete(c.inProgressSends, deviceID)
+		return false
+	}
+
+	state.NextRetryTime = time.Now().Add(delay)
+	logger.Debug(c.hardwareUUID[:8],
+		"🔄 Photo send to %s will retry in %v (attempt %d/%d)",
+		deviceID, delay, state.RetryAttempts, MaxRetryAttempts)
+
+	return true
+}
+
+// CleanupDisconnectedDevice cleans up all transfer state for a disconnected device
+func (c *PhotoTransferCoordinator) CleanupDisconnectedDevice(deviceID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Clean up send state
+	if sendState, exists := c.inProgressSends[deviceID]; exists {
+		logger.Debug(c.hardwareUUID[:8],
+			"🧹 Cleaning up photo send to %s on disconnect (sent %d/%d chunks)",
+			deviceID, sendState.ChunksSent, sendState.TotalChunks)
+		delete(c.inProgressSends, deviceID)
+	}
+
+	// Clean up receive state
+	if recvState, exists := c.inProgressReceives[deviceID]; exists {
+		logger.Debug(c.hardwareUUID[:8],
+			"🧹 Cleaning up photo receive from %s on disconnect (received %d/%d chunks)",
+			deviceID, recvState.ChunksReceived, recvState.TotalChunks)
+		delete(c.inProgressReceives, deviceID)
+	}
+}
+
+// startTimeoutMonitor starts a background goroutine that periodically checks for stalled transfers
+func (c *PhotoTransferCoordinator) startTimeoutMonitor() {
+	c.monitorWg.Add(1)
+	go func() {
+		defer c.monitorWg.Done()
+
+		ticker := time.NewTicker(10 * time.Second) // Check every 10 seconds
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-c.stopMonitor:
+				return
+			case <-ticker.C:
+				// Clean up transfers that have been idle for too long
+				cleaned := c.CleanupStaleTransfers(TransferTimeout)
+				if cleaned > 0 {
+					logger.Debug(c.hardwareUUID[:8],
+						"🧹 Timeout monitor cleaned up %d stale transfers", cleaned)
+				}
+			}
+		}
+	}()
+
+	logger.Debug(c.hardwareUUID[:8], "🔍 Started photo transfer timeout monitor")
+}
+
+// Shutdown stops the background timeout monitor and waits for it to finish
+func (c *PhotoTransferCoordinator) Shutdown() {
+	close(c.stopMonitor)
+	c.monitorWg.Wait()
+	logger.Debug(c.hardwareUUID[:8], "🛑 Photo transfer coordinator shutdown complete")
 }
 
 // ==============================================================================

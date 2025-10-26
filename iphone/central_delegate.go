@@ -79,6 +79,16 @@ func (ip *iPhone) DidDisconnectPeripheral(central swift.CBCentralManager, periph
 		logger.Info(prefix, "📡 Disconnected from %s", peripheral.UUID[:8])
 	}
 
+	// Get device ID before cleanup
+	ip.mu.Lock()
+	deviceID := ip.peripheralToDeviceID[peripheral.UUID]
+	ip.mu.Unlock()
+
+	// Clean up photo transfer state for disconnected device
+	if deviceID != "" {
+		ip.photoCoordinator.CleanupDisconnectedDevice(deviceID)
+	}
+
 	// Unregister from connection manager
 	ip.connManager.UnregisterCentralConnection(peripheral.UUID)
 

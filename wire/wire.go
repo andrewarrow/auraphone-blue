@@ -58,7 +58,7 @@ type GATTTable struct {
 
 // CharacteristicMessage represents a read/write/notify operation on a characteristic
 type CharacteristicMessage struct {
-	Operation      string `json:"op"`             // "write", "read", "notify", "indicate"
+	Operation      string `json:"op"`             // "write", "read", "notify", "indicate", "subscribe", "unsubscribe", "subscribe_ack"
 	ServiceUUID    string `json:"service"`
 	CharUUID       string `json:"characteristic"`
 	Data           []byte `json:"data"`
@@ -983,6 +983,14 @@ func (sw *Wire) dispatchMessage(msg *CharacteristicMessage) {
 		return
 	}
 
+	// Handle subscription acknowledgments (informational only, no action needed)
+	if msg.Operation == "subscribe_ack" {
+		logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"📥 RX Subscribe ACK from %s (svc=%s, char=%s) - subscription confirmed",
+			msg.SenderUUID[:8], msg.ServiceUUID[len(msg.ServiceUUID)-4:], msg.CharUUID[len(msg.CharUUID)-4:])
+		return
+	}
+
 	sw.handlerMutex.RLock()
 	handler, exists := sw.messageHandlers[msg.ServiceUUID+msg.CharUUID]
 	sw.handlerMutex.RUnlock()
@@ -1032,6 +1040,23 @@ func (sw *Wire) handleSubscriptionMessage(msg *CharacteristicMessage) {
 			msg.SenderUUID[:8], msg.CharUUID[len(msg.CharUUID)-4:], msg.ServiceUUID[len(msg.ServiceUUID)-4:])
 	}
 	dualConn.asPeripheral.subMutex.Unlock()
+
+	// Send acknowledgment back to Central to prevent race conditions
+	// This ensures Central knows subscription is active before sending first notification
+	ackMsg := CharacteristicMessage{
+		Operation:   "subscribe_ack",
+		ServiceUUID: msg.ServiceUUID,
+		CharUUID:    msg.CharUUID,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  sw.localUUID,
+	}
+
+	logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		"📤 TX Subscribe ACK [peripheral→central] (to %s, svc=%s, char=%s)",
+		msg.SenderUUID[:8], msg.ServiceUUID[len(msg.ServiceUUID)-4:], msg.CharUUID[len(msg.CharUUID)-4:])
+
+	// Send ACK via Peripheral connection (we notify them of subscription state change)
+	go sw.sendCharacteristicMessageViaRole(dualConn.asPeripheral, msg.SenderUUID, &ackMsg)
 }
 
 // ReadAndConsumeCharacteristicMessages reads and consumes queued messages
@@ -1284,10 +1309,13 @@ func (sw *Wire) DiscoverDevices() ([]string, error) {
 			deviceName := file.Name()
 			// Check if it's a valid UUID and not our own device
 			if len(deviceName) > 8 && deviceName != sw.localUUID {
-				// Also check if socket exists
-				sockPath := fmt.Sprintf("/tmp/auraphone-%s.sock", deviceName)
-				if _, err := os.Stat(sockPath); err == nil {
-					devices = append(devices, deviceName)
+				// Check if dual sockets exist (both peripheral and central)
+				peripheralSock := fmt.Sprintf("/tmp/auraphone-%s-peripheral.sock", deviceName)
+				centralSock := fmt.Sprintf("/tmp/auraphone-%s-central.sock", deviceName)
+				if _, err1 := os.Stat(peripheralSock); err1 == nil {
+					if _, err2 := os.Stat(centralSock); err2 == nil {
+						devices = append(devices, deviceName)
+					}
 				}
 			}
 		}

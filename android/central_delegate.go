@@ -100,6 +100,16 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 			logger.Info(prefix, "📡 Disconnected from %s (interference/distance)", remoteUUID[:8])
 		}
 
+		// Get device ID before cleanup
+		a.mu.Lock()
+		deviceID := a.deviceToDeviceID[remoteUUID]
+		a.mu.Unlock()
+
+		// Clean up photo transfer state for disconnected device
+		if deviceID != "" {
+			a.photoCoordinator.CleanupDisconnectedDevice(deviceID)
+		}
+
 		// Unregister connection with ConnectionManager
 		if a.connManager != nil {
 			a.connManager.UnregisterCentralConnection(remoteUUID)
