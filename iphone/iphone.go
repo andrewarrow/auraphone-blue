@@ -64,6 +64,11 @@ func NewIPhone(hardwareUUID string) *iPhone {
 	ip.connManager = phone.NewConnectionManager(hardwareUUID)
 	ip.connManager.SetSendFunctions(ip.sendViaCentralMode, ip.sendViaPeripheralMode)
 
+	// Initialize shared handlers (platform-agnostic code in phone/ package)
+	ip.gossipHandler = phone.NewGossipHandler(ip, ip.gossipInterval, ip.staleCheckDone)
+	ip.photoHandler = phone.NewPhotoHandler(ip)
+	ip.profileHandler = phone.NewProfileHandler(ip)
+
 	// Initialize message router
 	ip.messageRouter = phone.NewMessageRouter(
 		ip.meshView,
@@ -71,10 +76,10 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		ip.photoCoordinator,
 	)
 	ip.messageRouter.SetCallbacks(
-		func(deviceID, photoHash string) { ip.requestPhoto(deviceID, photoHash) },
-		func(deviceID string, version int32) { ip.requestProfile(deviceID, version) },
-		func(senderUUID string, req *proto.PhotoRequestMessage) { ip.handlePhotoRequest(senderUUID, req) },
-		func(senderUUID string, req *proto.ProfileRequestMessage) { ip.handleProfileRequest(senderUUID, req) },
+		func(deviceID, photoHash string) { ip.gossipHandler.RequestPhoto(deviceID, photoHash) },
+		func(deviceID string, version int32) { ip.gossipHandler.RequestProfile(deviceID, version) },
+		func(senderUUID string, req *proto.PhotoRequestMessage) { ip.photoHandler.HandlePhotoRequest(senderUUID, req) },
+		func(senderUUID string, req *proto.ProfileRequestMessage) { ip.profileHandler.HandleProfileRequest(senderUUID, req) },
 	)
 
 	// Load photo mappings and profile
@@ -207,7 +212,7 @@ func (ip *iPhone) Start() {
 	ip.peripheralManager.StartAdvertising(advertisingData)
 	logger.Info(prefix, "✅ Started advertising (Peripheral mode)")
 
-	go ip.gossipLoop()
+	go ip.gossipHandler.GossipLoop()
 	logger.Info(prefix, "✅ Started gossip protocol (5s interval)")
 }
 
@@ -223,9 +228,6 @@ func (ip *iPhone) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
 }
 
 func (ip *iPhone) GetDeviceUUID() string { return ip.hardwareUUID }
-func (ip *iPhone) GetDeviceID() string   { return ip.deviceID }
-func (ip *iPhone) GetDeviceName() string { return ip.deviceName }
-func (ip *iPhone) GetPlatform() string   { return "iOS" }
 
 func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	data, err := os.ReadFile(photoPath)
@@ -250,7 +252,7 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	ip.mu.Unlock()
 
 	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📸 Set photo: %s", phone.TruncateHash(photoHash, 8))
-	go ip.sendGossipToNeighbors()
+	go ip.gossipHandler.SendGossipToNeighbors()
 	return nil
 }
 
@@ -260,7 +262,8 @@ func (ip *iPhone) GetProfilePhotoHash() string {
 	return ip.photoHash
 }
 
-func (ip *iPhone) GetLocalProfile() map[string]string {
+// GetLocalProfileMap returns the local profile as a map (for external API)
+func (ip *iPhone) GetLocalProfileMap() map[string]string {
 	ip.mu.RLock()
 	defer ip.mu.RUnlock()
 	return phone.ConvertProfileToMap(ip.localProfile)
@@ -276,7 +279,7 @@ func (ip *iPhone) UpdateLocalProfile(profile map[string]string) error {
 	}
 
 	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📝 Updated profile to v%d", ip.localProfile.ProfileVersion)
-	go ip.sendGossipToNeighbors()
+	go ip.gossipHandler.SendGossipToNeighbors()
 	return nil
 }
 

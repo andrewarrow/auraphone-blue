@@ -1,4 +1,4 @@
-package android
+package phone
 
 import (
 	"fmt"
@@ -7,14 +7,13 @@ import (
 	"github.com/user/auraphone-blue/proto"
 )
 
-// Photo transfer handling (simplified - uses photoCoordinator)
-
-// handlePhotoRequest handles a request for a photo
-func (a *Android) handlePhotoRequest(senderUUID string, req *proto.PhotoRequestMessage) {
-	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+// HandlePhotoRequest handles a request for a photo
+func (ph *PhotoHandler) HandlePhotoRequest(senderUUID string, req *proto.PhotoRequestMessage) {
+	device := ph.device
+	prefix := fmt.Sprintf("%s %s", device.GetHardwareUUID()[:8], device.GetPlatform())
 
 	// Check if they're requesting OUR photo
-	if req.TargetDeviceId != a.deviceID {
+	if req.TargetDeviceId != device.GetDeviceID() {
 		logger.Debug(prefix, "⏭️  Photo request for %s, not us", req.TargetDeviceId[:8])
 		return
 	}
@@ -25,14 +24,17 @@ func (a *Android) handlePhotoRequest(senderUUID string, req *proto.PhotoRequestM
 	// This will load our cached photo, chunk it, and send via appropriate mode
 }
 
-// handlePhotoChunk receives photo chunk data from either Central or Peripheral mode
-func (a *Android) handlePhotoChunk(senderUUID string, data []byte) {
-	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+// HandlePhotoChunk receives photo chunk data from either Central or Peripheral mode
+func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
+	device := ph.device
+	prefix := fmt.Sprintf("%s %s", device.GetHardwareUUID()[:8], device.GetPlatform())
 
 	// Get deviceID for this sender
-	a.mu.RLock()
-	_, exists := a.remoteUUIDToDeviceID[senderUUID]
-	a.mu.RUnlock()
+	mutex := device.GetMutex()
+	mutex.RLock()
+	uuidToDeviceID := device.GetUUIDToDeviceIDMap()
+	_, exists := uuidToDeviceID[senderUUID]
+	mutex.RUnlock()
 
 	if !exists {
 		logger.Warn(prefix, "⚠️  Received photo chunk from unknown device %s", senderUUID[:8])

@@ -406,7 +406,7 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 		photoSelect.SetSelected(currentPhoto)
 
 		// Get current profile data
-		profile := pw.phone.GetLocalProfile()
+		profile := pw.phone.GetLocalProfileMap()
 
 		// Create profile form fields
 		firstNameEntry := widget.NewEntry()

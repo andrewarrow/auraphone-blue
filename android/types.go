@@ -41,6 +41,11 @@ type Android struct {
 	connManager      *phone.ConnectionManager
 	gossipInterval   time.Duration
 	lastGossipTime   time.Time
+
+	// Shared handlers (no platform-specific code)
+	gossipHandler  *phone.GossipHandler
+	photoHandler   *phone.PhotoHandler
+	profileHandler *phone.ProfileHandler
 }
 
 // androidGattServerDelegate wraps Android to implement BluetoothGattServerCallback

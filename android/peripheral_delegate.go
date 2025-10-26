@@ -44,7 +44,7 @@ func (d *androidGattServerDelegate) OnConnectionStateChange(device *kotlin.Bluet
 		d.android.mu.Unlock()
 
 		// Send initial gossip after connection
-		go d.android.sendGossipToDevice(device.Address)
+		go d.android.gossipHandler.SendGossipToDevice(device.Address)
 
 	} else if newState == kotlin.STATE_DISCONNECTED {
 		logger.Debug(prefix, "📥 GATT server: Central %s disconnected", device.Address[:8])
@@ -90,13 +90,13 @@ func (d *androidGattServerDelegate) OnCharacteristicWriteRequest(device *kotlin.
 		// Photo chunk - copy data before passing to avoid race condition
 		dataCopy := make([]byte, len(value))
 		copy(dataCopy, value)
-		go d.android.handlePhotoChunk(senderUUID, dataCopy)
+		go d.android.photoHandler.HandlePhotoChunk(senderUUID, dataCopy)
 
 	case phone.AuraProfileCharUUID:
 		// Profile message - copy data before passing
 		dataCopy := make([]byte, len(value))
 		copy(dataCopy, value)
-		go d.android.handleProfileMessage(senderUUID, dataCopy)
+		go d.android.profileHandler.HandleProfileMessage(senderUUID, dataCopy)
 	}
 }
 

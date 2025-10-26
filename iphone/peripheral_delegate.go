@@ -46,11 +46,11 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 
 		case phone.AuraPhotoCharUUID:
 			// Photo chunk data
-			d.iphone.handlePhotoChunk(senderUUID, request.Value)
+			d.iphone.photoHandler.HandlePhotoChunk(senderUUID, request.Value)
 
 		case phone.AuraProfileCharUUID:
 			// Profile message
-			d.iphone.handleProfileMessage(senderUUID, request.Value)
+			d.iphone.profileHandler.HandleProfileMessage(senderUUID, request.Value)
 		}
 	}
 
@@ -67,7 +67,7 @@ func (d *iPhonePeripheralDelegate) CentralDidSubscribe(peripheralManager *swift.
 
 	// Send initial gossip when they subscribe to protocol characteristic
 	if characteristic.UUID == phone.AuraProtocolCharUUID {
-		go d.iphone.sendGossipToDevice(central.UUID)
+		go d.iphone.gossipHandler.SendGossipToDevice(central.UUID)
 	}
 }
 

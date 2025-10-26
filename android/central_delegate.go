@@ -91,7 +91,7 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 		gatt.DiscoverServices()
 
 		// Send initial gossip after connection
-		go a.sendGossipToDevice(remoteUUID)
+		go a.gossipHandler.SendGossipToDevice(remoteUUID)
 
 	} else if newState == 0 { // STATE_DISCONNECTED
 		if status != 0 {
@@ -184,10 +184,10 @@ func (a *Android) OnCharacteristicChanged(gatt *kotlin.BluetoothGatt, characteri
 		}
 	} else if characteristic.UUID == phone.AuraPhotoCharUUID {
 		// Photo characteristic is for photo chunks
-		a.handlePhotoChunk(remoteUUID, characteristic.Value)
+		a.photoHandler.HandlePhotoChunk(remoteUUID, characteristic.Value)
 	} else if characteristic.UUID == phone.AuraProfileCharUUID {
 		// Profile characteristic is for ProfileMessage
-		a.handleProfileMessage(remoteUUID, characteristic.Value)
+		a.profileHandler.HandleProfileMessage(remoteUUID, characteristic.Value)
 	}
 }
 

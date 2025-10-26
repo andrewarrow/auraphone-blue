@@ -67,6 +67,11 @@ func NewAndroid(hardwareUUID string) *Android {
 	a.connManager = phone.NewConnectionManager(hardwareUUID)
 	a.connManager.SetSendFunctions(a.sendViaCentralMode, a.sendViaPeripheralMode)
 
+	// Initialize shared handlers (platform-agnostic code in phone/ package)
+	a.gossipHandler = phone.NewGossipHandler(a, a.gossipInterval, a.staleCheckDone)
+	a.photoHandler = phone.NewPhotoHandler(a)
+	a.profileHandler = phone.NewProfileHandler(a)
+
 	// Initialize message router
 	a.messageRouter = phone.NewMessageRouter(
 		a.meshView,
@@ -74,10 +79,10 @@ func NewAndroid(hardwareUUID string) *Android {
 		a.photoCoordinator,
 	)
 	a.messageRouter.SetCallbacks(
-		func(deviceID, photoHash string) { a.requestPhoto(deviceID, photoHash) },
-		func(deviceID string, version int32) { a.requestProfile(deviceID, version) },
-		func(senderUUID string, req *proto.PhotoRequestMessage) { a.handlePhotoRequest(senderUUID, req) },
-		func(senderUUID string, req *proto.ProfileRequestMessage) { a.handleProfileRequest(senderUUID, req) },
+		func(deviceID, photoHash string) { a.gossipHandler.RequestPhoto(deviceID, photoHash) },
+		func(deviceID string, version int32) { a.gossipHandler.RequestProfile(deviceID, version) },
+		func(senderUUID string, req *proto.PhotoRequestMessage) { a.photoHandler.HandlePhotoRequest(senderUUID, req) },
+		func(senderUUID string, req *proto.ProfileRequestMessage) { a.profileHandler.HandleProfileRequest(senderUUID, req) },
 	)
 
 	// Load photo mappings and profile
@@ -220,7 +225,7 @@ func (a *Android) Start() {
 	a.advertiser.StartAdvertising(settings, advertiseData, nil, a)
 	logger.Info(prefix, "✅ Started advertising (Peripheral mode)")
 
-	go a.gossipLoop()
+	go a.gossipHandler.GossipLoop()
 	logger.Info(prefix, "✅ Started gossip protocol (5s interval)")
 }
 
@@ -236,9 +241,6 @@ func (a *Android) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
 }
 
 func (a *Android) GetDeviceUUID() string { return a.hardwareUUID }
-func (a *Android) GetDeviceID() string   { return a.deviceID }
-func (a *Android) GetDeviceName() string { return a.deviceName }
-func (a *Android) GetPlatform() string   { return "Android" }
 
 func (a *Android) SetProfilePhoto(photoPath string) error {
 	data, err := os.ReadFile(photoPath)
@@ -263,7 +265,7 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	a.mu.Unlock()
 
 	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📸 Set photo: %s", phone.TruncateHash(photoHash, 8))
-	go a.sendGossipToNeighbors()
+	go a.gossipHandler.SendGossipToNeighbors()
 	return nil
 }
 
@@ -273,7 +275,8 @@ func (a *Android) GetProfilePhotoHash() string {
 	return a.photoHash
 }
 
-func (a *Android) GetLocalProfile() map[string]string {
+// GetLocalProfileMap returns the local profile as a map (for external API)
+func (a *Android) GetLocalProfileMap() map[string]string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return phone.ConvertProfileToMap(a.localProfile)
@@ -289,7 +292,7 @@ func (a *Android) UpdateLocalProfile(profile map[string]string) error {
 	}
 
 	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📝 Updated profile to v%d", a.localProfile.ProfileVersion)
-	go a.sendGossipToNeighbors()
+	go a.gossipHandler.SendGossipToNeighbors()
 	return nil
 }
 

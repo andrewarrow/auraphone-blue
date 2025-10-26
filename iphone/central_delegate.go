@@ -143,7 +143,7 @@ func (ip *iPhone) DidDiscoverCharacteristics(peripheral *swift.CBPeripheral, ser
 	}
 
 	// Send initial gossip to this device
-	go ip.sendGossipToDevice(peripheral.UUID)
+	go ip.gossipHandler.SendGossipToDevice(peripheral.UUID)
 }
 
 func (ip *iPhone) DidWriteValueForCharacteristic(peripheral *swift.CBPeripheral, characteristic *swift.CBCharacteristic, err error) {
@@ -170,11 +170,11 @@ func (ip *iPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral
 
 	case phone.AuraPhotoCharUUID:
 		// Photo chunk data
-		ip.handlePhotoChunk(peripheral.UUID, characteristic.Value)
+		ip.photoHandler.HandlePhotoChunk(peripheral.UUID, characteristic.Value)
 
 	case phone.AuraProfileCharUUID:
 		// Profile message
-		ip.handleProfileMessage(peripheral.UUID, characteristic.Value)
+		ip.profileHandler.HandleProfileMessage(peripheral.UUID, characteristic.Value)
 	}
 }
 

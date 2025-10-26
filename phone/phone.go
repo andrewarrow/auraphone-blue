@@ -40,8 +40,8 @@ type Phone interface {
 	// GetProfilePhotoHash returns the hash of the current profile photo
 	GetProfilePhotoHash() string
 
-	// GetLocalProfile returns the local profile (first_name, etc.) as a map
-	GetLocalProfile() map[string]string
+	// GetLocalProfileMap returns the local profile (first_name, etc.) as a map
+	GetLocalProfileMap() map[string]string
 
 	// UpdateLocalProfile updates the local profile fields
 	UpdateLocalProfile(profile map[string]string) error
