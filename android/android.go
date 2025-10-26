@@ -27,22 +27,19 @@ func NewAndroid(hardwareUUID string) *Android {
 	}
 
 	a := &Android{
-		hardwareUUID:            hardwareUUID,
-		deviceID:                deviceID,
-		deviceName:              deviceName,
-		connectedGatts:          make(map[string]*kotlin.BluetoothGatt),
-		connectedCentrals:       make(map[string]bool),
-		discoveredDevices:       make(map[string]*kotlin.BluetoothDevice),
-		remoteUUIDToDeviceID:    make(map[string]string),
-		deviceIDToPhotoHash:     make(map[string]string),
-		receivedPhotoHashes:     make(map[string]string),
-		receivedProfileVersion:  make(map[string]int32),
-		lastHandshakeTime:       make(map[string]time.Time),
-		staleCheckDone:          make(chan struct{}),
-		photoReceiveState:       make(map[string]*photoReceiveState),
-		photoReceiveStateServer: make(map[string]*photoReceiveState),
-		useAutoConnect:          false, // Default: manual reconnect (matches real Android apps)
-		gossipInterval:          5 * time.Second,
+		hardwareUUID:           hardwareUUID,
+		deviceID:               deviceID,
+		deviceName:             deviceName,
+		connectedGatts:         make(map[string]*kotlin.BluetoothGatt),
+		connectedCentrals:      make(map[string]bool),
+		discoveredDevices:      make(map[string]*kotlin.BluetoothDevice),
+		remoteUUIDToDeviceID:   make(map[string]string),
+		deviceIDToPhotoHash:    make(map[string]string),
+		receivedPhotoHashes:    make(map[string]string),
+		receivedProfileVersion: make(map[string]int32),
+		staleCheckDone:         make(chan struct{}),
+		useAutoConnect:         false, // Default: manual reconnect (matches real Android apps)
+		gossipInterval:         5 * time.Second,
 	}
 
 	// Initialize wire

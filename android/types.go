@@ -9,20 +9,6 @@ import (
 	"github.com/user/auraphone-blue/wire"
 )
 
-// photoReceiveState tracks photo reception progress
-type photoReceiveState struct {
-	mu              sync.Mutex
-	isReceiving     bool
-	expectedSize    uint32
-	expectedCRC     uint32
-	expectedChunks  uint16
-	receivedChunks  map[uint16][]byte
-	senderDeviceID  string
-	buffer          []byte
-	lastChunkTime   time.Time // Time of last chunk received (for timeout detection)
-	retransmitCount int       // Number of retransmit requests sent
-}
-
 // Android represents an Android device with BLE capabilities
 type Android struct {
 	hardwareUUID         string                              // Bluetooth hardware UUID (never changes, from testdata/hardware_uuids.txt)
@@ -43,14 +29,11 @@ type Android struct {
 	connectedCentrals    map[string]bool                     // remote UUID -> true (devices that connected to us as Peripheral)
 	discoveredDevices    map[string]*kotlin.BluetoothDevice  // remote UUID -> discovered device (for reconnect)
 	remoteUUIDToDeviceID map[string]string                   // hardware UUID -> logical device ID
-	deviceIDToPhotoHash  map[string]string                   // deviceID -> their TX photo hash
-	receivedPhotoHashes  map[string]string                   // deviceID -> RX hash (photos we got from them)
-	receivedProfileVersion map[string]int32                  // deviceID -> their profile version
-	lastHandshakeTime    map[string]time.Time                // hardware UUID -> last handshake timestamp (connection-scoped)
-	photoReceiveState    map[string]*photoReceiveState       // remote UUID -> receive state (central mode) - DEPRECATED: use photoCoordinator
-	photoReceiveStateServer map[string]*photoReceiveState    // senderUUID -> receive state for server mode - DEPRECATED: use photoCoordinator
-	useAutoConnect       bool                                // Whether to use autoConnect=true mode
-	staleCheckDone       chan struct{}                       // Signal channel for stopping background checker
+	deviceIDToPhotoHash    map[string]string                   // deviceID -> their TX photo hash
+	receivedPhotoHashes    map[string]string                   // deviceID -> RX hash (photos we got from them)
+	receivedProfileVersion map[string]int32                    // deviceID -> their profile version
+	useAutoConnect         bool                                // Whether to use autoConnect=true mode
+	staleCheckDone         chan struct{}                       // Signal channel for stopping gossip loop
 
 	// NEW: Gossip protocol fields (Phase 3)
 	meshView         *phone.MeshView

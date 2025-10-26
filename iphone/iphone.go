@@ -27,19 +27,16 @@ func NewIPhone(hardwareUUID string) *iPhone {
 	}
 
 	ip := &iPhone{
-		hardwareUUID:            hardwareUUID,
-		deviceID:                deviceID,
-		deviceName:              deviceName,
-		connectedPeripherals:    make(map[string]*swift.CBPeripheral),
-		peripheralToDeviceID:    make(map[string]string),
-		deviceIDToPhotoHash:     make(map[string]string),
-		receivedPhotoHashes:     make(map[string]string),
-		receivedProfileVersion:  make(map[string]int32),
-		lastHandshakeTime:       make(map[string]time.Time),
-		staleCheckDone:          make(chan struct{}),
-		photoReceiveState:       make(map[string]*photoReceiveState),
-		photoReceiveStateServer: make(map[string]*photoReceiveState),
-		gossipInterval:          5 * time.Second,
+		hardwareUUID:           hardwareUUID,
+		deviceID:               deviceID,
+		deviceName:             deviceName,
+		connectedPeripherals:   make(map[string]*swift.CBPeripheral),
+		peripheralToDeviceID:   make(map[string]string),
+		deviceIDToPhotoHash:    make(map[string]string),
+		receivedPhotoHashes:    make(map[string]string),
+		receivedProfileVersion: make(map[string]int32),
+		staleCheckDone:         make(chan struct{}),
+		gossipInterval:         5 * time.Second,
 	}
 
 	// Initialize wire

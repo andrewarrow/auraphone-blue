@@ -420,6 +420,26 @@ func (g *BluetoothGatt) GetRemoteUUID() string {
 	return g.remoteUUID
 }
 
+// Disconnect disconnects from the remote GATT server
+// Matches Android's BluetoothGatt.disconnect() - stops connection but doesn't release resources
+func (g *BluetoothGatt) Disconnect() {
+	if g.wire != nil {
+		// Stop listening and write queue before disconnecting
+		g.StopListening()
+		g.StopWriteQueue()
+
+		// Disconnect from remote device
+		g.wire.Disconnect(g.remoteUUID)
+	}
+}
+
+// Close releases all resources associated with this GATT connection
+// Matches Android's BluetoothGatt.close() - releases resources
+func (g *BluetoothGatt) Close() {
+	g.Disconnect()
+	// Additional cleanup would go here if needed
+}
+
 // attemptReconnect implements Android's autoConnect=true behavior
 // Retries connection in background until it succeeds (matches real Android behavior)
 func (g *BluetoothGatt) attemptReconnect() {

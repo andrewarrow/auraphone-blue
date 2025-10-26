@@ -9,20 +9,6 @@ import (
 	"github.com/user/auraphone-blue/wire"
 )
 
-// photoReceiveState tracks photo reception progress
-type photoReceiveState struct {
-	mu              sync.Mutex
-	isReceiving     bool
-	expectedSize    uint32
-	expectedCRC     uint32
-	expectedChunks  uint16
-	receivedChunks  map[uint16][]byte
-	senderDeviceID  string
-	buffer          []byte
-	lastChunkTime   time.Time // Time of last chunk received (for timeout detection)
-	retransmitCount int       // Number of retransmit requests sent
-}
-
 // iPhone represents an iOS device with BLE capabilities
 type iPhone struct {
 	hardwareUUID           string                              // Bluetooth hardware UUID (never changes, from testdata/hardware_uuids.txt)
@@ -47,10 +33,7 @@ type iPhone struct {
 	deviceIDToPhotoHash    map[string]string                   // deviceID -> their TX photo hash
 	receivedPhotoHashes    map[string]string                   // deviceID -> RX hash (photos we got from them)
 	receivedProfileVersion map[string]int32                    // deviceID -> their profile version
-	lastHandshakeTime      map[string]time.Time                // hardware UUID -> last handshake timestamp (connection-scoped)
-	photoReceiveState      map[string]*photoReceiveState       // peripheral UUID -> receive state (central mode) - DEPRECATED: use photoCoordinator
-	photoReceiveStateServer map[string]*photoReceiveState      // senderUUID -> receive state for peripheral mode - DEPRECATED: use photoCoordinator
-	staleCheckDone         chan struct{}                       // Signal channel for stopping background checker
+	staleCheckDone         chan struct{}                       // Signal channel for stopping gossip loop
 
 	// NEW: Gossip protocol fields (Phase 3)
 	meshView         *phone.MeshView

@@ -14,15 +14,25 @@ import (
 
 // Gossip protocol implementation (PLAN.md Phase 3)
 
-// gossipLoop periodically sends gossip messages to neighbors
+// gossipLoop periodically sends gossip messages to neighbors and prunes non-neighbors
 func (a *Android) gossipLoop() {
 	ticker := time.NewTicker(a.gossipInterval)
 	defer ticker.Stop()
+
+	// Prune connections every 30 seconds (6x the gossip interval)
+	pruneCount := 0
 
 	for {
 		select {
 		case <-ticker.C:
 			a.sendGossipToNeighbors()
+
+			// Prune non-neighbor connections periodically
+			pruneCount++
+			if pruneCount >= 6 {
+				a.pruneNonNeighborConnections()
+				pruneCount = 0
+			}
 		case <-a.staleCheckDone:
 			return
 		}
@@ -220,4 +230,55 @@ func (a *Android) requestProfile(deviceID string, version int32) {
 
 	a.meshView.MarkProfileRequested(deviceID)
 	logger.Debug(prefix, "📤 Sent profile request for v%d", version)
+}
+
+// pruneNonNeighborConnections disconnects from devices that are not our neighbors
+// This achieves O(log N) connections instead of O(N²) full mesh
+func (a *Android) pruneNonNeighborConnections() {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
+	// Get current neighbors (deterministic selection, max 3)
+	neighbors := a.meshView.GetCurrentNeighbors()
+	neighborMap := make(map[string]bool)
+	for _, deviceID := range neighbors {
+		neighborMap[deviceID] = true
+	}
+
+	// Get all connected hardware UUIDs
+	connectedUUIDs := a.connManager.GetAllConnectedUUIDs()
+
+	a.mu.RLock()
+	// Build reverse map for quick lookup
+	uuidToDeviceID := make(map[string]string)
+	for uuid, deviceID := range a.remoteUUIDToDeviceID {
+		uuidToDeviceID[uuid] = deviceID
+	}
+	a.mu.RUnlock()
+
+	for _, uuid := range connectedUUIDs {
+		deviceID := uuidToDeviceID[uuid]
+		if deviceID == "" {
+			// Don't know deviceID yet, keep connection (will prune later)
+			continue
+		}
+
+		// Check if this is a neighbor
+		if !neighborMap[deviceID] {
+			// Only disconnect if we are the Central (we initiated the connection)
+			if a.connManager.IsConnectedAsCentral(uuid) {
+				logger.Info(prefix, "✂️  Disconnecting from %s (not a neighbor, deviceID: %s)", uuid[:8], deviceID[:8])
+
+				// Get GATT connection and disconnect
+				a.mu.RLock()
+				gatt, exists := a.connectedGatts[uuid]
+				a.mu.RUnlock()
+
+				if exists {
+					gatt.Disconnect()
+				}
+			}
+			// If they connected to us as Peripheral, we can't force disconnect
+			// (that's up to them when they prune their neighbors)
+		}
+	}
 }
