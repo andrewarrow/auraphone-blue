@@ -27,7 +27,8 @@ type LocalProfile struct {
 // LoadLocalProfile loads the local profile from disk cache
 // Returns a default profile with empty fields if file doesn't exist
 func LoadLocalProfile(hardwareUUID string) *LocalProfile {
-	profilePath := fmt.Sprintf("data/%s/cache/my_profile.json", hardwareUUID)
+	cacheDir := GetDeviceCacheDir(hardwareUUID)
+	profilePath := fmt.Sprintf("%s/my_profile.json", cacheDir)
 
 	data, err := os.ReadFile(profilePath)
 	if err != nil {
@@ -56,10 +57,10 @@ func LoadLocalProfile(hardwareUUID string) *LocalProfile {
 
 // SaveLocalProfile saves the local profile to disk cache
 func SaveLocalProfile(hardwareUUID string, profile *LocalProfile) error {
-	profilePath := fmt.Sprintf("data/%s/cache/my_profile.json", hardwareUUID)
+	cacheDir := GetDeviceCacheDir(hardwareUUID)
+	profilePath := fmt.Sprintf("%s/my_profile.json", cacheDir)
 
 	// Ensure directory exists
-	cacheDir := fmt.Sprintf("data/%s/cache", hardwareUUID)
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return fmt.Errorf("failed to create cache directory: %w", err)
 	}

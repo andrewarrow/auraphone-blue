@@ -57,7 +57,7 @@ func NewIPhone(hardwareUUID string) *iPhone {
 	ip.photoCoordinator = phone.NewPhotoTransferCoordinator(hardwareUUID)
 
 	// Initialize mesh view for gossip protocol
-	dataDir := fmt.Sprintf("data/%s", hardwareUUID)
+	dataDir := phone.GetDeviceDir(hardwareUUID)
 	ip.meshView = phone.NewMeshView(deviceID, hardwareUUID, dataDir, ip.cacheManager)
 
 	// Initialize connection manager for dual-role support

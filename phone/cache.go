@@ -46,7 +46,7 @@ type LocalUserMetadata struct {
 
 // NewDeviceCacheManager creates a new cache manager for a device
 func NewDeviceCacheManager(deviceUUID string) *DeviceCacheManager {
-	baseDir := filepath.Join("data", deviceUUID, "cache")
+	baseDir := GetDeviceCacheDir(deviceUUID)
 	return &DeviceCacheManager{
 		baseDir: baseDir,
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/user/auraphone-blue/logger"
+	"github.com/user/auraphone-blue/phone"
 )
 
 // AdvertisingData represents BLE advertising packet data
@@ -157,7 +158,6 @@ type Wire struct {
 	handlerMutex         sync.RWMutex
 
 	// Filesystem logging for debugging (optional)
-	debugLogPath         string
 	enableDebugLog       bool
 
 	// Message queue for polling compatibility with old Wire API
@@ -222,7 +222,6 @@ func newWireInternal(deviceUUID string, platform Platform, deviceName string, co
 		messageHandlers:      make(map[string]func(*CharacteristicMessage)),
 		stopChan:             make(chan struct{}),
 		enableDebugLog:       true,
-		debugLogPath:         "data",
 	}
 
 	return w, nil
@@ -260,7 +259,7 @@ func (sw *Wire) InitializeDevice() error {
 
 	// Create debug log directories (optional, for inspection)
 	if sw.enableDebugLog {
-		devicePath := filepath.Join(sw.debugLogPath, sw.localUUID)
+		devicePath := phone.GetDeviceDir(sw.localUUID)
 		dirs := []string{
 			filepath.Join(devicePath, "sent_messages"),
 			filepath.Join(devicePath, "received_messages"),
@@ -1258,7 +1257,7 @@ func (sw *Wire) logSentMessage(targetUUID string, msg *CharacteristicMessage) {
 		return
 	}
 
-	logDir := filepath.Join(sw.debugLogPath, sw.localUUID, "sent_messages")
+	logDir := filepath.Join(phone.GetDeviceDir(sw.localUUID), "sent_messages")
 	filename := fmt.Sprintf("to_%s_msg_%d.json", targetUUID[:8], msg.Timestamp)
 	logPath := filepath.Join(logDir, filename)
 
@@ -1272,7 +1271,7 @@ func (sw *Wire) logReceivedMessage(remoteUUID string, msg *CharacteristicMessage
 		return
 	}
 
-	logDir := filepath.Join(sw.debugLogPath, sw.localUUID, "received_messages")
+	logDir := filepath.Join(phone.GetDeviceDir(sw.localUUID), "received_messages")
 	filename := fmt.Sprintf("from_%s_msg_%d.json", remoteUUID[:8], msg.Timestamp)
 	logPath := filepath.Join(logDir, filename)
 
@@ -1320,7 +1319,7 @@ func (w *Wire) CanAdvertise() bool {
 func (sw *Wire) DiscoverDevices() ([]string, error) {
 	// For now, use filesystem-based discovery (scan data/ directory)
 	// This is still filesystem-based but only for discovery, not IPC
-	basePath := sw.debugLogPath
+	basePath := phone.GetDataDir()
 	files, err := os.ReadDir(basePath)
 	if err != nil {
 		return nil, err
@@ -1394,7 +1393,7 @@ func (sw *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
 
 // WriteGATTTable writes the GATT table to filesystem (for discovery)
 func (sw *Wire) WriteGATTTable(table *GATTTable) error {
-	devicePath := filepath.Join(sw.debugLogPath, sw.localUUID)
+	devicePath := phone.GetDeviceDir(sw.localUUID)
 	gattPath := filepath.Join(devicePath, "gatt.json")
 
 	// Ensure directory exists
@@ -1412,7 +1411,7 @@ func (sw *Wire) WriteGATTTable(table *GATTTable) error {
 
 // ReadGATTTable reads GATT table from filesystem
 func (sw *Wire) ReadGATTTable(deviceUUID string) (*GATTTable, error) {
-	devicePath := filepath.Join(sw.debugLogPath, deviceUUID)
+	devicePath := phone.GetDeviceDir(deviceUUID)
 	gattPath := filepath.Join(devicePath, "gatt.json")
 
 	data, err := os.ReadFile(gattPath)
@@ -1430,7 +1429,7 @@ func (sw *Wire) ReadGATTTable(deviceUUID string) (*GATTTable, error) {
 
 // WriteAdvertisingData writes advertising data to filesystem
 func (sw *Wire) WriteAdvertisingData(advData *AdvertisingData) error {
-	devicePath := filepath.Join(sw.debugLogPath, sw.localUUID)
+	devicePath := phone.GetDeviceDir(sw.localUUID)
 	advPath := filepath.Join(devicePath, "advertising.json")
 
 	// Ensure directory exists
@@ -1451,7 +1450,7 @@ func (sw *Wire) WriteAdvertisingData(advData *AdvertisingData) error {
 
 // ReadAdvertisingData reads advertising data from filesystem
 func (sw *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) {
-	devicePath := filepath.Join(sw.debugLogPath, deviceUUID)
+	devicePath := phone.GetDeviceDir(deviceUUID)
 	advPath := filepath.Join(devicePath, "advertising.json")
 
 	data, err := os.ReadFile(advPath)
@@ -1601,11 +1600,6 @@ func (sw *Wire) UnsubscribeCharacteristic(targetUUID, serviceUUID, charUUID stri
 			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
 
 	return sw.sendCharacteristicMessageViaRole(dualConn.asCentral, targetUUID, &msg)
-}
-
-// SetBasePath sets the base path for debug logs and discovery
-func (sw *Wire) SetBasePath(path string) {
-	sw.debugLogPath = path
 }
 
 // ReadCharacteristic sends a read request to target device (uses Central connection)
