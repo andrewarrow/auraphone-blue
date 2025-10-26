@@ -1,3 +1,109 @@
+ 1. Bidirectional Communication on a Single BLE Connection ⚠️ BIGGEST CONCERN
+
+  The Problem:
+  Your simulation uses Unix domain sockets which are fully bidirectional - both devices can send and
+   receive simultaneously over the same socket connection. Real BLE is asymmetric and role-based:
+
+  - Central → Peripheral: Central writes to characteristics, Peripheral sends notifications
+  - Peripheral → Central: Only through notifications/indications (requires subscription)
+  - You cannot have both devices writing to each other's characteristics on the same connection
+
+  Where This Breaks:
+  - wire/wire.go:505-578 - SendToDevice() treats connections as bidirectional pipes
+  - iphone/iphone.go:64-68 - connManager uses sendViaCentralMode() and sendViaPeripheralMode() but
+  these operate on different connections
+  - Your dual-role setup correctly has both connections, but your wire layer doesn't distinguish
+  which connection is which
+
+  Real World:
+  When Device A (Central) connects to Device B (Peripheral):
+  - A can write to B's characteristics
+  - B can only send notifications back to A (not writes)
+  - If B wants to write to A, you need a second connection where B is Central and A is Peripheral
+  - These are two separate connections with different role assignments
+
+  What You'll Need:
+  - Track per-connection roles (which device is Central vs Peripheral)
+  - Route messages through the correct connection based on direction
+  - Handle characteristic subscriptions properly (Central must subscribe before Peripheral can
+  notify)
+
+  ---
+  2. Characteristic Subscriptions Are Required for Notifications
+
+  The Problem:
+  Your wire layer sends notifications with NotifyCharacteristic() (wire.go:1002-1040) without 
+  checking if the Central has subscribed. In real BLE:
+
+  - Central must explicitly call setNotifyValue(true) (iOS) or setCharacteristicNotification(true)
+  (Android)
+  - This writes to the CCCD (Client Characteristic Configuration Descriptor) with value 0x0001
+  (notify) or 0x0002 (indicate)
+  - Peripherals cannot send notifications to unsubscribed Centrals (OS will drop them)
+
+  Where This Breaks:
+  - wire/wire.go:1002 - No subscription state tracking
+  - No CCCD descriptor implementation in your GATT table
+  - swift/cb_peripheral.go and kotlin/bluetooth_gatt.go likely don't track subscriptions
+
+  What You'll See:
+  - Notifications sent before subscription will be silently dropped
+  - Race conditions: Central subscribes but Peripheral already sent notifications
+  - Android is especially strict - unsubscribed notifications fail immediately
+
+  What You'll Need:
+  - Track per-Central subscription state for each characteristic
+  - Queue notifications until subscription is confirmed
+  - Implement CCCD descriptors (00002902-0000-1000-8000-00805f9b34fb)
+  - Handle CentralDidSubscribe / OnDescriptorWriteRequest callbacks
+
+  ---
+  3. Photo Transfer State Machines Will Race with Connection Loss
+
+  The Problem:
+  Your PhotoTransferCoordinator (phone/photo_transfer_coordinator.go) assumes reliable delivery over
+   stable connections. Real BLE connections are fragile:
+
+  - iOS Background Mode: Connections drop when app backgrounds (within 10 seconds)
+  - Android Doze: Connections killed after 1 minute of screen-off
+  - Radio Interference: Microwave ovens, Wi-Fi routers, USB 3.0 devices cause dropouts
+  - Distance: Move phone from pocket to table = connection lost
+  - OS Limits: iOS/Android kill connections when too many are open (typically 7-10 max)
+
+  Where This Breaks:
+  Your current wire.go:681-732 connection monitoring simulates 2% random disconnects every 5 seconds
+   (98% uptime). Real world is closer to 50% uptime in typical scenarios:
+  - Users walking around: ~60% uptime
+  - Phone in pocket: ~40% uptime
+  - Crowded area (conference, subway): ~20% uptime
+
+  What You'll See:
+  - Photo transfers fail mid-stream and leave orphaned state
+  - photoSendInProgress flag stuck true, blocking future transfers
+  - No resume mechanism - photo transfer restarts from zero
+  - Gossip messages claim photos exist but transfers always fail
+
+  What You'll Need:
+  - Chunked transfer protocol with resume capability (track which chunks received)
+  - Timeout detection - mark transfers as failed after N seconds of silence
+  - State cleanup on disconnect - reset photoSendInProgress flag
+  - Exponential backoff - don't retry photo transfer immediately after disconnect
+  - Consider multi-hop transfers via gossip (get photo from Device B who already has it from Device
+  A)
+
+  ---
+  Bonus Concern: MTU Negotiation Timing
+
+  Your simulation assumes MTU is negotiated at connection time (wire/simulation.go:217-233). Real
+  BLE:
+  - iOS: MTU negotiation happens after service discovery, takes 500ms-2s
+  - Android: Must explicitly call requestMtu() - not automatic
+  - Default MTU is 23 bytes until negotiation completes
+  - If you send 1MB photo in 185-byte chunks before MTU negotiation completes, first ~50 packets
+  will be fragmented to 23 bytes at OS layer (huge overhead)
+
+
+
 # Auraphone Blue - Real BLE Readiness Plan
 
 This document outlines the changes needed to make the simulator behave like real Bluetooth devices, so we're not surprised when moving to actual iOS/Android hardware.

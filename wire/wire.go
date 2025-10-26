@@ -84,6 +84,30 @@ const (
 	PlatformGeneric Platform = "generic"
 )
 
+// ConnectionRole represents the role in a specific connection
+type ConnectionRole string
+
+const (
+	ConnectionRoleCentral    ConnectionRole = "central"    // We initiated, we can write
+	ConnectionRolePeripheral ConnectionRole = "peripheral" // They initiated, we can only notify
+)
+
+// Connection represents a BLE connection with role tracking
+type Connection struct {
+	conn               net.Conn
+	role               ConnectionRole
+	remoteUUID         string
+	mtu                int       // Current MTU (starts at 23)
+	mtuNegotiated      bool      // Has MTU negotiation completed?
+	mtuNegotiationTime time.Time // When negotiation completed
+}
+
+// connectionKey generates a unique key for tracking dual connections
+// Format: "remoteUUID:role" so we can have both central and peripheral connections to same device
+func connectionKey(remoteUUID string, role ConnectionRole) string {
+	return remoteUUID + ":" + string(role)
+}
+
 // Wire implements BLE communication using Unix Domain Sockets
 // This eliminates filesystem race conditions while maintaining realistic BLE simulation
 type Wire struct {
@@ -98,7 +122,7 @@ type Wire struct {
 	// Socket infrastructure
 	socketPath           string
 	listener             net.Listener
-	connections          map[string]net.Conn // targetUUID -> connection
+	connections          map[string]*Connection // targetUUID -> connection (primary connection)
 	connMutex            sync.RWMutex
 
 	// Connection state tracking
@@ -171,7 +195,7 @@ func newWireInternal(deviceUUID string, platform Platform, deviceName string, co
 		mtu:                 config.DefaultMTU,
 		distance:            1.0,
 		socketPath:          socketPath,
-		connections:         make(map[string]net.Conn),
+		connections:         make(map[string]*Connection),
 		connectionStates:    make(map[string]ConnectionState),
 		connectionSendMutex: make(map[string]*sync.Mutex),
 		monitorStopChans:    make(map[string]chan struct{}),
@@ -288,20 +312,30 @@ func (sw *Wire) handleConnection(conn net.Conn) {
 	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 		"📞 Accepted connection from %s", remoteUUID[:8])
 
-	// Store connection (close any existing duplicate connection first)
+	// Store connection using role-based key (supports dual connections)
+	role := ConnectionRolePeripheral // They initiated, so we are Peripheral
+	key := connectionKey(remoteUUID, role)
+
 	sw.connMutex.Lock()
-	if existingConn, exists := sw.connections[remoteUUID]; exists {
+	if existingConn, exists := sw.connections[key]; exists {
 		// Close the old connection before accepting new one
 		// This prevents multiple readLoop goroutines from fragmenting the message stream
 		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"🔌 Closing duplicate connection from %s (new connection will replace it)", remoteUUID[:8])
-		existingConn.Close()
+			"🔌 Closing duplicate connection from %s [%s] (new connection will replace it)", remoteUUID[:8], role)
+		existingConn.conn.Close()
 	}
-	sw.connections[remoteUUID] = conn
+	// Create Connection struct - we are Peripheral since they initiated
+	sw.connections[key] = &Connection{
+		conn:          conn,
+		role:          role,
+		remoteUUID:    remoteUUID,
+		mtu:           23, // Start with BLE minimum MTU
+		mtuNegotiated: false,
+	}
 	sw.connectionStates[remoteUUID] = StateConnected
 	// Create per-connection send mutex if it doesn't exist
-	if sw.connectionSendMutex[remoteUUID] == nil {
-		sw.connectionSendMutex[remoteUUID] = &sync.Mutex{}
+	if sw.connectionSendMutex[key] == nil {
+		sw.connectionSendMutex[key] = &sync.Mutex{}
 	}
 	sw.connMutex.Unlock()
 
@@ -313,8 +347,8 @@ func (sw *Wire) handleConnection(conn net.Conn) {
 
 	// Connection closed
 	sw.connMutex.Lock()
-	delete(sw.connections, remoteUUID)
-	delete(sw.connectionSendMutex, remoteUUID) // Clean up per-connection mutex
+	delete(sw.connections, key) // Use the same role-based key
+	delete(sw.connectionSendMutex, key) // Clean up per-connection mutex
 	sw.connectionStates[remoteUUID] = StateDisconnected
 	sw.connMutex.Unlock()
 
@@ -430,13 +464,22 @@ func (sw *Wire) Connect(targetUUID string) error {
 		return fmt.Errorf("failed to send UUID: %w", err)
 	}
 
-	// Store connection
+	// Store connection using role-based key - we are Central since we initiated
+	role := ConnectionRoleCentral
+	key := connectionKey(targetUUID, role)
+
 	sw.connMutex.Lock()
-	sw.connections[targetUUID] = conn
+	sw.connections[key] = &Connection{
+		conn:          conn,
+		role:          role,
+		remoteUUID:    targetUUID,
+		mtu:           23, // Start with BLE minimum MTU
+		mtuNegotiated: false,
+	}
 	sw.connectionStates[targetUUID] = StateConnected
 	// Create per-connection send mutex if it doesn't exist
-	if sw.connectionSendMutex[targetUUID] == nil {
-		sw.connectionSendMutex[targetUUID] = &sync.Mutex{}
+	if sw.connectionSendMutex[key] == nil {
+		sw.connectionSendMutex[key] = &sync.Mutex{}
 	}
 	sw.connMutex.Unlock()
 
@@ -451,8 +494,8 @@ func (sw *Wire) Connect(targetUUID string) error {
 
 		// Connection closed
 		sw.connMutex.Lock()
-		delete(sw.connections, targetUUID)
-		delete(sw.connectionSendMutex, targetUUID) // Clean up per-connection mutex
+		delete(sw.connections, key) // Use the same role-based key
+		delete(sw.connectionSendMutex, key) // Clean up per-connection mutex
 		sw.connectionStates[targetUUID] = StateDisconnected
 		sw.connMutex.Unlock()
 
@@ -468,11 +511,18 @@ func (sw *Wire) Connect(targetUUID string) error {
 	return nil
 }
 
-// Disconnect closes connection to a device
+// Disconnect closes ALL connections to a device (both Central and Peripheral roles)
 func (sw *Wire) Disconnect(targetUUID string) error {
 	sw.connMutex.Lock()
-	conn, exists := sw.connections[targetUUID]
-	if !exists || sw.connectionStates[targetUUID] != StateConnected {
+
+	// Find all connections to this device (could be both Central and Peripheral)
+	centralKey := connectionKey(targetUUID, ConnectionRoleCentral)
+	peripheralKey := connectionKey(targetUUID, ConnectionRolePeripheral)
+
+	centralConn := sw.connections[centralKey]
+	peripheralConn := sw.connections[peripheralKey]
+
+	if centralConn == nil && peripheralConn == nil {
 		sw.connMutex.Unlock()
 		return fmt.Errorf("not connected to %s", targetUUID[:8])
 	}
@@ -487,30 +537,45 @@ func (sw *Wire) Disconnect(targetUUID string) error {
 	delay := sw.simulator.DisconnectDelay()
 	time.Sleep(delay)
 
-	// Close connection
-	conn.Close()
-
+	// Close both connections if they exist
 	sw.connMutex.Lock()
-	delete(sw.connections, targetUUID)
-	delete(sw.connectionSendMutex, targetUUID) // Clean up per-connection mutex
+	if centralConn != nil {
+		centralConn.conn.Close()
+		delete(sw.connections, centralKey)
+		delete(sw.connectionSendMutex, centralKey)
+	}
+	if peripheralConn != nil {
+		peripheralConn.conn.Close()
+		delete(sw.connections, peripheralKey)
+		delete(sw.connectionSendMutex, peripheralKey)
+	}
 	sw.connectionStates[targetUUID] = StateDisconnected
 	sw.connMutex.Unlock()
 
 	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		"🔌 Disconnected from %s", targetUUID[:8])
+		"🔌 Disconnected from %s (both roles)", targetUUID[:8])
 
 	return nil
 }
 
-// SendToDevice sends data to a target device via socket
+// SendToDevice sends data to a target device via socket (backward compatibility - tries any connection)
 func (sw *Wire) SendToDevice(targetUUID string, data []byte) error {
-	// Get connection and its mutex
+	// Try to find any connection to this device (prefer Central, fallback to Peripheral)
 	sw.connMutex.RLock()
-	conn, exists := sw.connections[targetUUID]
-	sendMutex := sw.connectionSendMutex[targetUUID]
+	centralKey := connectionKey(targetUUID, ConnectionRoleCentral)
+	peripheralKey := connectionKey(targetUUID, ConnectionRolePeripheral)
+
+	connection := sw.connections[centralKey]
+	key := centralKey
+	if connection == nil {
+		connection = sw.connections[peripheralKey]
+		key = peripheralKey
+	}
+
+	sendMutex := sw.connectionSendMutex[key]
 	sw.connMutex.RUnlock()
 
-	if !exists {
+	if connection == nil {
 		return fmt.Errorf("not connected to %s", targetUUID[:8])
 	}
 
@@ -521,12 +586,12 @@ func (sw *Wire) SendToDevice(targetUUID string, data []byte) error {
 		defer sendMutex.Unlock()
 	}
 
-	// Fragment data based on MTU for realistic BLE simulation
-	fragments := sw.simulator.FragmentData(data, sw.mtu)
+	// Fragment data based on connection-specific MTU for realistic BLE simulation
+	fragments := sw.simulator.FragmentData(data, connection.mtu)
 
 	// Send complete message length first (so receiver knows total size)
 	totalLen := uint32(len(data))
-	if err := binary.Write(conn, binary.BigEndian, totalLen); err != nil {
+	if err := binary.Write(connection.conn, binary.BigEndian, totalLen); err != nil {
 		return fmt.Errorf("failed to write message length: %w", err)
 	}
 
@@ -557,7 +622,7 @@ func (sw *Wire) SendToDevice(targetUUID string, data []byte) error {
 			}
 
 			// Write fragment data (no per-fragment length prefix)
-			if _, err := conn.Write(fragment); err != nil {
+			if _, err := connection.conn.Write(fragment); err != nil {
 				lastErr = fmt.Errorf("failed to write fragment: %w", err)
 				continue
 			}
@@ -578,8 +643,92 @@ func (sw *Wire) SendToDevice(targetUUID string, data []byte) error {
 	return nil
 }
 
-// WriteCharacteristic sends a write request to target device
+// SendToDeviceViaRole sends data using a specific connection role (for dual connections)
+func (sw *Wire) SendToDeviceViaRole(targetUUID string, data []byte, role ConnectionRole) error {
+	// Get connection for this specific role
+	key := connectionKey(targetUUID, role)
+	sw.connMutex.RLock()
+	connection, exists := sw.connections[key]
+	sendMutex := sw.connectionSendMutex[key]
+	sw.connMutex.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("not connected to %s as %s", targetUUID[:8], role)
+	}
+
+	// Lock per-connection mutex
+	if sendMutex != nil {
+		sendMutex.Lock()
+		defer sendMutex.Unlock()
+	}
+
+	// Fragment data based on connection-specific MTU
+	fragments := sw.simulator.FragmentData(data, connection.mtu)
+
+	// Send complete message length first
+	totalLen := uint32(len(data))
+	if err := binary.Write(connection.conn, binary.BigEndian, totalLen); err != nil {
+		return fmt.Errorf("failed to write message length: %w", err)
+	}
+
+	// Send each fragment with realistic BLE timing and packet loss
+	for i, fragment := range fragments {
+		if i > 0 {
+			time.Sleep(2 * time.Millisecond)
+		}
+
+		var lastErr error
+		for attempt := 0; attempt <= sw.simulator.config.MaxRetries; attempt++ {
+			if attempt > 0 {
+				time.Sleep(time.Duration(sw.simulator.config.RetryDelay) * time.Millisecond)
+				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+					"🔄 Retrying packet to %s [%s] (attempt %d/%d, fragment %d/%d)",
+					targetUUID[:8], role, attempt+1, sw.simulator.config.MaxRetries+1, i+1, len(fragments))
+			}
+
+			if !sw.simulator.ShouldPacketSucceed() && attempt < sw.simulator.config.MaxRetries {
+				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+					"📉 Simulated packet loss to %s [%s] (attempt %d/%d, fragment %d/%d)",
+					targetUUID[:8], role, attempt+1, sw.simulator.config.MaxRetries+1, i+1, len(fragments))
+				lastErr = fmt.Errorf("packet loss (attempt %d/%d)", attempt+1, sw.simulator.config.MaxRetries+1)
+				continue
+			}
+
+			if _, err := connection.conn.Write(fragment); err != nil {
+				lastErr = fmt.Errorf("failed to write fragment: %w", err)
+				continue
+			}
+
+			lastErr = nil
+			break
+		}
+
+		if lastErr != nil {
+			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+				"❌ Failed to send fragment %d/%d to %s [%s] after %d retries: %v",
+				i+1, len(fragments), targetUUID[:8], role, sw.simulator.config.MaxRetries, lastErr)
+			return lastErr
+		}
+	}
+
+	return nil
+}
+
+// WriteCharacteristic sends a write request to target device (backward compatibility - tries any connection)
 func (sw *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
+	// Try to find any connection (prefer Central since writes are typically from Central)
+	sw.connMutex.RLock()
+	centralKey := connectionKey(targetUUID, ConnectionRoleCentral)
+	peripheralKey := connectionKey(targetUUID, ConnectionRolePeripheral)
+
+	hasCentral := sw.connections[centralKey] != nil
+	hasPeripheral := sw.connections[peripheralKey] != nil
+	sw.connMutex.RUnlock()
+
+	if !hasCentral && !hasPeripheral {
+		return fmt.Errorf("not connected to %s", targetUUID[:8])
+	}
+
 	msg := CharacteristicMessage{
 		Operation:   "write",
 		ServiceUUID: serviceUUID,
@@ -596,8 +745,21 @@ func (sw *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, da
 	return sw.sendCharacteristicMessage(targetUUID, &msg)
 }
 
-// WriteCharacteristicNoResponse sends a write without waiting for response
+// WriteCharacteristicNoResponse sends a write without waiting for response (backward compatibility)
 func (sw *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID string, data []byte) error {
+	// Check if we have any connection
+	sw.connMutex.RLock()
+	centralKey := connectionKey(targetUUID, ConnectionRoleCentral)
+	peripheralKey := connectionKey(targetUUID, ConnectionRolePeripheral)
+
+	hasCentral := sw.connections[centralKey] != nil
+	hasPeripheral := sw.connections[peripheralKey] != nil
+	sw.connMutex.RUnlock()
+
+	if !hasCentral && !hasPeripheral {
+		return fmt.Errorf("not connected to %s", targetUUID[:8])
+	}
+
 	msg := CharacteristicMessage{
 		Operation:   "write_no_response",
 		ServiceUUID: serviceUUID,
@@ -635,6 +797,21 @@ func (sw *Wire) sendCharacteristicMessage(targetUUID string, msg *Characteristic
 	}
 
 	return sw.SendToDevice(targetUUID, msgData)
+}
+
+// sendCharacteristicMessageViaRole sends a message using a specific connection role
+func (sw *Wire) sendCharacteristicMessageViaRole(targetUUID string, msg *CharacteristicMessage, role ConnectionRole) error {
+	msgData, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	// Log for debugging
+	if sw.enableDebugLog {
+		sw.logSentMessage(targetUUID, msg)
+	}
+
+	return sw.SendToDeviceViaRole(targetUUID, msgData, role)
 }
 
 // dispatchMessage routes incoming messages to handlers or queues them
@@ -707,11 +884,20 @@ func (sw *Wire) startConnectionMonitoring(targetUUID string) {
 			case <-ticker.C:
 				sw.connMutex.Lock()
 				if sw.connectionStates[targetUUID] == StateConnected && sw.simulator.ShouldRandomlyDisconnect() {
-					// Force disconnect
-					if conn, exists := sw.connections[targetUUID]; exists {
-						conn.Close()
+					// Force disconnect both connection roles if they exist
+					centralKey := connectionKey(targetUUID, ConnectionRoleCentral)
+					peripheralKey := connectionKey(targetUUID, ConnectionRolePeripheral)
+
+					if centralConn, exists := sw.connections[centralKey]; exists {
+						centralConn.conn.Close()
+						delete(sw.connections, centralKey)
+						delete(sw.connectionSendMutex, centralKey)
 					}
-					delete(sw.connections, targetUUID)
+					if peripheralConn, exists := sw.connections[peripheralKey]; exists {
+						peripheralConn.conn.Close()
+						delete(sw.connections, peripheralKey)
+						delete(sw.connectionSendMutex, peripheralKey)
+					}
 					sw.connectionStates[targetUUID] = StateDisconnected
 
 					callback := sw.disconnectCallback
@@ -766,8 +952,8 @@ func (sw *Wire) Cleanup() {
 
 	// Close all connections
 	sw.connMutex.Lock()
-	for uuid, conn := range sw.connections {
-		conn.Close()
+	for uuid, connection := range sw.connections {
+		connection.conn.Close()
 		delete(sw.connections, uuid)
 		delete(sw.connectionSendMutex, uuid) // Clean up per-connection mutexes
 	}
@@ -998,8 +1184,21 @@ func (sw *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error)
 	return &advData, nil
 }
 
-// NotifyCharacteristic sends a notification
+// NotifyCharacteristic sends a notification (backward compatibility - tries any connection)
 func (sw *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
+	// Check if we have any connection
+	sw.connMutex.RLock()
+	centralKey := connectionKey(targetUUID, ConnectionRoleCentral)
+	peripheralKey := connectionKey(targetUUID, ConnectionRolePeripheral)
+
+	hasCentral := sw.connections[centralKey] != nil
+	hasPeripheral := sw.connections[peripheralKey] != nil
+	sw.connMutex.RUnlock()
+
+	if !hasCentral && !hasPeripheral {
+		return fmt.Errorf("not connected to %s", targetUUID[:8])
+	}
+
 	msg := CharacteristicMessage{
 		Operation:   "notify",
 		ServiceUUID: serviceUUID,
@@ -1037,6 +1236,74 @@ func (sw *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, d
 	}
 
 	return sw.sendCharacteristicMessage(targetUUID, &msg)
+}
+
+// WriteCharacteristicAsRole writes to a characteristic using a specific connection role
+// This is the role-aware API for dual connections
+func (sw *Wire) WriteCharacteristicAsRole(targetUUID, serviceUUID, charUUID string, data []byte, role ConnectionRole) error {
+	// Check if connection exists for this role
+	key := connectionKey(targetUUID, role)
+	sw.connMutex.RLock()
+	connection, exists := sw.connections[key]
+	sw.connMutex.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("not connected to %s as %s", targetUUID[:8], role)
+	}
+
+	// Enforce: Can only write if we are Central
+	if connection.role != ConnectionRoleCentral {
+		return fmt.Errorf("cannot write characteristic: connection role is %s, must be central", connection.role)
+	}
+
+	msg := CharacteristicMessage{
+		Operation:   "write",
+		ServiceUUID: serviceUUID,
+		CharUUID:    charUUID,
+		Data:        data,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  sw.localUUID,
+	}
+
+	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		fmt.Sprintf("📤 TX Write [%s] (to %s, svc=%s, char=%s, %d bytes)",
+			role, targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
+
+	return sw.sendCharacteristicMessageViaRole(targetUUID, &msg, role)
+}
+
+// NotifyCharacteristicAsRole sends a notification using a specific connection role
+// This is the role-aware API for dual connections
+func (sw *Wire) NotifyCharacteristicAsRole(targetUUID, serviceUUID, charUUID string, data []byte, role ConnectionRole) error {
+	// Check if connection exists for this role
+	key := connectionKey(targetUUID, role)
+	sw.connMutex.RLock()
+	connection, exists := sw.connections[key]
+	sw.connMutex.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("not connected to %s as %s", targetUUID[:8], role)
+	}
+
+	// Enforce: Can only notify if we are Peripheral
+	if connection.role != ConnectionRolePeripheral {
+		return fmt.Errorf("cannot notify characteristic: connection role is %s, must be peripheral", connection.role)
+	}
+
+	msg := CharacteristicMessage{
+		Operation:   "notify",
+		ServiceUUID: serviceUUID,
+		CharUUID:    charUUID,
+		Data:        data,
+		Timestamp:   time.Now().UnixNano(),
+		SenderUUID:  sw.localUUID,
+	}
+
+	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		fmt.Sprintf("📤 TX Notify [%s] (to %s, svc=%s, char=%s, %d bytes)",
+			role, targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
+
+	return sw.sendCharacteristicMessageViaRole(targetUUID, &msg, role)
 }
 
 // SubscribeCharacteristic sends a subscription request
