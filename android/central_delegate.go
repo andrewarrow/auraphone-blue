@@ -102,7 +102,7 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 
 		// Get device ID before cleanup
 		a.mu.Lock()
-		deviceID := a.deviceToDeviceID[remoteUUID]
+		deviceID := a.remoteUUIDToDeviceID[remoteUUID]
 		a.mu.Unlock()
 
 		// Clean up photo transfer state for disconnected device
