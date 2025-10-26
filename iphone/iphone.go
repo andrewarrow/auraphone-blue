@@ -89,6 +89,9 @@ type iPhone struct {
 	cacheManager         *phone.DeviceCacheManager      // Persistent photo storage
 	manager              *swift.CBCentralManager
 	peripheralManager    *swift.CBPeripheralManager     // Peripheral mode: GATT server + advertising
+	textChar             *swift.CBMutableCharacteristic // Reference to text characteristic for notifications
+	photoChar            *swift.CBMutableCharacteristic // Reference to photo characteristic for notifications
+	profileChar          *swift.CBMutableCharacteristic // Reference to profile characteristic for notifications
 	discoveryCallback    phone.DeviceDiscoveryCallback
 	photoPath            string
 	photoHash            string
@@ -183,27 +186,27 @@ func (ip *iPhone) initializePeripheralMode() {
 		IsPrimary: true,
 	}
 
-	// Add characteristics
-	textChar := &swift.CBMutableCharacteristic{
+	// Add characteristics and store references for sending notifications
+	ip.textChar = &swift.CBMutableCharacteristic{
 		UUID:       auraTextCharUUID,
 		Properties: swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
 		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
 		Service:    service,
 	}
-	photoChar := &swift.CBMutableCharacteristic{
+	ip.photoChar = &swift.CBMutableCharacteristic{
 		UUID:       auraPhotoCharUUID,
 		Properties: swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
 		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
 		Service:    service,
 	}
-	profileChar := &swift.CBMutableCharacteristic{
+	ip.profileChar = &swift.CBMutableCharacteristic{
 		UUID:       auraProfileCharUUID,
 		Properties: swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
 		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
 		Service:    service,
 	}
 
-	service.Characteristics = []*swift.CBMutableCharacteristic{textChar, photoChar, profileChar}
+	service.Characteristics = []*swift.CBMutableCharacteristic{ip.textChar, ip.photoChar, ip.profileChar}
 
 	ip.peripheralManager.AddService(service)
 }
@@ -1764,8 +1767,7 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 }
 
 func (ip *iPhone) sendHandshakeToDevice(targetUUID string) {
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraTextCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5D"
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 	firstName := ip.localProfile.FirstName
 	if firstName == "" {
@@ -1780,12 +1782,13 @@ func (ip *iPhone) sendHandshakeToDevice(targetUUID string) {
 	}
 
 	data, _ := proto2.Marshal(msg)
-	if err := ip.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraTextCharUUID, data); err != nil {
-		prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
-		logger.Error(prefix, "❌ Failed to send handshake: %v", err)
+
+	// Send notification to the specific central (peripheral mode)
+	central := swift.CBCentral{UUID: targetUUID}
+	if success := ip.peripheralManager.UpdateValue(data, ip.textChar, []swift.CBCentral{central}); !success {
+		logger.Error(prefix, "❌ Failed to send handshake notification (queue full)")
 	} else {
-		prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
-		logger.Debug(prefix, "📤 Sent handshake back to %s", targetUUID[:8])
+		logger.Debug(prefix, "📤 Sent handshake notification to %s", targetUUID[:8])
 	}
 }
 
@@ -1833,26 +1836,26 @@ func (ip *iPhone) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 	logger.Info(prefix, "📸 Sending photo to %s via server mode (%d bytes, %d chunks, CRC: %08X)",
 		targetUUID[:8], len(photoData), len(chunks), totalCRC)
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	// Create central reference for notifications
+	central := swift.CBCentral{UUID: targetUUID}
 
-	// Send metadata packet
+	// Send metadata packet via notification
 	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
-	if err := ip.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, metadata); err != nil {
-		return fmt.Errorf("failed to send metadata: %w", err)
+	if success := ip.peripheralManager.UpdateValue(metadata, ip.photoChar, []swift.CBCentral{central}); !success {
+		return fmt.Errorf("failed to send metadata notification (queue full)")
 	}
 
-	// Send chunks
+	// Send chunks via notifications
 	for i, chunk := range chunks {
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
-		if err := ip.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, chunkPacket); err != nil {
-			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s (server mode): %v", i+1, len(chunks), targetUUID[:8], err)
-			return fmt.Errorf("failed to send chunk %d: %w", i, err)
+		if success := ip.peripheralManager.UpdateValue(chunkPacket, ip.photoChar, []swift.CBCentral{central}); !success {
+			logger.Warn(prefix, "❌ Failed to send chunk %d/%d notification to %s (queue full)", i+1, len(chunks), targetUUID[:8])
+			return fmt.Errorf("failed to send chunk %d notification", i)
 		}
 		time.Sleep(10 * time.Millisecond)
 
 		if i == 0 || i == len(chunks)-1 {
-			logger.Debug(prefix, "📤 Sent chunk %d/%d via server mode", i+1, len(chunks))
+			logger.Debug(prefix, "📤 Sent chunk %d/%d via notification", i+1, len(chunks))
 		}
 	}
 
@@ -1876,17 +1879,17 @@ func (ip *iPhone) handleRetransmitRequestServer(targetUUID string, missingChunks
 
 	logger.Info(prefix, "🔄 Retransmitting %d chunks to %s (server mode)", len(missingChunks), targetUUID[:8])
 
-	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
-	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
+	// Create central reference for notifications
+	central := swift.CBCentral{UUID: targetUUID}
 
-	// Retransmit only the missing chunks
+	// Retransmit only the missing chunks via notifications
 	for _, chunkIdx := range missingChunks {
 		if int(chunkIdx) >= len(chunks) {
 			continue // Invalid chunk index
 		}
 		chunkPacket := phototransfer.EncodeChunk(chunkIdx, chunks[chunkIdx])
-		if err := ip.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, chunkPacket); err != nil {
-			logger.Warn(prefix, "Failed to retransmit chunk %d: %v", chunkIdx, err)
+		if success := ip.peripheralManager.UpdateValue(chunkPacket, ip.photoChar, []swift.CBCentral{central}); !success {
+			logger.Warn(prefix, "Failed to retransmit chunk %d (queue full)", chunkIdx)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
