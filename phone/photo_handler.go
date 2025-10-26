@@ -168,7 +168,9 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 		logger.Info(prefix, "🎉 Photo from %s saved successfully (%d bytes)", deviceID[:8], len(photoData))
 
 		// Trigger discovery callback to notify GUI that photo is now available
+		logger.Debug(prefix, "🔍 BEFORE TriggerDiscoveryUpdate: senderUUID=%s, deviceID=%s, photoHash=%s, photoDataLen=%d",
+			senderUUID[:8], deviceID[:8], recvState.PhotoHash[:8], len(photoData))
 		device.TriggerDiscoveryUpdate(senderUUID, deviceID, recvState.PhotoHash, photoData)
-		logger.Debug(prefix, "📱 Triggered GUI update for %s with photo %s", deviceID[:8], recvState.PhotoHash[:8])
+		logger.Debug(prefix, "✅ AFTER TriggerDiscoveryUpdate called for %s with photo %s", deviceID[:8], recvState.PhotoHash[:8])
 	}
 }

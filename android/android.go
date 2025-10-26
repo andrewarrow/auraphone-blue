@@ -269,32 +269,45 @@ func (a *Android) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
 
 // TriggerDiscoveryUpdate triggers the discovery callback to update the GUI
 func (a *Android) TriggerDiscoveryUpdate(hardwareUUID, deviceID, photoHash string, photoData []byte) {
-	if a.discoveryCallback != nil {
-		// Look up device name from remoteUUIDToDeviceID map
-		a.mu.RLock()
-		// Default name
-		name := "Unknown Device"
-		// Try to get a better name from discovered devices
-		for rUUID, dID := range a.remoteUUIDToDeviceID {
-			if rUUID == hardwareUUID || dID == deviceID {
-				if device, exists := a.discoveredDevices[rUUID]; exists {
-					name = device.Name
-					break
-				}
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+	logger.Debug(prefix, "🔔 TriggerDiscoveryUpdate ENTER: hardwareUUID=%s, deviceID=%s, photoHash=%s, photoDataLen=%d",
+		hardwareUUID[:8], deviceID[:8], photoHash[:8], len(photoData))
+
+	if a.discoveryCallback == nil {
+		logger.Warn(prefix, "⚠️  discoveryCallback is NIL - cannot update GUI!")
+		return
+	}
+
+	logger.Debug(prefix, "🔔 discoveryCallback is NOT nil, proceeding...")
+
+	// Look up device name from remoteUUIDToDeviceID map
+	a.mu.RLock()
+	// Default name
+	name := "Unknown Device"
+	// Try to get a better name from discovered devices
+	for rUUID, dID := range a.remoteUUIDToDeviceID {
+		if rUUID == hardwareUUID || dID == deviceID {
+			if device, exists := a.discoveredDevices[rUUID]; exists {
+				name = device.Name
+				break
 			}
 		}
-		a.mu.RUnlock()
-
-		a.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID:     deviceID,
-			HardwareUUID: hardwareUUID,
-			Name:         name,
-			RSSI:         0, // RSSI not relevant for cached photo updates
-			Platform:     "unknown",
-			PhotoHash:    photoHash,
-			PhotoData:    photoData,
-		})
 	}
+	a.mu.RUnlock()
+
+	logger.Debug(prefix, "🔔 BEFORE calling discoveryCallback with name=%s", name)
+
+	a.discoveryCallback(phone.DiscoveredDevice{
+		DeviceID:     deviceID,
+		HardwareUUID: hardwareUUID,
+		Name:         name,
+		RSSI:         0, // RSSI not relevant for cached photo updates
+		Platform:     "unknown",
+		PhotoHash:    photoHash,
+		PhotoData:    photoData,
+	})
+
+	logger.Debug(prefix, "🔔 AFTER calling discoveryCallback - GUI update complete")
 }
 
 func (a *Android) GetDeviceUUID() string { return a.hardwareUUID }

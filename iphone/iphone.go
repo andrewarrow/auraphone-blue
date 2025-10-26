@@ -258,32 +258,45 @@ func (ip *iPhone) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
 
 // TriggerDiscoveryUpdate triggers the discovery callback to update the GUI
 func (ip *iPhone) TriggerDiscoveryUpdate(hardwareUUID, deviceID, photoHash string, photoData []byte) {
-	if ip.discoveryCallback != nil {
-		// Look up device name from peripheralToDeviceID map
-		ip.mu.RLock()
-		// Default name
-		name := "Unknown Device"
-		// Try to get a better name from discovered peripherals or connected devices
-		for pUUID, dID := range ip.peripheralToDeviceID {
-			if pUUID == hardwareUUID || dID == deviceID {
-				if peripheral, exists := ip.connectedPeripherals[pUUID]; exists {
-					name = peripheral.Name
-					break
-				}
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+	logger.Debug(prefix, "🔔 TriggerDiscoveryUpdate ENTER: hardwareUUID=%s, deviceID=%s, photoHash=%s, photoDataLen=%d",
+		hardwareUUID[:8], deviceID[:8], photoHash[:8], len(photoData))
+
+	if ip.discoveryCallback == nil {
+		logger.Warn(prefix, "⚠️  discoveryCallback is NIL - cannot update GUI!")
+		return
+	}
+
+	logger.Debug(prefix, "🔔 discoveryCallback is NOT nil, proceeding...")
+
+	// Look up device name from peripheralToDeviceID map
+	ip.mu.RLock()
+	// Default name
+	name := "Unknown Device"
+	// Try to get a better name from discovered peripherals or connected devices
+	for pUUID, dID := range ip.peripheralToDeviceID {
+		if pUUID == hardwareUUID || dID == deviceID {
+			if peripheral, exists := ip.connectedPeripherals[pUUID]; exists {
+				name = peripheral.Name
+				break
 			}
 		}
-		ip.mu.RUnlock()
-
-		ip.discoveryCallback(phone.DiscoveredDevice{
-			DeviceID:     deviceID,
-			HardwareUUID: hardwareUUID,
-			Name:         name,
-			RSSI:         0, // RSSI not relevant for cached photo updates
-			Platform:     "unknown",
-			PhotoHash:    photoHash,
-			PhotoData:    photoData,
-		})
 	}
+	ip.mu.RUnlock()
+
+	logger.Debug(prefix, "🔔 BEFORE calling discoveryCallback with name=%s", name)
+
+	ip.discoveryCallback(phone.DiscoveredDevice{
+		DeviceID:     deviceID,
+		HardwareUUID: hardwareUUID,
+		Name:         name,
+		RSSI:         0, // RSSI not relevant for cached photo updates
+		Platform:     "unknown",
+		PhotoHash:    photoHash,
+		PhotoData:    photoData,
+	})
+
+	logger.Debug(prefix, "🔔 AFTER calling discoveryCallback - GUI update complete")
 }
 
 func (ip *iPhone) GetDeviceUUID() string { return ip.hardwareUUID }

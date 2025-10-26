@@ -566,7 +566,7 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 		deviceIDDisplay = truncateHash(device.DeviceID, 8)
 	}
 
-	logger.Debug(prefix, "📱 onDeviceDiscovered: deviceID=%s, hardwareUUID=%s, name=%s, photoHash=%s, photoDataLen=%d",
+	logger.Debug(prefix, "📱 [GUI CALLBACK] onDeviceDiscovered: deviceID=%s, hardwareUUID=%s, name=%s, photoHash=%s, photoDataLen=%d",
 		deviceIDDisplay, device.HardwareUUID[:8], device.Name, truncateHash(device.PhotoHash, 8), len(device.PhotoData))
 
 	// Use HardwareUUID as the primary key for deduplication
