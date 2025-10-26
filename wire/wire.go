@@ -103,6 +103,7 @@ type Wire struct {
 
 	// Connection state tracking
 	connectionStates     map[string]ConnectionState
+	connectionSendMutex  map[string]*sync.Mutex  // Per-connection send mutex
 	monitorStopChans     map[string]chan struct{}
 	disconnectCallback   func(deviceUUID string)
 
@@ -121,7 +122,6 @@ type Wire struct {
 	// Graceful shutdown
 	stopChan             chan struct{}
 	wg                   sync.WaitGroup
-	sendMutex            sync.Mutex
 }
 
 // NewWire creates a new wire with default platform (generic)
@@ -163,21 +163,22 @@ func newWireInternal(deviceUUID string, platform Platform, deviceName string, co
 	socketPath := fmt.Sprintf("/tmp/auraphone-%s.sock", deviceUUID)
 
 	w := &Wire{
-		localUUID:        deviceUUID,
-		platform:         platform,
-		deviceName:       deviceName,
-		role:             RoleDual,
-		simulator:        NewSimulator(config),
-		mtu:              config.DefaultMTU,
-		distance:         1.0,
-		socketPath:       socketPath,
-		connections:      make(map[string]net.Conn),
-		connectionStates: make(map[string]ConnectionState),
-		monitorStopChans: make(map[string]chan struct{}),
-		messageHandlers:  make(map[string]func(*CharacteristicMessage)),
-		stopChan:         make(chan struct{}),
-		enableDebugLog:   true,
-		debugLogPath:     "data",
+		localUUID:           deviceUUID,
+		platform:            platform,
+		deviceName:          deviceName,
+		role:                RoleDual,
+		simulator:           NewSimulator(config),
+		mtu:                 config.DefaultMTU,
+		distance:            1.0,
+		socketPath:          socketPath,
+		connections:         make(map[string]net.Conn),
+		connectionStates:    make(map[string]ConnectionState),
+		connectionSendMutex: make(map[string]*sync.Mutex),
+		monitorStopChans:    make(map[string]chan struct{}),
+		messageHandlers:     make(map[string]func(*CharacteristicMessage)),
+		stopChan:            make(chan struct{}),
+		enableDebugLog:      true,
+		debugLogPath:        "data",
 	}
 
 	return w, nil
@@ -298,6 +299,10 @@ func (sw *Wire) handleConnection(conn net.Conn) {
 	}
 	sw.connections[remoteUUID] = conn
 	sw.connectionStates[remoteUUID] = StateConnected
+	// Create per-connection send mutex if it doesn't exist
+	if sw.connectionSendMutex[remoteUUID] == nil {
+		sw.connectionSendMutex[remoteUUID] = &sync.Mutex{}
+	}
 	sw.connMutex.Unlock()
 
 	// Start connection monitoring
@@ -309,6 +314,7 @@ func (sw *Wire) handleConnection(conn net.Conn) {
 	// Connection closed
 	sw.connMutex.Lock()
 	delete(sw.connections, remoteUUID)
+	delete(sw.connectionSendMutex, remoteUUID) // Clean up per-connection mutex
 	sw.connectionStates[remoteUUID] = StateDisconnected
 	sw.connMutex.Unlock()
 
@@ -428,6 +434,10 @@ func (sw *Wire) Connect(targetUUID string) error {
 	sw.connMutex.Lock()
 	sw.connections[targetUUID] = conn
 	sw.connectionStates[targetUUID] = StateConnected
+	// Create per-connection send mutex if it doesn't exist
+	if sw.connectionSendMutex[targetUUID] == nil {
+		sw.connectionSendMutex[targetUUID] = &sync.Mutex{}
+	}
 	sw.connMutex.Unlock()
 
 	logger.Info(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
@@ -442,6 +452,7 @@ func (sw *Wire) Connect(targetUUID string) error {
 		// Connection closed
 		sw.connMutex.Lock()
 		delete(sw.connections, targetUUID)
+		delete(sw.connectionSendMutex, targetUUID) // Clean up per-connection mutex
 		sw.connectionStates[targetUUID] = StateDisconnected
 		sw.connMutex.Unlock()
 
@@ -481,6 +492,7 @@ func (sw *Wire) Disconnect(targetUUID string) error {
 
 	sw.connMutex.Lock()
 	delete(sw.connections, targetUUID)
+	delete(sw.connectionSendMutex, targetUUID) // Clean up per-connection mutex
 	sw.connectionStates[targetUUID] = StateDisconnected
 	sw.connMutex.Unlock()
 
@@ -492,15 +504,21 @@ func (sw *Wire) Disconnect(targetUUID string) error {
 
 // SendToDevice sends data to a target device via socket
 func (sw *Wire) SendToDevice(targetUUID string, data []byte) error {
-	sw.sendMutex.Lock()
-	defer sw.sendMutex.Unlock()
-
+	// Get connection and its mutex
 	sw.connMutex.RLock()
 	conn, exists := sw.connections[targetUUID]
+	sendMutex := sw.connectionSendMutex[targetUUID]
 	sw.connMutex.RUnlock()
 
 	if !exists {
 		return fmt.Errorf("not connected to %s", targetUUID[:8])
+	}
+
+	// Lock per-connection mutex to prevent concurrent writes to the same socket
+	// This allows Device A→B and Device C→D to send simultaneously (realistic)
+	if sendMutex != nil {
+		sendMutex.Lock()
+		defer sendMutex.Unlock()
 	}
 
 	// Fragment data based on MTU for realistic BLE simulation
@@ -751,6 +769,7 @@ func (sw *Wire) Cleanup() {
 	for uuid, conn := range sw.connections {
 		conn.Close()
 		delete(sw.connections, uuid)
+		delete(sw.connectionSendMutex, uuid) // Clean up per-connection mutexes
 	}
 	sw.connMutex.Unlock()
 
