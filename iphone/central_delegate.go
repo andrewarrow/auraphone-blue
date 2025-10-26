@@ -152,7 +152,7 @@ func (ip *iPhone) DidDiscoverCharacteristics(peripheral *swift.CBPeripheral, ser
 		}
 	}
 
-	// Send initial gossip to this device
+	// Send initial gossip after characteristics are discovered
 	go ip.gossipHandler.SendGossipToDevice(peripheral.UUID)
 }
 

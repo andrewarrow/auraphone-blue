@@ -87,11 +87,8 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 		a.connectedGatts[remoteUUID] = gatt
 		a.mu.Unlock()
 
-		// Discover services
+		// Discover services (gossip will be sent in OnServicesDiscovered)
 		gatt.DiscoverServices()
-
-		// Send initial gossip after connection
-		go a.gossipHandler.SendGossipToDevice(remoteUUID)
 
 	} else if newState == 0 { // STATE_DISCONNECTED
 		if status != 0 {
@@ -177,6 +174,10 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 
 	// Start listening for notifications
 	gatt.StartListening()
+
+	// Send initial gossip after service discovery completes
+	remoteUUID := gatt.GetRemoteUUID()
+	go a.gossipHandler.SendGossipToDevice(remoteUUID)
 }
 
 // OnCharacteristicChanged is called when a notification/indication is received
