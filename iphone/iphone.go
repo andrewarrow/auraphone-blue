@@ -87,6 +87,7 @@ type iPhone struct {
 	deviceName           string
 	wire                 *wire.Wire
 	cacheManager         *phone.DeviceCacheManager      // Persistent photo storage
+	photoCoordinator     *phone.PhotoTransferCoordinator // Photo transfer state (single source of truth)
 	manager              *swift.CBCentralManager
 	peripheralManager    *swift.CBPeripheralManager     // Peripheral mode: GATT server + advertising
 	textChar             *swift.CBMutableCharacteristic // Reference to text characteristic for notifications
@@ -104,9 +105,8 @@ type iPhone struct {
 	receivedPhotoHashes   map[string]string              // deviceID -> RX hash (photos we got from them)
 	receivedProfileVersion map[string]int32               // deviceID -> their profile version
 	lastHandshakeTime     map[string]time.Time           // hardware UUID -> last handshake timestamp (connection-scoped)
-	photoSendInProgress   map[string]bool                // hardware UUID -> true if photo send in progress (connection-scoped)
-	photoReceiveState     map[string]*photoReceiveState  // peripheral UUID -> receive state (central mode)
-	photoReceiveStateServer map[string]*photoReceiveState // senderUUID -> receive state for peripheral mode
+	photoReceiveState     map[string]*photoReceiveState  // peripheral UUID -> receive state (central mode) - DEPRECATED: use photoCoordinator
+	photoReceiveStateServer map[string]*photoReceiveState // senderUUID -> receive state for peripheral mode - DEPRECATED: use photoCoordinator
 	staleCheckDone        chan struct{} // Signal channel for stopping background checker
 }
 
@@ -131,7 +131,6 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		receivedPhotoHashes:    make(map[string]string),
 		receivedProfileVersion: make(map[string]int32),
 		lastHandshakeTime:      make(map[string]time.Time),
-		photoSendInProgress:    make(map[string]bool),
 		staleCheckDone:         make(chan struct{}),
 		photoReceiveState:      make(map[string]*photoReceiveState),
 		photoReceiveStateServer: make(map[string]*photoReceiveState),
@@ -150,6 +149,9 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		fmt.Printf("Failed to initialize cache: %v\n", err)
 		return nil
 	}
+
+	// Initialize photo transfer coordinator (single source of truth)
+	ip.photoCoordinator = phone.NewPhotoTransferCoordinator(hardwareUUID)
 
 	// Load existing photo mappings from disk
 	ip.loadReceivedPhotoMappings()
@@ -512,6 +514,9 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	ip.photoHash = photoHash
 	ip.photoData = data
 
+	// Invalidate all completed sends (our photo changed, so we need to resend to everyone)
+	ip.photoCoordinator.InvalidateAllSends()
+
 	// Update advertising data to broadcast new hash
 	ip.setupBLE()
 
@@ -857,31 +862,21 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash string) error {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
-	// Check if they already have our photo
-	if remoteRxPhotoHash == ip.photoHash {
-		logger.Debug(prefix, "⏭️  Remote already has our photo, skipping")
+	// Get the device ID for this hardware UUID
+	ip.mu.RLock()
+	deviceID, hasDeviceID := ip.peripheralToDeviceID[peripheral.UUID]
+	ip.mu.RUnlock()
+
+	if !hasDeviceID {
+		logger.Debug(prefix, "⏭️  No device ID yet for %s, skipping photo send", peripheral.UUID[:8])
 		return nil
 	}
 
-	// Check if a photo send is already in progress to this device
-	ip.mu.Lock()
-	if ip.photoSendInProgress[peripheral.UUID] {
-		ip.mu.Unlock()
-		logger.Debug(prefix, "⏭️  [PHOTO-TX-STATE] Already in progress to %s, skipping duplicate", peripheral.UUID[:8])
+	// Check via coordinator if we should send
+	if !ip.photoCoordinator.ShouldSendPhoto(deviceID, ip.photoHash) {
+		logger.Debug(prefix, "⏭️  Photo send to %s not needed (deviceID: %s)", peripheral.UUID[:8], deviceID)
 		return nil
 	}
-
-	// Mark photo send as in progress
-	ip.photoSendInProgress[peripheral.UUID] = true
-	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] IDLE → SENDING to %s", peripheral.UUID[:8])
-	ip.mu.Unlock()
-	defer func() {
-		// Clear flag when done
-		ip.mu.Lock()
-		delete(ip.photoSendInProgress, peripheral.UUID)
-		logger.Debug(prefix, "📸 [PHOTO-TX-STATE] Cleared send-in-progress flag for %s", peripheral.UUID[:8])
-		ip.mu.Unlock()
-	}()
 
 	// Load our cached photo
 	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.hardwareUUID)
@@ -889,6 +884,7 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 	photoData, err := os.ReadFile(cachePath)
 	if err != nil {
 		logger.Error(prefix, "❌ [PHOTO-TX-ERROR] Failed to load photo: %v", err)
+		ip.photoCoordinator.FailSend(deviceID, fmt.Sprintf("failed to load photo: %v", err))
 		return fmt.Errorf("failed to load photo: %w", err)
 	}
 
@@ -897,6 +893,15 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 
 	// Split into chunks
 	chunks := phototransfer.SplitIntoChunks(photoData, phototransfer.DefaultChunkSize)
+
+	// Mark send as started in coordinator
+	ip.photoCoordinator.StartSend(deviceID, ip.photoHash, len(chunks))
+	defer func() {
+		// If we return early with error, fail the send
+		if err != nil {
+			ip.photoCoordinator.FailSend(deviceID, err.Error())
+		}
+	}()
 
 	logger.Info(prefix, "📸 Sending photo to %s (%d bytes, %d chunks, CRC: %08X)",
 		peripheral.UUID[:8], len(photoData), len(chunks), totalCRC)
@@ -908,14 +913,15 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 
 	photoChar := peripheral.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
 	if photoChar == nil {
-		return fmt.Errorf("photo characteristic not found")
+		err = fmt.Errorf("photo characteristic not found")
+		return err
 	}
 
 	// Send metadata packet - critical, use withResponse
 	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
 	logger.Debug(prefix, "📸 [PHOTO-TX-META] Sending metadata packet (size=%d, crc=%08X, chunks=%d) with response",
 		len(photoData), totalCRC, len(chunks))
-	if err := peripheral.WriteValue(metadata, photoChar, swift.CBCharacteristicWriteWithResponse); err != nil {
+	if err = peripheral.WriteValue(metadata, photoChar, swift.CBCharacteristicWriteWithResponse); err != nil {
 		logger.Error(prefix, "❌ [PHOTO-TX-ERROR] Failed to send metadata: %v", err)
 		return fmt.Errorf("failed to send metadata: %w", err)
 	}
@@ -925,17 +931,24 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 	// This is realistic - photo chunks use fast writes, app-level CRC catches errors
 	for i, chunk := range chunks {
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
-		if err := peripheral.WriteValue(chunkPacket, photoChar, swift.CBCharacteristicWriteWithoutResponse); err != nil {
+		if err = peripheral.WriteValue(chunkPacket, photoChar, swift.CBCharacteristicWriteWithoutResponse); err != nil {
 			logger.Warn(prefix, "❌ [PHOTO-TX-ERROR] Failed to send chunk %d/%d to %s: %v", i+1, len(chunks), peripheral.UUID[:8], err)
 			return fmt.Errorf("failed to send chunk %d: %w", i, err)
 		}
 		time.Sleep(10 * time.Millisecond)
+
+		// Update progress periodically
+		if i%5 == 0 || i == len(chunks)-1 {
+			ip.photoCoordinator.UpdateSendProgress(deviceID, i+1)
+		}
 
 		if i == 0 || i == len(chunks)-1 {
 			logger.Debug(prefix, "📤 [PHOTO-TX-CHUNK] Sent chunk %d/%d (size=%d bytes)", i+1, len(chunks), len(chunk))
 		}
 	}
 
+	// Mark as completed (will persist to disk)
+	ip.photoCoordinator.CompleteSend(deviceID, ip.photoHash)
 	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] SENDING → COMPLETE (all %d chunks sent to %s)", len(chunks), peripheral.UUID[:8])
 	logger.Info(prefix, "✅ Photo send complete to %s", peripheral.UUID[:8])
 	return nil
@@ -1010,10 +1023,13 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 		if crc, err := phototransfer.DecodeAck(data); err == nil {
 			logger.Info(prefix, "✅ Received transfer acknowledgment from %s (CRC: %08X)",
 				peripheral.UUID[:8], crc)
-			// Clear photoSendInProgress flag
-			ip.mu.Lock()
-			delete(ip.photoSendInProgress, peripheral.UUID)
-			ip.mu.Unlock()
+			// Get device ID and mark transfer as complete
+			ip.mu.RLock()
+			deviceID, hasDeviceID := ip.peripheralToDeviceID[peripheral.UUID]
+			ip.mu.RUnlock()
+			if hasDeviceID {
+				ip.photoCoordinator.CompleteSend(deviceID, ip.photoHash)
+			}
 			return
 		}
 	}
@@ -1444,6 +1460,12 @@ func (ip *iPhone) checkStalePhotoTransfers() {
 		}
 	}
 	ip.mu.Unlock()
+
+	// Cleanup stale transfers in the coordinator (10 second timeout)
+	cleaned := ip.photoCoordinator.CleanupStaleTransfers(10 * time.Second)
+	if cleaned > 0 {
+		logger.Debug(prefix, "🧹 Cleaned up %d stale photo transfers", cleaned)
+	}
 }
 
 // loadLocalProfile loads our profile from disk cache
@@ -1796,34 +1818,27 @@ func (ip *iPhone) sendHandshakeToDevice(targetUUID string) {
 func (ip *iPhone) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string) error {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
-	// Check if they already have our photo
-	if remoteRxPhotoHash == ip.photoHash {
-		logger.Debug(prefix, "⏭️  Remote already has our photo, skipping")
+	// Get the device ID for this hardware UUID
+	ip.mu.RLock()
+	deviceID, hasDeviceID := ip.peripheralToDeviceID[targetUUID]
+	ip.mu.RUnlock()
+
+	if !hasDeviceID {
+		logger.Debug(prefix, "⏭️  No device ID yet for %s, skipping photo send", targetUUID[:8])
 		return nil
 	}
 
-	// Check if a photo send is already in progress to this device
-	ip.mu.Lock()
-	if ip.photoSendInProgress[targetUUID] {
-		ip.mu.Unlock()
-		logger.Debug(prefix, "⏭️  Photo send already in progress to %s, skipping duplicate", targetUUID[:8])
+	// Check via coordinator if we should send
+	if !ip.photoCoordinator.ShouldSendPhoto(deviceID, ip.photoHash) {
+		logger.Debug(prefix, "⏭️  Photo send to %s not needed (deviceID: %s)", targetUUID[:8], deviceID)
 		return nil
 	}
-
-	// Mark photo send as in progress
-	ip.photoSendInProgress[targetUUID] = true
-	ip.mu.Unlock()
-	defer func() {
-		// Clear flag when done
-		ip.mu.Lock()
-		delete(ip.photoSendInProgress, targetUUID)
-		ip.mu.Unlock()
-	}()
 
 	// Load our cached photo
 	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.hardwareUUID)
 	photoData, err := os.ReadFile(cachePath)
 	if err != nil {
+		ip.photoCoordinator.FailSend(deviceID, fmt.Sprintf("failed to load photo: %v", err))
 		return fmt.Errorf("failed to load photo: %w", err)
 	}
 
@@ -1832,6 +1847,15 @@ func (ip *iPhone) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 
 	// Split into chunks
 	chunks := phototransfer.SplitIntoChunks(photoData, phototransfer.DefaultChunkSize)
+
+	// Mark send as started in coordinator
+	ip.photoCoordinator.StartSend(deviceID, ip.photoHash, len(chunks))
+	defer func() {
+		// If we return early with error, fail the send
+		if err != nil {
+			ip.photoCoordinator.FailSend(deviceID, err.Error())
+		}
+	}()
 
 	logger.Info(prefix, "📸 Sending photo to %s via server mode (%d bytes, %d chunks, CRC: %08X)",
 		targetUUID[:8], len(photoData), len(chunks), totalCRC)
@@ -1842,7 +1866,8 @@ func (ip *iPhone) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 	// Send metadata packet via notification
 	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
 	if success := ip.peripheralManager.UpdateValue(metadata, ip.photoChar, []swift.CBCentral{central}); !success {
-		return fmt.Errorf("failed to send metadata notification (queue full)")
+		err = fmt.Errorf("failed to send metadata notification (queue full)")
+		return err
 	}
 
 	// Send chunks via notifications
@@ -1850,15 +1875,23 @@ func (ip *iPhone) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
 		if success := ip.peripheralManager.UpdateValue(chunkPacket, ip.photoChar, []swift.CBCentral{central}); !success {
 			logger.Warn(prefix, "❌ Failed to send chunk %d/%d notification to %s (queue full)", i+1, len(chunks), targetUUID[:8])
-			return fmt.Errorf("failed to send chunk %d notification", i)
+			err = fmt.Errorf("failed to send chunk %d notification", i)
+			return err
 		}
 		time.Sleep(10 * time.Millisecond)
+
+		// Update progress periodically
+		if i%5 == 0 || i == len(chunks)-1 {
+			ip.photoCoordinator.UpdateSendProgress(deviceID, i+1)
+		}
 
 		if i == 0 || i == len(chunks)-1 {
 			logger.Debug(prefix, "📤 Sent chunk %d/%d via notification", i+1, len(chunks))
 		}
 	}
 
+	// Mark as completed (will persist to disk)
+	ip.photoCoordinator.CompleteSend(deviceID, ip.photoHash)
 	logger.Info(prefix, "✅ Photo send complete to %s via server mode", targetUUID[:8])
 	return nil
 }
@@ -1928,10 +1961,13 @@ func (ip *iPhone) handlePhotoMessageFromUUID(senderUUID string, data []byte) {
 		if crc, err := phototransfer.DecodeAck(data); err == nil {
 			logger.Info(prefix, "✅ Received transfer acknowledgment from %s (CRC: %08X, server mode)",
 				senderUUID[:8], crc)
-			// Clear photoSendInProgress flag
-			ip.mu.Lock()
-			delete(ip.photoSendInProgress, senderUUID)
-			ip.mu.Unlock()
+			// Get device ID and mark transfer as complete
+			ip.mu.RLock()
+			deviceID, hasDeviceID := ip.peripheralToDeviceID[senderUUID]
+			ip.mu.RUnlock()
+			if hasDeviceID {
+				ip.photoCoordinator.CompleteSend(deviceID, ip.photoHash)
+			}
 			return
 		}
 	}

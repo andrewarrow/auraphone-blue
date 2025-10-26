@@ -87,6 +87,7 @@ type Android struct {
 	deviceName           string
 	wire                 *wire.Wire
 	cacheManager         *phone.DeviceCacheManager          // Persistent photo storage
+	photoCoordinator     *phone.PhotoTransferCoordinator    // Photo transfer state (single source of truth)
 	manager              *kotlin.BluetoothManager
 	advertiser           *kotlin.BluetoothLeAdvertiser      // Peripheral mode: advertising + inbox polling
 	discoveryCallback    phone.DeviceDiscoveryCallback
@@ -103,9 +104,8 @@ type Android struct {
 	receivedPhotoHashes    map[string]string                  // deviceID -> RX hash (photos we got from them)
 	receivedProfileVersion map[string]int32                   // deviceID -> their profile version
 	lastHandshakeTime      map[string]time.Time               // hardware UUID -> last handshake timestamp (connection-scoped)
-	photoSendInProgress    map[string]bool                    // hardware UUID -> true if photo send in progress (connection-scoped)
-	photoReceiveState      map[string]*photoReceiveState      // remote UUID -> receive state (central mode)
-	photoReceiveStateServer map[string]*photoReceiveState     // senderUUID -> receive state for server mode
+	photoReceiveState      map[string]*photoReceiveState      // remote UUID -> receive state (central mode) - DEPRECATED: use photoCoordinator
+	photoReceiveStateServer map[string]*photoReceiveState     // senderUUID -> receive state for server mode - DEPRECATED: use photoCoordinator
 	useAutoConnect       bool          // Whether to use autoConnect=true mode
 	staleCheckDone       chan struct{} // Signal channel for stopping background checker
 }
@@ -133,7 +133,6 @@ func NewAndroid(hardwareUUID string) *Android {
 		receivedPhotoHashes:    make(map[string]string),
 		receivedProfileVersion: make(map[string]int32),
 		lastHandshakeTime:      make(map[string]time.Time),
-		photoSendInProgress:    make(map[string]bool),
 		staleCheckDone:         make(chan struct{}),
 		photoReceiveState:      make(map[string]*photoReceiveState),
 		photoReceiveStateServer: make(map[string]*photoReceiveState),
@@ -153,6 +152,9 @@ func NewAndroid(hardwareUUID string) *Android {
 		fmt.Printf("Failed to initialize cache: %v\n", err)
 		return nil
 	}
+
+	// Initialize photo transfer coordinator (single source of truth)
+	a.photoCoordinator = phone.NewPhotoTransferCoordinator(hardwareUUID)
 
 	// Load existing photo mappings from disk
 	a.loadReceivedPhotoMappings()
@@ -474,6 +476,9 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	a.photoPath = photoPath
 	a.photoHash = photoHash
 	a.photoData = data
+
+	// Invalidate all completed sends (our photo changed, so we need to resend to everyone)
+	a.photoCoordinator.InvalidateAllSends()
 
 	// Update advertising data to broadcast new hash
 	a.setupBLE()
@@ -865,31 +870,21 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 	remoteUUID := gatt.GetRemoteUUID()
 
-	// Check if they already have our photo
-	if remoteRxPhotoHash == a.photoHash {
-		logger.Debug(prefix, "⏭️  Remote already has our photo, skipping")
+	// Get the device ID for this hardware UUID
+	a.mu.RLock()
+	deviceID, hasDeviceID := a.remoteUUIDToDeviceID[remoteUUID]
+	a.mu.RUnlock()
+
+	if !hasDeviceID {
+		logger.Debug(prefix, "⏭️  No device ID yet for %s, skipping photo send", remoteUUID[:8])
 		return nil
 	}
 
-	// Check if a photo send is already in progress to this device
-	a.mu.Lock()
-	if a.photoSendInProgress[remoteUUID] {
-		a.mu.Unlock()
-		logger.Debug(prefix, "⏭️  [PHOTO-TX-STATE] Already in progress to %s, skipping duplicate", remoteUUID[:8])
+	// Check via coordinator if we should send
+	if !a.photoCoordinator.ShouldSendPhoto(deviceID, a.photoHash) {
+		logger.Debug(prefix, "⏭️  Photo send to %s not needed (deviceID: %s)", remoteUUID[:8], deviceID)
 		return nil
 	}
-
-	// Mark photo send as in progress
-	a.photoSendInProgress[remoteUUID] = true
-	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] IDLE → SENDING to %s", remoteUUID[:8])
-	a.mu.Unlock()
-	defer func() {
-		// Clear flag when done
-		a.mu.Lock()
-		delete(a.photoSendInProgress, remoteUUID)
-		logger.Debug(prefix, "📸 [PHOTO-TX-STATE] Cleared send-in-progress flag for %s", remoteUUID[:8])
-		a.mu.Unlock()
-	}()
 
 	// Load our cached photo
 	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.hardwareUUID)
@@ -897,6 +892,7 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 	photoData, err := os.ReadFile(cachePath)
 	if err != nil {
 		logger.Error(prefix, "❌ [PHOTO-TX-ERROR] Failed to load photo: %v", err)
+		a.photoCoordinator.FailSend(deviceID, fmt.Sprintf("failed to load photo: %v", err))
 		return fmt.Errorf("failed to load photo: %w", err)
 	}
 
@@ -905,6 +901,15 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 
 	// Split into chunks
 	chunks := phototransfer.SplitIntoChunks(photoData, phototransfer.DefaultChunkSize)
+
+	// Mark send as started in coordinator
+	a.photoCoordinator.StartSend(deviceID, a.photoHash, len(chunks))
+	defer func() {
+		// If we return early with error, fail the send
+		if err != nil {
+			a.photoCoordinator.FailSend(deviceID, err.Error())
+		}
+	}()
 
 	logger.Info(prefix, "📸 Sending photo to %s (%d bytes, %d chunks, CRC: %08X)",
 		remoteUUID[:8], len(photoData), len(chunks), totalCRC)
@@ -916,7 +921,8 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 
 	photoChar := gatt.GetCharacteristic(auraServiceUUID, auraPhotoCharUUID)
 	if photoChar == nil {
-		return fmt.Errorf("photo characteristic not found")
+		err = fmt.Errorf("photo characteristic not found")
+		return err
 	}
 
 	// Send metadata packet - critical, use withResponse
@@ -927,7 +933,8 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 		len(photoData), totalCRC, len(chunks))
 	if !gatt.WriteCharacteristic(photoChar) {
 		logger.Error(prefix, "❌ [PHOTO-TX-ERROR] Failed to send metadata")
-		return fmt.Errorf("failed to send metadata")
+		err = fmt.Errorf("failed to send metadata")
+		return err
 	}
 	logger.Debug(prefix, "📸 [PHOTO-TX-META] Metadata sent successfully, starting chunk stream")
 
@@ -939,15 +946,23 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 		photoChar.WriteType = kotlin.WRITE_TYPE_NO_RESPONSE
 		if !gatt.WriteCharacteristic(photoChar) {
 			logger.Warn(prefix, "❌ [PHOTO-TX-ERROR] Failed to send chunk %d/%d to %s", i+1, len(chunks), remoteUUID[:8])
-			return fmt.Errorf("failed to send chunk %d", i)
+			err = fmt.Errorf("failed to send chunk %d", i)
+			return err
 		}
 		time.Sleep(10 * time.Millisecond)
+
+		// Update progress periodically
+		if i%5 == 0 || i == len(chunks)-1 {
+			a.photoCoordinator.UpdateSendProgress(deviceID, i+1)
+		}
 
 		if i == 0 || i == len(chunks)-1 {
 			logger.Debug(prefix, "📤 [PHOTO-TX-CHUNK] Sent chunk %d/%d (size=%d bytes)", i+1, len(chunks), len(chunk))
 		}
 	}
 
+	// Mark as completed (will persist to disk)
+	a.photoCoordinator.CompleteSend(deviceID, a.photoHash)
 	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] SENDING → COMPLETE (all %d chunks sent to %s)", len(chunks), remoteUUID[:8])
 	logger.Info(prefix, "✅ Photo send complete to %s", remoteUUID[:8])
 	return nil
@@ -1406,6 +1421,12 @@ func (a *Android) checkStalePhotoTransfers() {
 		}
 	}
 	a.mu.Unlock()
+
+	// Cleanup stale transfers in the coordinator (10 second timeout)
+	cleaned := a.photoCoordinator.CleanupStaleTransfers(10 * time.Second)
+	if cleaned > 0 {
+		logger.Debug(prefix, "🧹 Cleaned up %d stale photo transfers", cleaned)
+	}
 }
 
 // loadLocalProfile loads our profile from disk cache
@@ -1872,34 +1893,27 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 func (a *Android) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string) error {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
-	// Check if they already have our photo
-	if remoteRxPhotoHash == a.photoHash {
-		logger.Debug(prefix, "⏭️  Remote already has our photo, skipping")
+	// Get the device ID for this hardware UUID
+	a.mu.RLock()
+	deviceID, hasDeviceID := a.remoteUUIDToDeviceID[targetUUID]
+	a.mu.RUnlock()
+
+	if !hasDeviceID {
+		logger.Debug(prefix, "⏭️  No device ID yet for %s, skipping photo send", targetUUID[:8])
 		return nil
 	}
 
-	// Check if a photo send is already in progress to this device
-	a.mu.Lock()
-	if a.photoSendInProgress[targetUUID] {
-		a.mu.Unlock()
-		logger.Debug(prefix, "⏭️  Photo send already in progress to %s, skipping duplicate", targetUUID[:8])
+	// Check via coordinator if we should send
+	if !a.photoCoordinator.ShouldSendPhoto(deviceID, a.photoHash) {
+		logger.Debug(prefix, "⏭️  Photo send to %s not needed (deviceID: %s)", targetUUID[:8], deviceID)
 		return nil
 	}
-
-	// Mark photo send as in progress
-	a.photoSendInProgress[targetUUID] = true
-	a.mu.Unlock()
-	defer func() {
-		// Clear flag when done
-		a.mu.Lock()
-		delete(a.photoSendInProgress, targetUUID)
-		a.mu.Unlock()
-	}()
 
 	// Load our cached photo
 	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.hardwareUUID)
 	photoData, err := os.ReadFile(cachePath)
 	if err != nil {
+		a.photoCoordinator.FailSend(deviceID, fmt.Sprintf("failed to load photo: %v", err))
 		return fmt.Errorf("failed to load photo: %w", err)
 	}
 
@@ -1909,6 +1923,15 @@ func (a *Android) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 	// Split into chunks
 	chunks := phototransfer.SplitIntoChunks(photoData, phototransfer.DefaultChunkSize)
 
+	// Mark send as started in coordinator
+	a.photoCoordinator.StartSend(deviceID, a.photoHash, len(chunks))
+	defer func() {
+		// If we return early with error, fail the send
+		if err != nil {
+			a.photoCoordinator.FailSend(deviceID, err.Error())
+		}
+	}()
+
 	logger.Info(prefix, "📸 Sending photo to %s via server mode (%d bytes, %d chunks, CRC: %08X)",
 		targetUUID[:8], len(photoData), len(chunks), totalCRC)
 
@@ -1917,24 +1940,31 @@ func (a *Android) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 
 	// Send metadata packet via notification (server mode sends to subscribed centrals)
 	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
-	if err := a.wire.NotifyCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, metadata); err != nil {
+	if err = a.wire.NotifyCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, metadata); err != nil {
 		return fmt.Errorf("failed to send metadata: %w", err)
 	}
 
 	// Send chunks via notifications
 	for i, chunk := range chunks {
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
-		if err := a.wire.NotifyCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, chunkPacket); err != nil {
+		if err = a.wire.NotifyCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, chunkPacket); err != nil {
 			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s (server mode): %v", i+1, len(chunks), targetUUID[:8], err)
 			return fmt.Errorf("failed to send chunk %d: %w", i, err)
 		}
 		time.Sleep(10 * time.Millisecond)
+
+		// Update progress periodically
+		if i%5 == 0 || i == len(chunks)-1 {
+			a.photoCoordinator.UpdateSendProgress(deviceID, i+1)
+		}
 
 		if i == 0 || i == len(chunks)-1 {
 			logger.Debug(prefix, "📤 Sent chunk %d/%d via server mode", i+1, len(chunks))
 		}
 	}
 
+	// Mark as completed (will persist to disk)
+	a.photoCoordinator.CompleteSend(deviceID, a.photoHash)
 	logger.Info(prefix, "✅ Photo send complete to %s via server mode", targetUUID[:8])
 	return nil
 }
