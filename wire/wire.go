@@ -424,7 +424,7 @@ func (sw *Wire) handleIncomingConnection(conn net.Conn, ourRole ConnectionRole) 
 
 	// Start connection monitoring if this is the first connection
 	if !exists {
-		sw.startConnectionMonitoring(remoteUUID)
+		sw.startConnectionMonitoringWithConn(dualConn, remoteUUID)
 	}
 	sw.connMutex.Unlock()
 
@@ -478,7 +478,7 @@ func (sw *Wire) readLoop(remoteUUID string, roleConn *RoleConnection) {
 	var validOps map[string]bool
 	if ourRole == ConnectionRoleCentral {
 		// They are Peripheral, they can notify/indicate to us
-		validOps = map[string]bool{"notify": true, "indicate": true}
+		validOps = map[string]bool{"notify": true, "indicate": true, "subscribe_ack": true}
 	} else {
 		// They are Central, they can write/read from us
 		validOps = map[string]bool{"write": true, "write_no_response": true, "read": true, "subscribe": true, "unsubscribe": true}
@@ -1084,7 +1084,7 @@ func (sw *Wire) RegisterMessageHandler(serviceUUID, charUUID string, handler fun
 	sw.handlerMutex.Unlock()
 }
 
-// startConnectionMonitoring monitors dual connection health
+// startConnectionMonitoring monitors dual connection health (looks up connection)
 func (sw *Wire) startConnectionMonitoring(targetUUID string) {
 	sw.connMutex.Lock()
 	dualConn, exists := sw.connections[targetUUID]
@@ -1092,13 +1092,19 @@ func (sw *Wire) startConnectionMonitoring(targetUUID string) {
 		sw.connMutex.Unlock()
 		return
 	}
+	sw.connMutex.Unlock()
 
+	sw.startConnectionMonitoringWithConn(dualConn, targetUUID)
+}
+
+// startConnectionMonitoringWithConn monitors dual connection health (connection already obtained)
+// This version is used when caller already holds connMutex to avoid deadlock
+func (sw *Wire) startConnectionMonitoringWithConn(dualConn *DualConnection, targetUUID string) {
 	// Use DualConnection's monitorStop channel
 	if dualConn.monitorStop == nil {
 		dualConn.monitorStop = make(chan struct{})
 	}
 	stopChan := dualConn.monitorStop
-	sw.connMutex.Unlock()
 
 	sw.wg.Add(1)
 	go func() {

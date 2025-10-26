@@ -23,23 +23,34 @@ func TestDualRoleMessageDelivery(t *testing.T) {
 	defer wire1.Cleanup()
 	defer wire2.Cleanup()
 
+	// Initialize devices (creates sockets and starts listeners)
+	if err := wire1.InitializeDevice(); err != nil {
+		t.Fatalf("Failed to initialize device1: %v", err)
+	}
+	if err := wire2.InitializeDevice(); err != nil {
+		t.Fatalf("Failed to initialize device2: %v", err)
+	}
+
 	// Track messages received
 	var device1ReceivedWrites int
 	var device1ReceivedNotifies int
 	var device2ReceivedWrites int
 	var device2ReceivedNotifies int
 
+	// Stop channels to cleanly shut down polling goroutines
+	stop1 := make(chan bool)
+	stop2 := make(chan bool)
+	done := make(chan bool, 2)
+
 	// Start listening on device1 (simulates CBPeripheralManager and CBPeripheral polling)
-	done1 := make(chan bool)
 	go func() {
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
-		timeout := time.After(5 * time.Second)
 
 		for {
 			select {
-			case <-timeout:
-				done1 <- true
+			case <-stop1:
+				done <- true
 				return
 			case <-ticker.C:
 				// Peripheral inbox (receives writes from centrals)
@@ -54,16 +65,14 @@ func TestDualRoleMessageDelivery(t *testing.T) {
 	}()
 
 	// Start listening on device2
-	done2 := make(chan bool)
 	go func() {
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
-		timeout := time.After(5 * time.Second)
 
 		for {
 			select {
-			case <-timeout:
-				done2 <- true
+			case <-stop2:
+				done <- true
 				return
 			case <-ticker.C:
 				peripheralMsgs, _ := wire2.ReadAndConsumeCharacteristicMessagesFromInbox("peripheral_inbox")
@@ -102,9 +111,11 @@ func TestDualRoleMessageDelivery(t *testing.T) {
 	// Wait for messages to be processed
 	time.Sleep(200 * time.Millisecond)
 
-	// Stop listening loops
-	<-done1
-	<-done2
+	// Stop the polling goroutines
+	close(stop1)
+	close(stop2)
+	<-done
+	<-done
 
 	// Verify Device2 received the write from Device1
 	if device2ReceivedWrites == 0 {
@@ -142,21 +153,32 @@ func TestNotificationDelivery(t *testing.T) {
 	defer wire1.Cleanup()
 	defer wire2.Cleanup()
 
+	// Initialize devices (creates sockets and starts listeners)
+	if err := wire1.InitializeDevice(); err != nil {
+		t.Fatalf("Failed to initialize device1: %v", err)
+	}
+	if err := wire2.InitializeDevice(); err != nil {
+		t.Fatalf("Failed to initialize device2: %v", err)
+	}
+
 	// Track notifications
 	var device1Notifications int
 	var device2Notifications int
 
+	// Stop channels to cleanly shut down polling goroutines
+	stop1 := make(chan bool)
+	stop2 := make(chan bool)
+	done := make(chan bool, 2)
+
 	// Listening loops
-	done1 := make(chan bool)
 	go func() {
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
-		timeout := time.After(5 * time.Second)
 
 		for {
 			select {
-			case <-timeout:
-				done1 <- true
+			case <-stop1:
+				done <- true
 				return
 			case <-ticker.C:
 				centralMsgs, _ := wire1.ReadAndConsumeCharacteristicMessagesFromInbox("central_inbox")
@@ -165,16 +187,14 @@ func TestNotificationDelivery(t *testing.T) {
 		}
 	}()
 
-	done2 := make(chan bool)
 	go func() {
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
-		timeout := time.After(5 * time.Second)
 
 		for {
 			select {
-			case <-timeout:
-				done2 <- true
+			case <-stop2:
+				done <- true
 				return
 			case <-ticker.C:
 				centralMsgs, _ := wire2.ReadAndConsumeCharacteristicMessagesFromInbox("central_inbox")
@@ -190,9 +210,25 @@ func TestNotificationDelivery(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Device1 sends notification to Device2 (Device1 is Peripheral, Device2 is Central)
+	// Characteristic UUIDs for the test
 	serviceUUID := "service-uuid-1"
 	charUUID := "char-uuid-1"
+
+	// IMPORTANT: In real BLE, Central must subscribe before Peripheral can send notifications
+	// Device2 acts as Central and subscribes to Device1's characteristic
+	if err := wire2.SubscribeCharacteristic(device1UUID, serviceUUID, charUUID); err != nil {
+		t.Fatalf("Device2 failed to subscribe to Device1: %v", err)
+	}
+
+	// Device1 acts as Central and subscribes to Device2's characteristic
+	if err := wire1.SubscribeCharacteristic(device2UUID, serviceUUID, charUUID); err != nil {
+		t.Fatalf("Device1 failed to subscribe to Device2: %v", err)
+	}
+
+	// Wait for subscriptions to be processed
+	time.Sleep(50 * time.Millisecond)
+
+	// Now Device1 can send notification to Device2 (Device1 is Peripheral, Device2 is Central)
 	notifyData := []byte("notification from device1")
 
 	if err := wire1.NotifyCharacteristic(device2UUID, serviceUUID, charUUID, notifyData); err != nil {
@@ -208,8 +244,11 @@ func TestNotificationDelivery(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	<-done1
-	<-done2
+	// Stop the polling goroutines
+	close(stop1)
+	close(stop2)
+	<-done
+	<-done
 
 	// Verify both devices received notifications
 	if device1Notifications == 0 {
@@ -238,6 +277,14 @@ func TestConcurrentPollingDoesNotLoseMessages(t *testing.T) {
 	defer wire1.Cleanup()
 	defer wire2.Cleanup()
 
+	// Initialize devices (creates sockets and starts listeners)
+	if err := wire1.InitializeDevice(); err != nil {
+		t.Fatalf("Failed to initialize device1: %v", err)
+	}
+	if err := wire2.InitializeDevice(); err != nil {
+		t.Fatalf("Failed to initialize device2: %v", err)
+	}
+
 	// Establish connections
 	if err := wire1.Connect(device2UUID); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -245,10 +292,20 @@ func TestConcurrentPollingDoesNotLoseMessages(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Send 100 messages alternating between writes and notifies
+	// Characteristic UUIDs for the test
 	serviceUUID := "service-uuid"
 	charUUID := "char-uuid"
 
+	// Subscribe so notifications can be sent
+	// Device2 subscribes to Device1's characteristic (Device2 is Central, Device1 is Peripheral)
+	if err := wire2.SubscribeCharacteristic(device1UUID, serviceUUID, charUUID); err != nil {
+		t.Fatalf("Device2 failed to subscribe: %v", err)
+	}
+
+	// Wait for subscription to be processed
+	time.Sleep(50 * time.Millisecond)
+
+	// Send 100 messages alternating between writes and notifies
 	for i := 0; i < 50; i++ {
 		// Send write (should go to peripheral_inbox)
 		writeData := []byte(fmt.Sprintf("write message %d", i))
@@ -290,6 +347,7 @@ func TestConcurrentPollingDoesNotLoseMessages(t *testing.T) {
 		done <- true
 	}()
 
+	// Wait for all polling loops to complete
 	<-done
 	<-done
 

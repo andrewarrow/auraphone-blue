@@ -112,6 +112,8 @@ func PerfectSimulationConfig() *SimulationConfig {
 	cfg.ConnectionFailureRate = 0
 	cfg.MinDiscoveryDelay = 0
 	cfg.MaxDiscoveryDelay = 0
+	cfg.MinServiceDiscoveryDelay = 0
+	cfg.MaxServiceDiscoveryDelay = 0
 	cfg.PacketLossRate = 0
 	cfg.NotificationDropRate = 0
 	cfg.NotificationDelay = 0
