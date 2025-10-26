@@ -43,13 +43,13 @@ This simulator lets you:
   - `BluetoothDevice` / `BluetoothGatt` - GATT client for connections and data transfer
   - Callback pattern matching Android conventions
 
-- **`wire/`** - Filesystem-based communication layer
-  - Each device gets a UUID and directory (`data/{uuid}/`)
-  - `inbox/` and `outbox/` subdirectories for message passing
-  - `advertising.json` - BLE advertising data (service UUIDs, device name, TX power)
-  - `gatt.json` - GATT table (services and characteristics)
-  - Discovery works by scanning for other UUID directories
-  - Data transfer via JSON message files
+- **`wire/`** - Unix domain socket communication layer
+  - Each device creates a Unix socket at `/tmp/auraphone-{hardwareUUID}.sock`
+  - Connection-oriented communication (each device can connect to multiple peers)
+  - Length-prefixed message framing (4-byte length header + JSON payload)
+  - Automatic MTU-based fragmentation with realistic packet loss simulation
+  - Filesystem used for: device discovery (scanning `/tmp/` for `.sock` files), GATT tables (`data/{uuid}/gatt.json`), and advertising data (`data/{uuid}/advertising.json`)
+
 
 ### Current Capabilities
 
