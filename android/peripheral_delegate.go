@@ -31,8 +31,6 @@ func (d *androidGattServerDelegate) OnConnectionStateChange(device *kotlin.Bluet
 	prefix := fmt.Sprintf("%s Android", d.android.hardwareUUID[:8])
 
 	if newState == kotlin.STATE_CONNECTED {
-		logger.Debug(prefix, "📥 GATT server: Central %s connected", device.Address[:8])
-
 		// Register connection with ConnectionManager
 		if d.android.connManager != nil {
 			d.android.connManager.RegisterPeripheralConnection(device.Address)
@@ -43,8 +41,8 @@ func (d *androidGattServerDelegate) OnConnectionStateChange(device *kotlin.Bluet
 		d.android.connectedCentrals[device.Address] = true
 		d.android.mu.Unlock()
 
-		// Send initial gossip after connection
-		go d.android.gossipHandler.SendGossipToDevice(device.Address)
+		// Note: Initial gossip will be sent after all 3 characteristics are subscribed
+		// See onCharacteristicSubscribed() callback in android.go
 
 	} else if newState == kotlin.STATE_DISCONNECTED {
 		logger.Debug(prefix, "📥 GATT server: Central %s disconnected", device.Address[:8])
@@ -54,9 +52,10 @@ func (d *androidGattServerDelegate) OnConnectionStateChange(device *kotlin.Bluet
 			d.android.connManager.UnregisterPeripheralConnection(device.Address)
 		}
 
-		// Remove from connected centrals
+		// Remove from connected centrals and clear subscription count
 		d.android.mu.Lock()
 		delete(d.android.connectedCentrals, device.Address)
+		delete(d.android.centralSubscriptions, device.Address)
 		d.android.mu.Unlock()
 	}
 }

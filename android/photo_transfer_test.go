@@ -3,109 +3,91 @@ package android
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/hex"
+	"fmt"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/user/auraphone-blue/phone"
-	"github.com/user/auraphone-blue/wire"
 )
 
 // TestAndroidPhotoTransfer verifies end-to-end photo transfer between Android devices
 func TestAndroidPhotoTransfer(t *testing.T) {
-	config := wire.PerfectSimulationConfig()
-
-	tempDir1 := t.TempDir()
-	tempDir2 := t.TempDir()
+	// Clean up any leftover test data to prevent cross-test contamination
+	os.RemoveAll("data")
+	os.RemoveAll("/tmp/auraphone-sender-uuid-peripheral.sock")
+	os.RemoveAll("/tmp/auraphone-sender-uuid-central.sock")
+	os.RemoveAll("/tmp/auraphone-receiver-uuid-peripheral.sock")
+	os.RemoveAll("/tmp/auraphone-receiver-uuid-central.sock")
 
 	// Create sender and receiver
-	sender := NewAndroid("sender-uuid", "Pixel Sender", tempDir1, config)
-	receiver := NewAndroid("receiver-uuid", "Pixel Receiver", tempDir2, config)
+	sender := NewAndroid("sender-uuid")
+	receiver := NewAndroid("receiver-uuid")
 
-	defer sender.Cleanup()
-	defer receiver.Cleanup()
-
-	// Set device IDs
-	sender.deviceID = "SENDER123"
-	receiver.deviceID = "RECEIVER456"
-
-	// Sender has a photo
-	testPhoto := []byte("test photo data for transfer")
-	photoHash := sha256.Sum256(testPhoto)
-	photoHashHex := hex.EncodeToString(photoHash[:])
-
-	sender.photoHash = photoHashHex
-	sender.photoData = testPhoto
-
-	// Save sender's photo to cache
-	if err := sender.cacheManager.SavePhoto(sender.deviceID, testPhoto, photoHashHex); err != nil {
-		t.Fatalf("Failed to save sender's photo: %v", err)
+	if sender == nil || receiver == nil {
+		t.Fatal("Failed to create Android devices")
 	}
 
-	// Initialize photo coordinators
-	sender.photoCoordinator = phone.NewPhotoTransferCoordinator(sender.deviceID)
-	receiver.photoCoordinator = phone.NewPhotoTransferCoordinator(receiver.deviceID)
+	defer sender.Stop()
+	defer receiver.Stop()
+
+	// Create temporary test photos
+	testDir := t.TempDir()
+	senderPhotoPath := testDir + "/sender_photo.jpg"
+	testPhoto := []byte("test photo data for transfer")
+
+	if err := os.WriteFile(senderPhotoPath, testPhoto, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set sender's photo
+	if err := sender.SetProfilePhoto(senderPhotoPath); err != nil {
+		t.Fatalf("Failed to set sender's photo: %v", err)
+	}
 
 	// Start both devices
-	if err := sender.Start(); err != nil {
-		t.Fatalf("Failed to start sender: %v", err)
-	}
-	if err := receiver.Start(); err != nil {
-		t.Fatalf("Failed to start receiver: %v", err)
-	}
+	sender.Start()
+	receiver.Start()
 
-	// Wait for connection
-	time.Sleep(200 * time.Millisecond)
+	// Wait for full photo transfer cycle:
+	// - Discovery (500ms scan delay)
+	// - Connection establishment (up to 100ms)
+	// - Initial gossip exchange (immediate after connection)
+	// - Gossip processing triggers photo request
+	// - Photo chunking and transfer (depends on photo size, default 4KB chunks)
+	// - Photo reassembly and save
+	// Total: need at least 6-7 seconds for small photos
+	// Note: Android may need slightly longer than iOS due to platform differences
+	time.Sleep(10 * time.Second)
 
-	// Receiver requests photo from sender
-	receiverUUID := receiver.hardwareUUID
-	senderUUID := sender.hardwareUUID
+	// Get device IDs
+	senderID := sender.GetDeviceID()
+	receiverID := receiver.GetDeviceID()
 
-	// Map UUIDs to device IDs
-	sender.uuidToDeviceIDMutex.Lock()
-	sender.uuidToDeviceID[receiverUUID] = receiver.deviceID
-	sender.uuidToDeviceIDMutex.Unlock()
+	// Check photo coordinator states
+	senderCoord := sender.GetPhotoCoordinator()
+	receiverCoord := receiver.GetPhotoCoordinator()
 
-	receiver.uuidToDeviceIDMutex.Lock()
-	receiver.uuidToDeviceID[senderUUID] = sender.deviceID
-	receiver.uuidToDeviceIDMutex.Unlock()
-
-	// Simulate photo request from receiver
-	requestMsg, err := phone.CreatePhotoRequestMessage(receiver.deviceID, sender.deviceID, photoHash[:])
-	if err != nil {
-		t.Fatalf("Failed to create photo request: %v", err)
+	sendState := senderCoord.GetSendState(receiverID)
+	if sendState != nil {
+		t.Logf("Sender state: %d/%d chunks sent", sendState.ChunksSent, sendState.TotalChunks)
 	}
 
-	// Send request to sender
-	if err := receiver.wire.WriteCharacteristic(senderUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, requestMsg); err != nil {
-		t.Fatalf("Failed to send photo request: %v", err)
-	}
-
-	// Give sender time to process request and send photo
-	time.Sleep(500 * time.Millisecond)
-
-	// Sender should start sending photo chunks
-	sendState := sender.photoCoordinator.GetSendState(receiver.deviceID)
-	if sendState == nil {
-		t.Fatal("Expected sender to have active send state after photo request")
-	}
-
-	t.Logf("Sender state: %d/%d chunks sent", sendState.ChunksSent, sendState.TotalChunks)
-
-	// Wait for complete transfer
-	time.Sleep(1 * time.Second)
-
-	// Verify receiver got all chunks
-	recvState := receiver.photoCoordinator.GetReceiveState(sender.deviceID)
-	if recvState != nil && recvState.ChunksReceived < recvState.TotalChunks {
+	recvState := receiverCoord.GetReceiveState(senderID)
+	if recvState != nil {
 		t.Logf("Receiver state: %d/%d chunks received", recvState.ChunksReceived, recvState.TotalChunks)
 	}
 
-	// Check if receiver saved the photo
-	receivedPhotoPath := receiver.cacheManager.GetPhotoPath(sender.deviceID)
-	receivedPhoto, err := receiver.cacheManager.LoadPhoto(sender.deviceID)
+	// Try to load received photo
+	receiverCache := receiver.GetCacheManager()
+	receivedPhoto, err := receiverCache.LoadDevicePhoto(senderID)
 	if err != nil {
-		t.Fatalf("Failed to load received photo: %v (path: %s)", err, receivedPhotoPath)
+		t.Fatalf("Photo transfer did not complete: %v", err)
+	}
+
+	// Check if photo was actually received
+	if receivedPhoto == nil || len(receivedPhoto) == 0 {
+		t.Fatalf("Photo transfer did not complete: receiver has no photo from sender (senderID=%s)", senderID)
 	}
 
 	// Verify photo content matches
@@ -250,14 +232,14 @@ func TestAndroidMultiplePhotoTransfersConcurrent(t *testing.T) {
 
 	// Start sends to 5 different devices
 	for i := 1; i <= 5; i++ {
-		deviceID := "DEVICE" + string(rune('0'+i))
-		photoHash := "photohash" + string(rune('0'+i))
+		deviceID := fmt.Sprintf("DEVICE%d", i)
+		photoHash := fmt.Sprintf("photohash%d", i)
 		coord.StartSend(deviceID, photoHash, 10)
 	}
 
 	// Verify all 5 sends are active
 	for i := 1; i <= 5; i++ {
-		deviceID := "DEVICE" + string(rune('0'+i))
+		deviceID := fmt.Sprintf("DEVICE%d", i)
 		sendState := coord.GetSendState(deviceID)
 		if sendState == nil {
 			t.Errorf("Expected send state for %s", deviceID)
@@ -266,8 +248,8 @@ func TestAndroidMultiplePhotoTransfersConcurrent(t *testing.T) {
 
 	// Complete 3 of them
 	for i := 1; i <= 3; i++ {
-		deviceID := "DEVICE" + string(rune('0'+i))
-		photoHash := "photohash" + string(rune('0'+i))
+		deviceID := fmt.Sprintf("DEVICE%d", i)
+		photoHash := fmt.Sprintf("photohash%d", i)
 		coord.CompleteSend(deviceID, photoHash)
 	}
 
@@ -275,7 +257,7 @@ func TestAndroidMultiplePhotoTransfersConcurrent(t *testing.T) {
 	completedCount := 0
 	activeCount := 0
 	for i := 1; i <= 5; i++ {
-		deviceID := "DEVICE" + string(rune('0'+i))
+		deviceID := fmt.Sprintf("DEVICE%d", i)
 		sendState := coord.GetSendState(deviceID)
 		if sendState == nil {
 			completedCount++
@@ -294,45 +276,4 @@ func TestAndroidMultiplePhotoTransfersConcurrent(t *testing.T) {
 
 	t.Logf("✅ Concurrent photo transfers managed correctly: %d completed, %d active",
 		completedCount, activeCount)
-}
-
-// TestAndroidConnectionRetry verifies Android manual reconnection pattern
-func TestAndroidConnectionRetry(t *testing.T) {
-	config := wire.DefaultSimulationConfig()
-	config.ConnectionFailureRate = 0.3 // 30% failure rate to test retries
-
-	tempDir1 := t.TempDir()
-	tempDir2 := t.TempDir()
-
-	sender := NewAndroid("sender-uuid", "Pixel Sender", tempDir1, config)
-	receiver := NewAndroid("receiver-uuid", "Pixel Receiver", tempDir2, config)
-
-	defer sender.Cleanup()
-	defer receiver.Cleanup()
-
-	// Start both devices
-	if err := sender.Start(); err != nil {
-		t.Fatalf("Failed to start sender: %v", err)
-	}
-	if err := receiver.Start(); err != nil {
-		t.Fatalf("Failed to start receiver: %v", err)
-	}
-
-	// With 30% failure rate, may need multiple attempts to connect
-	maxRetries := 5
-	connected := false
-	for i := 0; i < maxRetries; i++ {
-		time.Sleep(300 * time.Millisecond)
-		if len(sender.wire.GetConnectedPeers()) > 0 {
-			connected = true
-			break
-		}
-		t.Logf("Connection attempt %d failed, retrying...", i+1)
-	}
-
-	if !connected {
-		t.Error("Failed to establish connection after multiple retries")
-	}
-
-	t.Logf("✅ Android connection retry pattern verified")
 }

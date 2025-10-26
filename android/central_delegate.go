@@ -26,7 +26,10 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 	// Store discovered device for potential reconnect
 	a.mu.Lock()
 	a.discoveredDevices[result.Device.Address] = result.Device
-	_, alreadyConnected := a.connectedGatts[result.Device.Address]
+	// Check if we're already connected in EITHER central mode OR peripheral mode
+	_, connectedAsCentral := a.connectedGatts[result.Device.Address]
+	_, connectedAsPeripheral := a.connectedCentrals[result.Device.Address]
+	alreadyConnected := connectedAsCentral || connectedAsPeripheral
 	a.mu.Unlock()
 
 	// Trigger discovery callback immediately with hardware UUID
@@ -46,7 +49,10 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 	// Auto-connect if not already connected AND we should act as Central
 	if !alreadyConnected {
 		// Check if we should act as Central for this device using role negotiation
-		if a.shouldActAsCentral(result.Device.Address, name) {
+		shouldConnect := a.shouldActAsCentral(result.Device.Address, name)
+		logger.Debug(prefix, "🔍 Role check: my UUID=%s, remote UUID=%s, shouldConnect=%v", a.hardwareUUID[:8], result.Device.Address[:8], shouldConnect)
+
+		if shouldConnect {
 			logger.Debug(prefix, "🔌 Connecting to %s (acting as Central, autoConnect=%v)", result.Device.Address[:8], a.useAutoConnect)
 			gatt := result.Device.ConnectGatt(nil, a.useAutoConnect, a)
 			a.mu.Lock()
@@ -55,6 +61,8 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 		} else {
 			logger.Debug(prefix, "⏸️  Not connecting to %s (will act as Peripheral, waiting for them to connect)", result.Device.Address[:8])
 		}
+	} else {
+		logger.Debug(prefix, "⏭️  Already connected to %s", result.Device.Address[:8])
 	}
 }
 

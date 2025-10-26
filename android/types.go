@@ -24,10 +24,11 @@ type Android struct {
 	photoHash            string
 	photoData            []byte
 	localProfile         *phone.LocalProfile                 // Our local profile data
-	mu                   sync.RWMutex                        // Protects all maps below
-	connectedGatts       map[string]*kotlin.BluetoothGatt    // remote UUID -> GATT connection (devices we connected to as Central)
-	connectedCentrals    map[string]bool                     // remote UUID -> true (devices that connected to us as Peripheral)
-	discoveredDevices    map[string]*kotlin.BluetoothDevice  // remote UUID -> discovered device (for reconnect)
+	mu                     sync.RWMutex                        // Protects all maps below
+	connectedGatts         map[string]*kotlin.BluetoothGatt    // remote UUID -> GATT connection (devices we connected to as Central)
+	connectedCentrals      map[string]bool                     // remote UUID -> true (devices that connected to us as Peripheral)
+	centralSubscriptions   map[string]int                      // remote UUID -> count of subscribed characteristics (max 3)
+	discoveredDevices      map[string]*kotlin.BluetoothDevice  // remote UUID -> discovered device (for reconnect)
 	remoteUUIDToDeviceID map[string]string                   // hardware UUID -> logical device ID
 	deviceIDToPhotoHash    map[string]string                   // deviceID -> their TX photo hash
 	receivedPhotoHashes    map[string]string                   // deviceID -> RX hash (photos we got from them)

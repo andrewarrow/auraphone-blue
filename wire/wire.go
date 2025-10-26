@@ -149,7 +149,8 @@ type Wire struct {
 	connMutex            sync.RWMutex
 
 	// Callbacks
-	disconnectCallback   func(deviceUUID string)
+	disconnectCallback        func(deviceUUID string)
+	subscriptionCallback      func(remoteUUID, serviceUUID, charUUID string) // Called when a Central subscribes to our characteristic
 
 	// Message handlers
 	messageHandlers      map[string]func(*CharacteristicMessage) // serviceUUID+charUUID -> handler
@@ -1034,6 +1035,16 @@ func (sw *Wire) handleSubscriptionMessage(msg *CharacteristicMessage) {
 		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 			"✅ Central %s subscribed to characteristic %s (svc=%s) - notifications enabled",
 			msg.SenderUUID[:8], msg.CharUUID[len(msg.CharUUID)-4:], msg.ServiceUUID[len(msg.ServiceUUID)-4:])
+
+		// Notify application layer about subscription (after unlocking mutex)
+		if sw.subscriptionCallback != nil {
+			remoteUUID := msg.SenderUUID
+			serviceUUID := msg.ServiceUUID
+			charUUID := msg.CharUUID
+			dualConn.asPeripheral.subMutex.Unlock()
+			sw.subscriptionCallback(remoteUUID, serviceUUID, charUUID)
+			dualConn.asPeripheral.subMutex.Lock()
+		}
 	} else {
 		delete(dualConn.asPeripheral.subscriptions, key)
 		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
@@ -1176,6 +1187,11 @@ func (sw *Wire) stopConnectionMonitoring(targetUUID string) {
 // SetDisconnectCallback sets the callback for disconnections
 func (sw *Wire) SetDisconnectCallback(callback func(deviceUUID string)) {
 	sw.disconnectCallback = callback
+}
+
+// SetSubscriptionCallback sets a callback that's triggered when a Central subscribes to our characteristic
+func (sw *Wire) SetSubscriptionCallback(callback func(remoteUUID, serviceUUID, charUUID string)) {
+	sw.subscriptionCallback = callback
 }
 
 // GetConnectionState returns the connection state for a device

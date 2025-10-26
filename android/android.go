@@ -32,6 +32,7 @@ func NewAndroid(hardwareUUID string) *Android {
 		deviceName:             deviceName,
 		connectedGatts:         make(map[string]*kotlin.BluetoothGatt),
 		connectedCentrals:      make(map[string]bool),
+		centralSubscriptions:   make(map[string]int),
 		discoveredDevices:      make(map[string]*kotlin.BluetoothDevice),
 		remoteUUIDToDeviceID:   make(map[string]string),
 		deviceIDToPhotoHash:    make(map[string]string),
@@ -84,6 +85,11 @@ func NewAndroid(hardwareUUID string) *Android {
 		func(senderUUID string, req *proto.PhotoRequestMessage) { a.photoHandler.HandlePhotoRequest(senderUUID, req) },
 		func(senderUUID string, req *proto.ProfileRequestMessage) { a.profileHandler.HandleProfileRequest(senderUUID, req) },
 	)
+	a.messageRouter.SetDeviceIDDiscoveredCallback(func(hardwareUUID, deviceID string) {
+		a.mu.Lock()
+		a.remoteUUIDToDeviceID[hardwareUUID] = deviceID
+		a.mu.Unlock()
+	})
 
 	// Load photo mappings and profile
 	a.loadReceivedPhotoMappings()
@@ -93,6 +99,9 @@ func NewAndroid(hardwareUUID string) *Android {
 	a.setupBLE()
 	a.manager = kotlin.NewBluetoothManager(hardwareUUID)
 	a.initializePeripheralMode()
+
+	// Set up subscription callback to track when Central devices subscribe to our characteristics
+	a.wire.SetSubscriptionCallback(a.onCharacteristicSubscribed)
 
 	return a
 }
@@ -340,8 +349,26 @@ func (a *Android) sendViaCentralMode(remoteUUID, charUUID string, data []byte) e
 // sendViaPeripheralMode sends data via Peripheral mode (GATT server notification)
 func (a *Android) sendViaPeripheralMode(remoteUUID, charUUID string, data []byte) error {
 	// Android uses wire layer to send notifications from GATT server
-	if err := a.wire.WriteCharacteristic(remoteUUID, phone.AuraServiceUUID, charUUID, data); err != nil {
+	// When acting as Peripheral, we send notifications (not writes)
+	if err := a.wire.NotifyCharacteristic(remoteUUID, phone.AuraServiceUUID, charUUID, data); err != nil {
 		return fmt.Errorf("failed to send notification: %w", err)
 	}
 	return nil
+}
+
+// onCharacteristicSubscribed is called when a Central device subscribes to one of our characteristics
+func (a *Android) onCharacteristicSubscribed(remoteUUID, serviceUUID, charUUID string) {
+	// Track subscription count for this Central
+	a.mu.Lock()
+	a.centralSubscriptions[remoteUUID]++
+	count := a.centralSubscriptions[remoteUUID]
+	a.mu.Unlock()
+
+	// Once all 3 characteristics are subscribed, send initial gossip
+	// (AuraProtocolCharUUID, AuraPhotoCharUUID, AuraProfileCharUUID)
+	if count == 3 {
+		prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+		logger.Debug(prefix, "📥 GATT server: Central %s connected", remoteUUID[:8])
+		go a.gossipHandler.SendGossipToDevice(remoteUUID)
+	}
 }
