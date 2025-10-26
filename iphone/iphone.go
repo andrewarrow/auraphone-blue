@@ -757,6 +757,7 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	}
 	ip.mu.Lock()
 	ip.peripheralToDeviceID[peripheral.UUID] = deviceID
+	logger.Debug(prefix, "🔗 [UUID-MAP] Mapped hardwareUUID=%s → deviceID=%s", peripheral.UUID[:8], deviceID[:8])
 	ip.mu.Unlock()
 
 	// Record handshake timestamp when received (indexed by hardware UUID for connection-scoped state)
@@ -767,6 +768,9 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	// Convert photo hashes from bytes to hex strings
 	txPhotoHash := hashBytesToString(handshake.TxPhotoHash)
 	rxPhotoHash := hashBytesToString(handshake.RxPhotoHash)
+
+	logger.Debug(prefix, "🤝 [HANDSHAKE-RX] Received from %s: txHash=%s, rxHash=%s, firstName=%s",
+		peripheral.UUID[:8], truncateHash(txPhotoHash, 8), truncateHash(rxPhotoHash, 8), handshake.FirstName)
 
 	// Store their TX photo hash
 	if txPhotoHash != "" {
@@ -793,6 +797,9 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	ourReceivedHash := ip.receivedPhotoHashes[deviceID]
 	ip.mu.RUnlock()
 
+	logger.Debug(prefix, "📸 [PHOTO-DECISION-RX] Remote txHash=%s, we have received=%s, needReceive=%v",
+		truncateHash(txPhotoHash, 8), truncateHash(ourReceivedHash, 8), txPhotoHash != "" && txPhotoHash != ourReceivedHash)
+
 	if txPhotoHash != "" && txPhotoHash != ourReceivedHash {
 		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", truncateHash(txPhotoHash, 8))
 		// Reply with a handshake that shows we don't have their new photo yet
@@ -801,6 +808,9 @@ func (ip *iPhone) handleHandshakeMessage(peripheral *swift.CBPeripheral, data []
 	}
 
 	// Check if we need to send our photo
+	logger.Debug(prefix, "📸 [PHOTO-DECISION-TX] Remote rxHash=%s, our photoHash=%s, needSend=%v",
+		truncateHash(rxPhotoHash, 8), truncateHash(ip.photoHash, 8), rxPhotoHash != ip.photoHash)
+
 	if rxPhotoHash != ip.photoHash {
 		logger.Debug(prefix, "📸 Remote doesn't have our photo, sending...")
 		go ip.sendPhoto(peripheral, rxPhotoHash)
@@ -854,24 +864,28 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 	ip.mu.Lock()
 	if ip.photoSendInProgress[peripheral.UUID] {
 		ip.mu.Unlock()
-		logger.Debug(prefix, "⏭️  Photo send already in progress to %s, skipping duplicate", peripheral.UUID[:8])
+		logger.Debug(prefix, "⏭️  [PHOTO-TX-STATE] Already in progress to %s, skipping duplicate", peripheral.UUID[:8])
 		return nil
 	}
 
 	// Mark photo send as in progress
 	ip.photoSendInProgress[peripheral.UUID] = true
+	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] IDLE → SENDING to %s", peripheral.UUID[:8])
 	ip.mu.Unlock()
 	defer func() {
 		// Clear flag when done
 		ip.mu.Lock()
 		delete(ip.photoSendInProgress, peripheral.UUID)
+		logger.Debug(prefix, "📸 [PHOTO-TX-STATE] Cleared send-in-progress flag for %s", peripheral.UUID[:8])
 		ip.mu.Unlock()
 	}()
 
 	// Load our cached photo
 	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.hardwareUUID)
+	logger.Debug(prefix, "📸 [PHOTO-TX-LOAD] Loading photo from %s", cachePath)
 	photoData, err := os.ReadFile(cachePath)
 	if err != nil {
+		logger.Error(prefix, "❌ [PHOTO-TX-ERROR] Failed to load photo: %v", err)
 		return fmt.Errorf("failed to load photo: %w", err)
 	}
 
@@ -883,6 +897,8 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 
 	logger.Info(prefix, "📸 Sending photo to %s (%d bytes, %d chunks, CRC: %08X)",
 		peripheral.UUID[:8], len(photoData), len(chunks), totalCRC)
+	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] Loaded photo: size=%d, chunks=%d, crc=%08X",
+		len(photoData), len(chunks), totalCRC)
 
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
@@ -894,25 +910,30 @@ func (ip *iPhone) sendPhoto(peripheral *swift.CBPeripheral, remoteRxPhotoHash st
 
 	// Send metadata packet - critical, use withResponse
 	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
+	logger.Debug(prefix, "📸 [PHOTO-TX-META] Sending metadata packet (size=%d, crc=%08X, chunks=%d) with response",
+		len(photoData), totalCRC, len(chunks))
 	if err := peripheral.WriteValue(metadata, photoChar, swift.CBCharacteristicWriteWithResponse); err != nil {
+		logger.Error(prefix, "❌ [PHOTO-TX-ERROR] Failed to send metadata: %v", err)
 		return fmt.Errorf("failed to send metadata: %w", err)
 	}
+	logger.Debug(prefix, "📸 [PHOTO-TX-META] Metadata sent successfully, starting chunk stream")
 
 	// Send chunks with withoutResponse for speed (fire and forget)
 	// This is realistic - photo chunks use fast writes, app-level CRC catches errors
 	for i, chunk := range chunks {
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
 		if err := peripheral.WriteValue(chunkPacket, photoChar, swift.CBCharacteristicWriteWithoutResponse); err != nil {
-			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s: %v", i+1, len(chunks), peripheral.UUID[:8], err)
+			logger.Warn(prefix, "❌ [PHOTO-TX-ERROR] Failed to send chunk %d/%d to %s: %v", i+1, len(chunks), peripheral.UUID[:8], err)
 			return fmt.Errorf("failed to send chunk %d: %w", i, err)
 		}
 		time.Sleep(10 * time.Millisecond)
 
 		if i == 0 || i == len(chunks)-1 {
-			logger.Debug(prefix, "📤 Sent chunk %d/%d", i+1, len(chunks))
+			logger.Debug(prefix, "📤 [PHOTO-TX-CHUNK] Sent chunk %d/%d (size=%d bytes)", i+1, len(chunks), len(chunk))
 		}
 	}
 
+	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] SENDING → COMPLETE (all %d chunks sent to %s)", len(chunks), peripheral.UUID[:8])
 	logger.Info(prefix, "✅ Photo send complete to %s", peripheral.UUID[:8])
 	return nil
 }
@@ -1003,6 +1024,8 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 				peripheral.UUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
 
 			state.mu.Lock()
+			logger.Debug(prefix, "📸 [PHOTO-RX-STATE] IDLE → RECEIVING from %s (size=%d, chunks=%d, crc=%08X)",
+				peripheral.UUID[:8], meta.TotalSize, meta.TotalChunks, meta.TotalCRC)
 			state.isReceiving = true
 			state.expectedSize = meta.TotalSize
 			state.expectedCRC = meta.TotalCRC
@@ -1015,6 +1038,7 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 			state.mu.Unlock()
 
 			if len(remaining) > 0 {
+				logger.Debug(prefix, "📸 [PHOTO-RX-STATE] Metadata has %d bytes trailing data, processing immediately", len(remaining))
 				ip.processPhotoChunks(peripheral.UUID, state)
 			}
 			return
@@ -1025,7 +1049,13 @@ func (ip *iPhone) handlePhotoMessage(peripheral *swift.CBPeripheral, data []byte
 	state.mu.Lock()
 	isReceiving := state.isReceiving
 	if isReceiving {
+		bufferBefore := len(state.buffer)
 		state.buffer = append(state.buffer, data...)
+		logger.Debug(prefix, "📸 [PHOTO-RX-DATA] Appended %d bytes to buffer (buffer now %d bytes, receiving=%v)",
+			len(data), len(state.buffer), isReceiving)
+		if bufferBefore == 0 && len(state.buffer) > 0 {
+			logger.Debug(prefix, "📸 [PHOTO-RX-STATE] Buffer now has data, will process chunks")
+		}
 	}
 	state.mu.Unlock()
 
@@ -1041,13 +1071,18 @@ func (ip *iPhone) processPhotoChunks(peripheralUUID string, state *photoReceiveS
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
+	logger.Debug(prefix, "📸 [PHOTO-RX-PARSE] Processing buffer with %d bytes (need %d for header)",
+		len(state.buffer), phototransfer.ChunkHeaderSize)
+
 	for {
 		if len(state.buffer) < phototransfer.ChunkHeaderSize {
+			logger.Debug(prefix, "📸 [PHOTO-RX-PARSE] Buffer too small (%d bytes), waiting for more data", len(state.buffer))
 			break
 		}
 
 		chunk, consumed, err := phototransfer.DecodeChunk(state.buffer)
 		if err != nil {
+			logger.Debug(prefix, "📸 [PHOTO-RX-PARSE] DecodeChunk failed: %v (buffer len=%d)", err, len(state.buffer))
 			break
 		}
 
@@ -1055,13 +1090,17 @@ func (ip *iPhone) processPhotoChunks(peripheralUUID string, state *photoReceiveS
 		state.buffer = state.buffer[consumed:]
 		state.lastChunkTime = time.Now() // Update last chunk time
 
+		logger.Debug(prefix, "📸 [PHOTO-RX-CHUNK] Chunk[%d] received, size=%d (have %d/%d chunks, buffer remaining=%d)",
+			chunk.Index, len(chunk.Data), len(state.receivedChunks), state.expectedChunks, len(state.buffer))
+
 		if chunk.Index == 0 || chunk.Index == state.expectedChunks-1 {
-			logger.Debug(prefix, "📥 Received chunk %d/%d from %s",
+			logger.Debug(prefix, "📥 [PHOTO-RX-MILESTONE] Received chunk %d/%d from %s",
 				len(state.receivedChunks), state.expectedChunks, peripheralUUID[:8])
 		}
 
 		// Check if complete
 		if uint16(len(state.receivedChunks)) == state.expectedChunks {
+			logger.Debug(prefix, "📸 [PHOTO-RX-STATE] CHUNK_ACCUMULATING → COMPLETE (all %d chunks received)", state.expectedChunks)
 			// Send acknowledgment before cleanup
 			const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 			const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
@@ -1095,7 +1134,7 @@ func (ip *iPhone) processPhotoChunks(peripheralUUID string, state *photoReceiveS
 func (ip *iPhone) reassembleAndSavePhoto(peripheralUUID string, state *photoReceiveState) error {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
-	logger.Debug(prefix, "📸 Starting photo reassembly: expected chunks=%d, received=%d",
+	logger.Debug(prefix, "📸 [PHOTO-RX-STATE] COMPLETE → REASSEMBLING (expected chunks=%d, received=%d)",
 		state.expectedChunks, len(state.receivedChunks))
 
 	// Reassemble in order
@@ -1103,39 +1142,47 @@ func (ip *iPhone) reassembleAndSavePhoto(peripheralUUID string, state *photoRece
 	for i := uint16(0); i < state.expectedChunks; i++ {
 		chunk, exists := state.receivedChunks[i]
 		if !exists {
-			logger.Error(prefix, "❌ Missing chunk %d during reassembly", i)
+			logger.Error(prefix, "❌ [PHOTO-RX-ERROR] Missing chunk %d during reassembly", i)
 			return fmt.Errorf("missing chunk %d", i)
 		}
 		photoData = append(photoData, chunk...)
 	}
 
-	logger.Debug(prefix, "   └─ Reassembled %d bytes from %d chunks",
+	logger.Debug(prefix, "📸 [PHOTO-RX-REASSEMBLE] Assembled %d bytes from %d chunks",
 		len(photoData), state.expectedChunks)
 
 	// Verify CRC
 	calculatedCRC := phototransfer.CalculateCRC32(photoData)
+	logger.Debug(prefix, "📸 [PHOTO-RX-VERIFY] CRC check: expected=%08X, calculated=%08X, match=%v",
+		state.expectedCRC, calculatedCRC, calculatedCRC == state.expectedCRC)
 	if calculatedCRC != state.expectedCRC {
-		logger.Error(prefix, "❌ Photo CRC mismatch: expected %08X, got %08X",
+		logger.Error(prefix, "❌ [PHOTO-RX-ERROR] Photo CRC mismatch: expected %08X, got %08X",
 			state.expectedCRC, calculatedCRC)
 		return fmt.Errorf("CRC mismatch")
 	}
-	logger.Debug(prefix, "   └─ CRC verified: %08X", calculatedCRC)
 
 	// Calculate hash
 	hash := sha256.Sum256(photoData)
 	hashStr := hex.EncodeToString(hash[:])
-	logger.Debug(prefix, "   └─ Photo hash: %s", hashStr[:8])
+	logger.Debug(prefix, "📸 [PHOTO-RX-HASH] Photo hash calculated: %s (full: %s)", hashStr[:8], hashStr)
 
 	// Get the logical deviceID from the peripheral UUID
 	ip.mu.Lock()
 	deviceID := ip.peripheralToDeviceID[peripheralUUID]
 	ip.mu.Unlock()
 
-	logger.Debug(prefix, "   └─ Saving for deviceID=%s (peripheralUUID=%s)", deviceID[:8], peripheralUUID[:8])
+	if deviceID == "" {
+		logger.Error(prefix, "❌ [PHOTO-RX-ERROR] No deviceID mapping for peripheralUUID=%s (handshake not completed?)", peripheralUUID[:8])
+		return fmt.Errorf("no deviceID for peripheralUUID %s", peripheralUUID[:8])
+	}
+
+	logger.Debug(prefix, "📸 [PHOTO-RX-MAPPING] deviceID=%s ← peripheralUUID=%s", deviceID[:8], peripheralUUID[:8])
 
 	// Save photo using cache manager (persists deviceID -> photoHash mapping)
+	logger.Debug(prefix, "📸 [PHOTO-RX-CACHE] Calling SaveDevicePhoto(deviceID=%s, size=%d, hash=%s)",
+		deviceID[:8], len(photoData), hashStr[:8])
 	if err := ip.cacheManager.SaveDevicePhoto(deviceID, photoData, hashStr); err != nil {
-		logger.Error(prefix, "❌ Failed to save photo: %v", err)
+		logger.Error(prefix, "❌ [PHOTO-RX-ERROR] Failed to save photo: %v", err)
 		return err
 	}
 
@@ -1144,6 +1191,8 @@ func (ip *iPhone) reassembleAndSavePhoto(peripheralUUID string, state *photoRece
 	ip.receivedPhotoHashes[deviceID] = hashStr
 	ip.mu.Unlock()
 
+	logger.Debug(prefix, "📸 [PHOTO-RX-STATE] REASSEMBLING → SAVED (deviceID=%s, hash=%s, size=%d)",
+		deviceID[:8], hashStr[:8], len(photoData))
 	logger.Info(prefix, "✅ Photo saved from %s (hash: %s, size: %d bytes)",
 		deviceID[:8], hashStr[:8], len(photoData))
 

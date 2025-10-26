@@ -178,8 +178,8 @@ func (m *DeviceCacheManager) GetDevicePhotoHash(deviceID string) (string, error)
 // SaveDevicePhoto saves a remote device's photo
 func (m *DeviceCacheManager) SaveDevicePhoto(deviceID string, photoData []byte, photoHash string) error {
 	prefix := "cache"
-	logger.Debug(prefix, "📸 SaveDevicePhoto called: deviceID=%s, photoSize=%d, photoHash=%s",
-		deviceID[:8], len(photoData), photoHash[:8])
+	logger.Debug(prefix, "📸 [CACHE-SAVE] SaveDevicePhoto called: deviceID=%s, photoSize=%d, photoHash=%s, baseDir=%s",
+		deviceID[:8], len(photoData), photoHash[:8], m.baseDir)
 
 	if err := m.InitializeCache(); err != nil {
 		logger.Error(prefix, "❌ InitializeCache failed: %v", err)
@@ -194,18 +194,19 @@ func (m *DeviceCacheManager) SaveDevicePhoto(deviceID string, photoData []byte, 
 
 	// Save photo file named by hash
 	photoPath := filepath.Join(m.baseDir, "photos", fmt.Sprintf("%s.jpg", photoHash))
-	logger.Debug(prefix, "   └─ Saving photo to: %s", photoPath)
+	logger.Debug(prefix, "📸 [CACHE-WRITE] Writing photo file: %s (size=%d)", photoPath, len(photoData))
 
 	if err := os.WriteFile(photoPath, photoData, 0644); err != nil {
-		logger.Error(prefix, "❌ Failed to write photo file: %v", err)
+		logger.Error(prefix, "❌ [CACHE-ERROR] Failed to write photo file: %v", err)
 		return fmt.Errorf("failed to save device photo: %w", err)
 	}
 
 	// Verify the file was written
 	if stat, err := os.Stat(photoPath); err == nil {
+		logger.Debug(prefix, "✅ [CACHE-VERIFY] Photo file written and verified: %s (%d bytes on disk)", photoPath, stat.Size())
 		logger.Info(prefix, "✅ Photo file written successfully: %s (%d bytes)", photoPath, stat.Size())
 	} else {
-		logger.Error(prefix, "❌ Photo file verification failed: %v", err)
+		logger.Error(prefix, "❌ [CACHE-ERROR] Photo file verification failed: %v", err)
 	}
 
 	// Load existing metadata or create new
@@ -226,20 +227,23 @@ func (m *DeviceCacheManager) SaveDevicePhoto(deviceID string, photoData []byte, 
 	metadata.PhotoHash = photoHash
 	metadata.LastUpdated = getCurrentTimestamp()
 
-	logger.Debug(prefix, "   └─ Updated metadata: deviceID=%s, photoHash=%s", deviceID[:8], photoHash[:8])
+	logger.Debug(prefix, "📸 [CACHE-METADATA] Updated metadata: deviceID=%s, photoHash=%s", deviceID[:8], photoHash[:8])
 
 	// Save metadata
 	metadataJSON, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
-		logger.Error(prefix, "❌ Failed to marshal metadata: %v", err)
+		logger.Error(prefix, "❌ [CACHE-ERROR] Failed to marshal metadata: %v", err)
 		return err
 	}
 
+	logger.Debug(prefix, "📸 [CACHE-WRITE] Writing metadata file: %s", metadataPath)
 	if err := os.WriteFile(metadataPath, metadataJSON, 0644); err != nil {
-		logger.Error(prefix, "❌ Failed to write metadata: %v", err)
+		logger.Error(prefix, "❌ [CACHE-ERROR] Failed to write metadata: %v", err)
 		return fmt.Errorf("failed to save device metadata: %w", err)
 	}
 
+	logger.Debug(prefix, "✅ [CACHE-SUCCESS] SaveDevicePhoto complete: deviceID=%s, photoHash=%s, photoPath=%s, metadataPath=%s",
+		deviceID[:8], photoHash[:8], photoPath, metadataPath)
 	logger.Info(prefix, "✅ Metadata saved: %s", metadataPath)
 
 	return nil
@@ -248,24 +252,24 @@ func (m *DeviceCacheManager) SaveDevicePhoto(deviceID string, photoData []byte, 
 // LoadDevicePhoto loads a remote device's cached photo
 func (m *DeviceCacheManager) LoadDevicePhoto(deviceID string) ([]byte, error) {
 	prefix := "cache"
-	logger.Debug(prefix, "📸 LoadDevicePhoto called for deviceID=%s", deviceID[:8])
+	logger.Debug(prefix, "📸 [CACHE-LOAD] LoadDevicePhoto called for deviceID=%s", deviceID[:8])
 
 	// First get the hash from metadata
 	photoHash, err := m.GetDevicePhotoHash(deviceID)
 	if err != nil {
-		logger.Error(prefix, "❌ Failed to get photo hash for %s: %v", deviceID[:8], err)
+		logger.Error(prefix, "❌ [CACHE-ERROR] Failed to get photo hash for %s: %v", deviceID[:8], err)
 		return nil, err
 	}
 	if photoHash == "" {
-		logger.Debug(prefix, "   └─ No photo hash in metadata for %s", deviceID[:8])
+		logger.Debug(prefix, "📸 [CACHE-LOAD] No photo hash in metadata for %s", deviceID[:8])
 		return nil, nil // No photo cached
 	}
 
-	logger.Debug(prefix, "   └─ Photo hash from metadata: %s", photoHash[:8])
+	logger.Debug(prefix, "📸 [CACHE-LOAD] Photo hash from metadata: %s", photoHash[:8])
 
 	// Load photo by hash
 	photoPath := filepath.Join(m.baseDir, "photos", fmt.Sprintf("%s.jpg", photoHash))
-	logger.Debug(prefix, "   └─ Loading photo from: %s", photoPath)
+	logger.Debug(prefix, "📸 [CACHE-READ] Loading photo from: %s", photoPath)
 
 	// Check if file exists
 	if stat, err := os.Stat(photoPath); err != nil {
@@ -281,13 +285,15 @@ func (m *DeviceCacheManager) LoadDevicePhoto(deviceID string) ([]byte, error) {
 	data, err := os.ReadFile(photoPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			logger.Warn(prefix, "⚠️  Photo file disappeared during read: %s", photoPath)
+			logger.Warn(prefix, "⚠️  [CACHE-ERROR] Photo file disappeared during read: %s", photoPath)
 			return nil, nil
 		}
-		logger.Error(prefix, "❌ Failed to read photo file: %v", err)
+		logger.Error(prefix, "❌ [CACHE-ERROR] Failed to read photo file: %v", err)
 		return nil, err
 	}
 
+	logger.Debug(prefix, "✅ [CACHE-SUCCESS] Successfully loaded photo for deviceID=%s: %d bytes from %s",
+		deviceID[:8], len(data), photoPath)
 	logger.Info(prefix, "✅ Successfully loaded photo for %s: %d bytes", deviceID[:8], len(data))
 	return data, nil
 }

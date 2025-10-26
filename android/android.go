@@ -767,6 +767,7 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	deviceID := handshake.DeviceId
 	a.mu.Lock()
 	a.remoteUUIDToDeviceID[remoteUUID] = deviceID
+	logger.Debug(prefix, "🔗 [UUID-MAP] Mapped hardwareUUID=%s → deviceID=%s", remoteUUID[:8], deviceID[:8])
 	a.mu.Unlock()
 
 	// Record handshake timestamp when received (indexed by hardware UUID for connection-scoped state)
@@ -777,6 +778,9 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	// Convert photo hashes from bytes to hex strings
 	txPhotoHash := hashBytesToString(handshake.TxPhotoHash)
 	rxPhotoHash := hashBytesToString(handshake.RxPhotoHash)
+
+	logger.Debug(prefix, "🤝 [HANDSHAKE-RX] Received from %s: txHash=%s, rxHash=%s, firstName=%s",
+		remoteUUID[:8], truncateHash(txPhotoHash, 8), truncateHash(rxPhotoHash, 8), handshake.FirstName)
 
 	// Store their TX photo hash
 	if txPhotoHash != "" {
@@ -803,6 +807,9 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	ourReceivedHash := a.receivedPhotoHashes[deviceID]
 	a.mu.RUnlock()
 
+	logger.Debug(prefix, "📸 [PHOTO-DECISION-RX] Remote txHash=%s, we have received=%s, needReceive=%v",
+		truncateHash(txPhotoHash, 8), truncateHash(ourReceivedHash, 8), txPhotoHash != "" && txPhotoHash != ourReceivedHash)
+
 	if txPhotoHash != "" && txPhotoHash != ourReceivedHash {
 		logger.Debug(prefix, "📸 Remote has new photo (hash: %s), replying with handshake to request it", truncateHash(txPhotoHash, 8))
 		// Reply with a handshake that shows we don't have their new photo yet
@@ -811,6 +818,9 @@ func (a *Android) handleHandshakeMessage(gatt *kotlin.BluetoothGatt, data []byte
 	}
 
 	// Check if we need to send our photo
+	logger.Debug(prefix, "📸 [PHOTO-DECISION-TX] Remote rxHash=%s, our photoHash=%s, needSend=%v",
+		truncateHash(rxPhotoHash, 8), truncateHash(a.photoHash, 8), rxPhotoHash != a.photoHash)
+
 	if rxPhotoHash != a.photoHash {
 		logger.Debug(prefix, "📸 Remote doesn't have our photo, sending...")
 		go a.sendPhoto(gatt, rxPhotoHash)
@@ -865,24 +875,28 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 	a.mu.Lock()
 	if a.photoSendInProgress[remoteUUID] {
 		a.mu.Unlock()
-		logger.Debug(prefix, "⏭️  Photo send already in progress to %s, skipping duplicate", remoteUUID[:8])
+		logger.Debug(prefix, "⏭️  [PHOTO-TX-STATE] Already in progress to %s, skipping duplicate", remoteUUID[:8])
 		return nil
 	}
 
 	// Mark photo send as in progress
 	a.photoSendInProgress[remoteUUID] = true
+	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] IDLE → SENDING to %s", remoteUUID[:8])
 	a.mu.Unlock()
 	defer func() {
 		// Clear flag when done
 		a.mu.Lock()
 		delete(a.photoSendInProgress, remoteUUID)
+		logger.Debug(prefix, "📸 [PHOTO-TX-STATE] Cleared send-in-progress flag for %s", remoteUUID[:8])
 		a.mu.Unlock()
 	}()
 
 	// Load our cached photo
 	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.hardwareUUID)
+	logger.Debug(prefix, "📸 [PHOTO-TX-LOAD] Loading photo from %s", cachePath)
 	photoData, err := os.ReadFile(cachePath)
 	if err != nil {
+		logger.Error(prefix, "❌ [PHOTO-TX-ERROR] Failed to load photo: %v", err)
 		return fmt.Errorf("failed to load photo: %w", err)
 	}
 
@@ -894,6 +908,8 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 
 	logger.Info(prefix, "📸 Sending photo to %s (%d bytes, %d chunks, CRC: %08X)",
 		remoteUUID[:8], len(photoData), len(chunks), totalCRC)
+	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] Loaded photo: size=%d, chunks=%d, crc=%08X",
+		len(photoData), len(chunks), totalCRC)
 
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
@@ -907,9 +923,13 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
 	photoChar.Value = metadata
 	photoChar.WriteType = kotlin.WRITE_TYPE_DEFAULT
+	logger.Debug(prefix, "📸 [PHOTO-TX-META] Sending metadata packet (size=%d, crc=%08X, chunks=%d) with response",
+		len(photoData), totalCRC, len(chunks))
 	if !gatt.WriteCharacteristic(photoChar) {
+		logger.Error(prefix, "❌ [PHOTO-TX-ERROR] Failed to send metadata")
 		return fmt.Errorf("failed to send metadata")
 	}
+	logger.Debug(prefix, "📸 [PHOTO-TX-META] Metadata sent successfully, starting chunk stream")
 
 	// Send chunks with NO_RESPONSE for speed (fire and forget)
 	// This is realistic - photo chunks use fast writes, app-level CRC catches errors
@@ -918,16 +938,17 @@ func (a *Android) sendPhoto(gatt *kotlin.BluetoothGatt, remoteRxPhotoHash string
 		photoChar.Value = chunkPacket
 		photoChar.WriteType = kotlin.WRITE_TYPE_NO_RESPONSE
 		if !gatt.WriteCharacteristic(photoChar) {
-			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s", i+1, len(chunks), remoteUUID[:8])
+			logger.Warn(prefix, "❌ [PHOTO-TX-ERROR] Failed to send chunk %d/%d to %s", i+1, len(chunks), remoteUUID[:8])
 			return fmt.Errorf("failed to send chunk %d", i)
 		}
 		time.Sleep(10 * time.Millisecond)
 
 		if i == 0 || i == len(chunks)-1 {
-			logger.Debug(prefix, "📤 Sent chunk %d/%d", i+1, len(chunks))
+			logger.Debug(prefix, "📤 [PHOTO-TX-CHUNK] Sent chunk %d/%d (size=%d bytes)", i+1, len(chunks), len(chunk))
 		}
 	}
 
+	logger.Debug(prefix, "📸 [PHOTO-TX-STATE] SENDING → COMPLETE (all %d chunks sent to %s)", len(chunks), remoteUUID[:8])
 	logger.Info(prefix, "✅ Photo send complete to %s", remoteUUID[:8])
 	return nil
 }
@@ -957,6 +978,8 @@ func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 				remoteUUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
 
 			state.mu.Lock()
+			logger.Debug(prefix, "📸 [PHOTO-RX-STATE] IDLE → RECEIVING from %s (size=%d, chunks=%d, crc=%08X)",
+				remoteUUID[:8], meta.TotalSize, meta.TotalChunks, meta.TotalCRC)
 			state.isReceiving = true
 			state.expectedSize = meta.TotalSize
 			state.expectedCRC = meta.TotalCRC
@@ -968,6 +991,7 @@ func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 			state.mu.Unlock()
 
 			if len(remaining) > 0 {
+				logger.Debug(prefix, "📸 [PHOTO-RX-STATE] Metadata has %d bytes trailing data, processing immediately", len(remaining))
 				a.processPhotoChunks(remoteUUID, state)
 			}
 			return
@@ -978,7 +1002,13 @@ func (a *Android) handlePhotoMessage(gatt *kotlin.BluetoothGatt, data []byte) {
 	state.mu.Lock()
 	isReceiving := state.isReceiving
 	if isReceiving {
+		bufferBefore := len(state.buffer)
 		state.buffer = append(state.buffer, data...)
+		logger.Debug(prefix, "📸 [PHOTO-RX-DATA] Appended %d bytes to buffer (buffer now %d bytes, receiving=%v)",
+			len(data), len(state.buffer), isReceiving)
+		if bufferBefore == 0 && len(state.buffer) > 0 {
+			logger.Debug(prefix, "📸 [PHOTO-RX-STATE] Buffer now has data, will process chunks")
+		}
 	}
 	state.mu.Unlock()
 
@@ -994,13 +1024,18 @@ func (a *Android) processPhotoChunks(remoteUUID string, state *photoReceiveState
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
+	logger.Debug(prefix, "📸 [PHOTO-RX-PARSE] Processing buffer with %d bytes (need %d for header)",
+		len(state.buffer), phototransfer.ChunkHeaderSize)
+
 	for {
 		if len(state.buffer) < phototransfer.ChunkHeaderSize {
+			logger.Debug(prefix, "📸 [PHOTO-RX-PARSE] Buffer too small (%d bytes), waiting for more data", len(state.buffer))
 			break
 		}
 
 		chunk, consumed, err := phototransfer.DecodeChunk(state.buffer)
 		if err != nil {
+			logger.Debug(prefix, "📸 [PHOTO-RX-PARSE] DecodeChunk failed: %v (buffer len=%d)", err, len(state.buffer))
 			break
 		}
 
@@ -1008,13 +1043,17 @@ func (a *Android) processPhotoChunks(remoteUUID string, state *photoReceiveState
 		state.buffer = state.buffer[consumed:]
 		state.lastChunkTime = time.Now() // Update last chunk time
 
+		logger.Debug(prefix, "📸 [PHOTO-RX-CHUNK] Chunk[%d] received, size=%d (have %d/%d chunks, buffer remaining=%d)",
+			chunk.Index, len(chunk.Data), len(state.receivedChunks), state.expectedChunks, len(state.buffer))
+
 		if chunk.Index == 0 || chunk.Index == state.expectedChunks-1 {
-			logger.Debug(prefix, "📥 Received chunk %d/%d from %s",
+			logger.Debug(prefix, "📥 [PHOTO-RX-MILESTONE] Received chunk %d/%d from %s",
 				len(state.receivedChunks), state.expectedChunks, remoteUUID[:8])
 		}
 
 		// Check if complete
 		if uint16(len(state.receivedChunks)) == state.expectedChunks {
+			logger.Debug(prefix, "📸 [PHOTO-RX-STATE] CHUNK_ACCUMULATING → COMPLETE (all %d chunks received)", state.expectedChunks)
 			a.reassembleAndSavePhoto(remoteUUID, state)
 			state.isReceiving = false
 			// Clean up state
@@ -1030,21 +1069,29 @@ func (a *Android) processPhotoChunks(remoteUUID string, state *photoReceiveState
 func (a *Android) reassembleAndSavePhoto(remoteUUID string, state *photoReceiveState) error {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
+	logger.Debug(prefix, "📸 [PHOTO-RX-STATE] COMPLETE → REASSEMBLING (expected chunks=%d, received=%d)",
+		state.expectedChunks, len(state.receivedChunks))
+
 	// Reassemble in order
 	var photoData []byte
 	for i := uint16(0); i < state.expectedChunks; i++ {
 		chunk, exists := state.receivedChunks[i]
 		if !exists {
-			logger.Error(prefix, "❌ Missing chunk %d during reassembly", i)
+			logger.Error(prefix, "❌ [PHOTO-RX-ERROR] Missing chunk %d during reassembly", i)
 			return fmt.Errorf("missing chunk %d", i)
 		}
 		photoData = append(photoData, chunk...)
 	}
 
+	logger.Debug(prefix, "📸 [PHOTO-RX-REASSEMBLE] Assembled %d bytes from %d chunks",
+		len(photoData), state.expectedChunks)
+
 	// Verify CRC
 	calculatedCRC := phototransfer.CalculateCRC32(photoData)
+	logger.Debug(prefix, "📸 [PHOTO-RX-VERIFY] CRC check: expected=%08X, calculated=%08X, match=%v",
+		state.expectedCRC, calculatedCRC, calculatedCRC == state.expectedCRC)
 	if calculatedCRC != state.expectedCRC {
-		logger.Error(prefix, "❌ Photo CRC mismatch: expected %08X, got %08X",
+		logger.Error(prefix, "❌ [PHOTO-RX-ERROR] Photo CRC mismatch: expected %08X, got %08X",
 			state.expectedCRC, calculatedCRC)
 		return fmt.Errorf("CRC mismatch")
 	}
@@ -1052,18 +1099,30 @@ func (a *Android) reassembleAndSavePhoto(remoteUUID string, state *photoReceiveS
 	// Calculate hash
 	hash := sha256.Sum256(photoData)
 	hashStr := hex.EncodeToString(hash[:])
+	logger.Debug(prefix, "📸 [PHOTO-RX-HASH] Photo hash calculated: %s (full: %s)", hashStr[:8], hashStr)
 
 	// Get the logical deviceID from the remote UUID
 	a.mu.Lock()
 	deviceID := a.remoteUUIDToDeviceID[remoteUUID]
 	a.mu.Unlock()
 
+	if deviceID == "" {
+		logger.Error(prefix, "❌ [PHOTO-RX-ERROR] No deviceID mapping for remoteUUID=%s (handshake not completed?)", remoteUUID[:8])
+		return fmt.Errorf("no deviceID for remoteUUID %s", remoteUUID[:8])
+	}
+
+	logger.Debug(prefix, "📸 [PHOTO-RX-MAPPING] deviceID=%s ← remoteUUID=%s", deviceID[:8], remoteUUID[:8])
+
 	// Save photo using cache manager (persists deviceID -> photoHash mapping)
+	logger.Debug(prefix, "📸 [PHOTO-RX-CACHE] Calling SaveDevicePhoto(deviceID=%s, size=%d, hash=%s)",
+		deviceID[:8], len(photoData), hashStr[:8])
 	if err := a.cacheManager.SaveDevicePhoto(deviceID, photoData, hashStr); err != nil {
-		logger.Error(prefix, "❌ Failed to save photo: %v", err)
+		logger.Error(prefix, "❌ [PHOTO-RX-ERROR] Failed to save photo: %v", err)
 		return err
 	}
 
+	logger.Debug(prefix, "📸 [PHOTO-RX-STATE] REASSEMBLING → SAVED (deviceID=%s, hash=%s, size=%d)",
+		deviceID[:8], hashStr[:8], len(photoData))
 	logger.Info(prefix, "✅ Photo saved from %s (hash: %s, size: %d bytes)",
 		deviceID[:8], hashStr[:8], len(photoData))
 
@@ -1711,12 +1770,16 @@ func (a *Android) handleHandshakeMessageFromServer(senderUUID string, data []byt
 	// Update our state
 	a.mu.Lock()
 	a.remoteUUIDToDeviceID[senderUUID] = deviceID
+	logger.Debug(prefix, "🔗 [UUID-MAP] (SERVER) Mapped hardwareUUID=%s → deviceID=%s", senderUUID[:8], deviceID[:8])
 	a.lastHandshakeTime[senderUUID] = time.Now()
 	a.mu.Unlock()
 
 	// Convert photo hashes from bytes to hex strings
 	txPhotoHash := hashBytesToString(handshake.TxPhotoHash)
 	rxPhotoHash := hashBytesToString(handshake.RxPhotoHash)
+
+	logger.Debug(prefix, "🤝 [HANDSHAKE-RX] (SERVER) Received from %s: txHash=%s, rxHash=%s, firstName=%s",
+		senderUUID[:8], truncateHash(txPhotoHash, 8), truncateHash(rxPhotoHash, 8), handshake.FirstName)
 
 	// Store their TX photo hash
 	if txPhotoHash != "" {
@@ -1941,6 +2004,8 @@ func (a *Android) handlePhotoMessageFromServer(senderUUID string, data []byte) {
 				senderUUID[:8], meta.TotalSize, meta.TotalCRC, meta.TotalChunks)
 
 			state.mu.Lock()
+			logger.Debug(prefix, "📸 [PHOTO-RX-STATE] (SERVER) IDLE → RECEIVING from %s (size=%d, chunks=%d, crc=%08X)",
+				senderUUID[:8], meta.TotalSize, meta.TotalChunks, meta.TotalCRC)
 			state.isReceiving = true
 			state.expectedSize = meta.TotalSize
 			state.expectedCRC = meta.TotalCRC
@@ -1952,6 +2017,7 @@ func (a *Android) handlePhotoMessageFromServer(senderUUID string, data []byte) {
 			state.mu.Unlock()
 
 			if len(remaining) > 0 {
+				logger.Debug(prefix, "📸 [PHOTO-RX-STATE] (SERVER) Metadata has %d bytes trailing data, processing immediately", len(remaining))
 				a.processPhotoChunksFromServer(senderUUID, state)
 			}
 			return
@@ -1962,7 +2028,13 @@ func (a *Android) handlePhotoMessageFromServer(senderUUID string, data []byte) {
 	state.mu.Lock()
 	isReceiving := state.isReceiving
 	if isReceiving {
+		bufferBefore := len(state.buffer)
 		state.buffer = append(state.buffer, data...)
+		logger.Debug(prefix, "📸 [PHOTO-RX-DATA] (SERVER) Appended %d bytes to buffer (buffer now %d bytes, receiving=%v)",
+			len(data), len(state.buffer), isReceiving)
+		if bufferBefore == 0 && len(state.buffer) > 0 {
+			logger.Debug(prefix, "📸 [PHOTO-RX-STATE] (SERVER) Buffer now has data, will process chunks")
+		}
 	}
 	state.mu.Unlock()
 
@@ -1978,13 +2050,18 @@ func (a *Android) processPhotoChunksFromServer(senderUUID string, state *photoRe
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
+	logger.Debug(prefix, "📸 [PHOTO-RX-PARSE] (SERVER) Processing buffer with %d bytes (need %d for header)",
+		len(state.buffer), phototransfer.ChunkHeaderSize)
+
 	for {
 		if len(state.buffer) < phototransfer.ChunkHeaderSize {
+			logger.Debug(prefix, "📸 [PHOTO-RX-PARSE] (SERVER) Buffer too small (%d bytes), waiting for more data", len(state.buffer))
 			break
 		}
 
 		chunk, consumed, err := phototransfer.DecodeChunk(state.buffer)
 		if err != nil {
+			logger.Debug(prefix, "📸 [PHOTO-RX-PARSE] (SERVER) DecodeChunk failed: %v (buffer len=%d)", err, len(state.buffer))
 			break
 		}
 
@@ -1992,13 +2069,17 @@ func (a *Android) processPhotoChunksFromServer(senderUUID string, state *photoRe
 		state.buffer = state.buffer[consumed:]
 		state.lastChunkTime = time.Now() // Update last chunk time
 
+		logger.Debug(prefix, "📸 [PHOTO-RX-CHUNK] (SERVER) Chunk[%d] received, size=%d (have %d/%d chunks, buffer remaining=%d)",
+			chunk.Index, len(chunk.Data), len(state.receivedChunks), state.expectedChunks, len(state.buffer))
+
 		if chunk.Index == 0 || chunk.Index == state.expectedChunks-1 {
-			logger.Debug(prefix, "📥 Received chunk %d/%d from %s",
+			logger.Debug(prefix, "📥 [PHOTO-RX-MILESTONE] (SERVER) Received chunk %d/%d from %s",
 				len(state.receivedChunks), state.expectedChunks, senderUUID[:8])
 		}
 
 		// Check if complete
 		if uint16(len(state.receivedChunks)) == state.expectedChunks {
+			logger.Debug(prefix, "📸 [PHOTO-RX-STATE] (SERVER) CHUNK_ACCUMULATING → COMPLETE (all %d chunks received)", state.expectedChunks)
 			a.reassembleAndSavePhotoFromServer(senderUUID, state)
 			state.isReceiving = false
 			// Clean up state
@@ -2024,16 +2105,24 @@ func (a *Android) processPhotoChunksFromServer(senderUUID string, state *photoRe
 func (a *Android) reassembleAndSavePhotoFromServer(senderUUID string, state *photoReceiveState) error {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
+	logger.Debug(prefix, "📸 [PHOTO-RX-STATE] (SERVER) COMPLETE → REASSEMBLING (expected chunks=%d, received=%d)",
+		state.expectedChunks, len(state.receivedChunks))
+
 	// Reassemble in order
 	var photoData []byte
 	for i := uint16(0); i < state.expectedChunks; i++ {
 		photoData = append(photoData, state.receivedChunks[i]...)
 	}
 
+	logger.Debug(prefix, "📸 [PHOTO-RX-REASSEMBLE] (SERVER) Assembled %d bytes from %d chunks",
+		len(photoData), state.expectedChunks)
+
 	// Verify CRC
 	calculatedCRC := phototransfer.CalculateCRC32(photoData)
+	logger.Debug(prefix, "📸 [PHOTO-RX-VERIFY] (SERVER) CRC check: expected=%08X, calculated=%08X, match=%v",
+		state.expectedCRC, calculatedCRC, calculatedCRC == state.expectedCRC)
 	if calculatedCRC != state.expectedCRC {
-		logger.Error(prefix, "❌ Photo CRC mismatch from %s: expected %08X, got %08X",
+		logger.Error(prefix, "❌ [PHOTO-RX-ERROR] (SERVER) Photo CRC mismatch from %s: expected %08X, got %08X",
 			senderUUID[:8], state.expectedCRC, calculatedCRC)
 		return fmt.Errorf("CRC mismatch")
 	}
@@ -2041,6 +2130,7 @@ func (a *Android) reassembleAndSavePhotoFromServer(senderUUID string, state *pho
 	// Calculate hash
 	hash := sha256.Sum256(photoData)
 	hashStr := hex.EncodeToString(hash[:])
+	logger.Debug(prefix, "📸 [PHOTO-RX-HASH] (SERVER) Photo hash calculated: %s (full: %s)", hashStr[:8], hashStr)
 
 	// Get the logical deviceID from the sender UUID
 	// For server mode, we need to look this up from our cached handshakes
@@ -2051,13 +2141,18 @@ func (a *Android) reassembleAndSavePhotoFromServer(senderUUID string, state *pho
 	if !exists || deviceID == "" {
 		// Reject photo from unknown device - handshake must complete first
 		// This ensures we always use base36 device IDs as primary keys (per CLAUDE.md)
+		logger.Error(prefix, "❌ [PHOTO-RX-ERROR] (SERVER) No deviceID mapping for senderUUID=%s (handshake not completed?)", senderUUID[:8])
 		logger.Warn(prefix, "⚠️  Rejecting photo from %s: no handshake received yet (deviceID unknown)", senderUUID[:8])
 		return fmt.Errorf("device ID unknown for %s, handshake required", senderUUID[:8])
 	}
 
+	logger.Debug(prefix, "📸 [PHOTO-RX-MAPPING] (SERVER) deviceID=%s ← senderUUID=%s", deviceID[:8], senderUUID[:8])
+
 	// Save photo using cache manager (persists deviceID -> photoHash mapping)
+	logger.Debug(prefix, "📸 [PHOTO-RX-CACHE] (SERVER) Calling SaveDevicePhoto(deviceID=%s, size=%d, hash=%s)",
+		deviceID[:8], len(photoData), hashStr[:8])
 	if err := a.cacheManager.SaveDevicePhoto(deviceID, photoData, hashStr); err != nil {
-		logger.Error(prefix, "❌ Failed to save photo from %s: %v", senderUUID[:8], err)
+		logger.Error(prefix, "❌ [PHOTO-RX-ERROR] (SERVER) Failed to save photo from %s: %v", senderUUID[:8], err)
 		return err
 	}
 
@@ -2066,6 +2161,8 @@ func (a *Android) reassembleAndSavePhotoFromServer(senderUUID string, state *pho
 	a.receivedPhotoHashes[deviceID] = hashStr
 	a.mu.Unlock()
 
+	logger.Debug(prefix, "📸 [PHOTO-RX-STATE] (SERVER) REASSEMBLING → SAVED (deviceID=%s, hash=%s, size=%d)",
+		deviceID[:8], hashStr[:8], len(photoData))
 	logger.Info(prefix, "✅ Photo saved from %s (hash: %s, size: %d bytes)",
 		senderUUID[:8], hashStr[:8], len(photoData))
 
