@@ -1381,6 +1381,11 @@ func (sw *Wire) WriteGATTTable(table *GATTTable) error {
 	devicePath := filepath.Join(sw.debugLogPath, sw.localUUID)
 	gattPath := filepath.Join(devicePath, "gatt.json")
 
+	// Ensure directory exists
+	if err := os.MkdirAll(devicePath, 0755); err != nil {
+		return fmt.Errorf("failed to create device directory: %w", err)
+	}
+
 	data, err := json.MarshalIndent(table, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal GATT table: %w", err)
@@ -1411,6 +1416,11 @@ func (sw *Wire) ReadGATTTable(deviceUUID string) (*GATTTable, error) {
 func (sw *Wire) WriteAdvertisingData(advData *AdvertisingData) error {
 	devicePath := filepath.Join(sw.debugLogPath, sw.localUUID)
 	advPath := filepath.Join(devicePath, "advertising.json")
+
+	// Ensure directory exists
+	if err := os.MkdirAll(devicePath, 0755); err != nil {
+		return fmt.Errorf("failed to create device directory: %w", err)
+	}
 
 	data, err := json.MarshalIndent(advData, "", "  ")
 	if err != nil {
