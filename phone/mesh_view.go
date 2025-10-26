@@ -16,6 +16,7 @@ import (
 // MeshDeviceState represents what we know about a single device in the mesh
 type MeshDeviceState struct {
 	DeviceID            string    `json:"device_id"`
+	HardwareUUID        string    `json:"hardware_uuid"`         // BLE hardware UUID for connection
 	PhotoHash           string    `json:"photo_hash"`            // hex-encoded SHA256
 	LastSeenTime        time.Time `json:"last_seen_time"`        // when we last saw this state
 	FirstName           string    `json:"first_name"`            // cached name
@@ -78,7 +79,7 @@ func NewMeshView(ourDeviceID, ourHardwareUUID, dataDir string, cacheManager *Dev
 }
 
 // UpdateDevice updates or adds a device to the mesh view
-func (mv *MeshView) UpdateDevice(deviceID, photoHashHex, firstName string, profileVersion int32, profileSummaryHashHex string) {
+func (mv *MeshView) UpdateDevice(deviceID, hardwareUUID, photoHashHex, firstName string, profileVersion int32, profileSummaryHashHex string) {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
 
@@ -105,6 +106,10 @@ func (mv *MeshView) UpdateDevice(deviceID, photoHashHex, firstName string, profi
 	existing, exists := mv.devices[deviceID]
 	if exists {
 		// Update existing device
+		if hardwareUUID != "" && hardwareUUID != existing.HardwareUUID {
+			// Hardware UUID updated
+			existing.HardwareUUID = hardwareUUID
+		}
 		if photoHashHex != "" && photoHashHex != existing.PhotoHash {
 			// Photo changed - reset request state
 			existing.PhotoHash = photoHashHex
@@ -124,6 +129,7 @@ func (mv *MeshView) UpdateDevice(deviceID, photoHashHex, firstName string, profi
 		// New device discovered
 		mv.devices[deviceID] = &MeshDeviceState{
 			DeviceID:           deviceID,
+			HardwareUUID:       hardwareUUID,
 			PhotoHash:          photoHashHex,
 			LastSeenTime:       now,
 			FirstName:          firstName,
@@ -147,6 +153,7 @@ func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
 
 	for _, deviceState := range gossipMsg.MeshView {
 		deviceID := deviceState.DeviceId
+		hardwareUUID := deviceState.HardwareUuid
 		photoHashBytes := deviceState.PhotoHash
 		photoHashHex := hex.EncodeToString(photoHashBytes)
 		firstName := deviceState.FirstName
@@ -181,6 +188,7 @@ func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
 
 			mv.devices[deviceID] = &MeshDeviceState{
 				DeviceID:           deviceID,
+				HardwareUUID:       hardwareUUID,
 				PhotoHash:          photoHashHex,
 				LastSeenTime:       lastSeenTime,
 				FirstName:          firstName,
@@ -196,6 +204,11 @@ func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
 			// Update if gossip has newer information
 			updated := false
 			if lastSeenTime.After(existing.LastSeenTime) {
+				// Always update hardware UUID if provided (in case it changed or wasn't known before)
+				if hardwareUUID != "" && hardwareUUID != existing.HardwareUUID {
+					existing.HardwareUUID = hardwareUUID
+					updated = true
+				}
 				if photoHashHex != "" && photoHashHex != existing.PhotoHash {
 					// Photo changed
 					existing.PhotoHash = photoHashHex
@@ -301,6 +314,18 @@ func (mv *MeshView) MarkProfileReceived(deviceID string, version int32) {
 	}
 }
 
+// GetHardwareUUID returns the hardware UUID for a given device ID
+// Returns empty string if device is not in mesh view
+func (mv *MeshView) GetHardwareUUID(deviceID string) string {
+	mv.mu.RLock()
+	defer mv.mu.RUnlock()
+
+	if device, exists := mv.devices[deviceID]; exists {
+		return device.HardwareUUID
+	}
+	return ""
+}
+
 // SelectRandomNeighbors picks N random devices to be our gossip neighbors
 // Uses consistent selection: picks devices with lowest hash(ourID + theirID)
 func (mv *MeshView) SelectRandomNeighbors() []string {
@@ -398,6 +423,7 @@ func (mv *MeshView) BuildGossipMessage(ourPhotoHashHex, ourFirstName string, our
 	ourProfileSummaryBytes, _ := hex.DecodeString(ourProfileSummaryHashHex)
 	meshView = append(meshView, &proto.DeviceState{
 		DeviceId:           mv.ourDeviceID,
+		HardwareUuid:       mv.ourHardwareUUID,
 		PhotoHash:          ourHashBytes,
 		LastSeenTimestamp:  time.Now().Unix(),
 		FirstName:          ourFirstName,
@@ -411,6 +437,7 @@ func (mv *MeshView) BuildGossipMessage(ourPhotoHashHex, ourFirstName string, our
 		profileSummaryBytes, _ := hex.DecodeString(device.ProfileSummaryHash)
 		meshView = append(meshView, &proto.DeviceState{
 			DeviceId:           device.DeviceID,
+			HardwareUuid:       device.HardwareUUID,
 			PhotoHash:          hashBytes,
 			LastSeenTimestamp:  device.LastSeenTime.Unix(),
 			FirstName:          device.FirstName,

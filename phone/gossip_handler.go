@@ -170,18 +170,9 @@ func (gh *GossipHandler) RequestPhoto(deviceID, photoHash string) {
 		return
 	}
 
-	// Find hardware UUID for this deviceID
-	mutex := device.GetMutex()
-	mutex.RLock()
-	var targetUUID string
-	uuidToDeviceID := device.GetUUIDToDeviceIDMap()
-	for uuid, devID := range uuidToDeviceID {
-		if devID == deviceID {
-			targetUUID = uuid
-			break
-		}
-	}
-	mutex.RUnlock()
+	// Get hardware UUID from mesh view (learned via gossip)
+	meshView := device.GetMeshView()
+	targetUUID := meshView.GetHardwareUUID(deviceID)
 
 	if targetUUID == "" {
 		logger.Warn(prefix, "⚠️  Cannot request photo: don't know hardware UUID for device %s", deviceID[:8])
@@ -195,7 +186,7 @@ func (gh *GossipHandler) RequestPhoto(deviceID, photoHash string) {
 		return
 	}
 
-	meshView := device.GetMeshView()
+	meshView = device.GetMeshView()
 	meshView.MarkPhotoRequested(deviceID)
 	logger.Debug(prefix, "📤 Sent photo request for %s", TruncateHash(photoHash, 8))
 }
@@ -219,18 +210,9 @@ func (gh *GossipHandler) RequestProfile(deviceID string, version int32) {
 		return
 	}
 
-	// Find hardware UUID for this deviceID
-	mutex := device.GetMutex()
-	mutex.RLock()
-	var targetUUID string
-	uuidToDeviceID := device.GetUUIDToDeviceIDMap()
-	for uuid, devID := range uuidToDeviceID {
-		if devID == deviceID {
-			targetUUID = uuid
-			break
-		}
-	}
-	mutex.RUnlock()
+	// Get hardware UUID from mesh view (learned via gossip)
+	meshView := device.GetMeshView()
+	targetUUID := meshView.GetHardwareUUID(deviceID)
 
 	if targetUUID == "" {
 		logger.Warn(prefix, "⚠️  Cannot request profile: don't know hardware UUID for device %s", deviceID[:8])
@@ -244,7 +226,7 @@ func (gh *GossipHandler) RequestProfile(deviceID string, version int32) {
 		return
 	}
 
-	meshView := device.GetMeshView()
+	meshView = device.GetMeshView()
 	meshView.MarkProfileRequested(deviceID)
 	logger.Debug(prefix, "📤 Sent profile request for v%d", version)
 }

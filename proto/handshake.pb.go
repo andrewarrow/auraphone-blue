@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.33.0
-// source: proto/handshake.proto
+// source: handshake.proto
 
 package proto
 
@@ -37,7 +37,7 @@ type HandshakeMessage struct {
 
 func (x *HandshakeMessage) Reset() {
 	*x = HandshakeMessage{}
-	mi := &file_proto_handshake_proto_msgTypes[0]
+	mi := &file_handshake_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -49,7 +49,7 @@ func (x *HandshakeMessage) String() string {
 func (*HandshakeMessage) ProtoMessage() {}
 
 func (x *HandshakeMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[0]
+	mi := &file_handshake_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -62,7 +62,7 @@ func (x *HandshakeMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HandshakeMessage.ProtoReflect.Descriptor instead.
 func (*HandshakeMessage) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{0}
+	return file_handshake_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *HandshakeMessage) GetDeviceId() string {
@@ -130,7 +130,7 @@ type ProfileMessage struct {
 
 func (x *ProfileMessage) Reset() {
 	*x = ProfileMessage{}
-	mi := &file_proto_handshake_proto_msgTypes[1]
+	mi := &file_handshake_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -142,7 +142,7 @@ func (x *ProfileMessage) String() string {
 func (*ProfileMessage) ProtoMessage() {}
 
 func (x *ProfileMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[1]
+	mi := &file_handshake_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -155,7 +155,7 @@ func (x *ProfileMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProfileMessage.ProtoReflect.Descriptor instead.
 func (*ProfileMessage) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{1}
+	return file_handshake_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ProfileMessage) GetDeviceId() string {
@@ -261,7 +261,7 @@ type PhotoCompletionAck struct {
 
 func (x *PhotoCompletionAck) Reset() {
 	*x = PhotoCompletionAck{}
-	mi := &file_proto_handshake_proto_msgTypes[2]
+	mi := &file_handshake_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -273,7 +273,7 @@ func (x *PhotoCompletionAck) String() string {
 func (*PhotoCompletionAck) ProtoMessage() {}
 
 func (x *PhotoCompletionAck) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[2]
+	mi := &file_handshake_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -286,7 +286,7 @@ func (x *PhotoCompletionAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PhotoCompletionAck.ProtoReflect.Descriptor instead.
 func (*PhotoCompletionAck) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{2}
+	return file_handshake_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PhotoCompletionAck) GetDeviceId() string {
@@ -319,13 +319,14 @@ type DeviceState struct {
 	FirstName          string                 `protobuf:"bytes,4,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`                              // Cached first name
 	ProfileVersion     int32                  `protobuf:"varint,5,opt,name=profile_version,json=profileVersion,proto3" json:"profile_version,omitempty"`              // Profile version number, increments on ANY profile change
 	ProfileSummaryHash []byte                 `protobuf:"bytes,6,opt,name=profile_summary_hash,json=profileSummaryHash,proto3" json:"profile_summary_hash,omitempty"` // SHA-256 hash of all profile fields for change detection
+	HardwareUuid       string                 `protobuf:"bytes,7,opt,name=hardware_uuid,json=hardwareUuid,proto3" json:"hardware_uuid,omitempty"`                     // Hardware UUID (BLE MAC address equivalent) for connection
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
 
 func (x *DeviceState) Reset() {
 	*x = DeviceState{}
-	mi := &file_proto_handshake_proto_msgTypes[3]
+	mi := &file_handshake_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -337,7 +338,7 @@ func (x *DeviceState) String() string {
 func (*DeviceState) ProtoMessage() {}
 
 func (x *DeviceState) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[3]
+	mi := &file_handshake_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -350,7 +351,7 @@ func (x *DeviceState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceState.ProtoReflect.Descriptor instead.
 func (*DeviceState) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{3}
+	return file_handshake_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *DeviceState) GetDeviceId() string {
@@ -395,6 +396,13 @@ func (x *DeviceState) GetProfileSummaryHash() []byte {
 	return nil
 }
 
+func (x *DeviceState) GetHardwareUuid() string {
+	if x != nil {
+		return x.HardwareUuid
+	}
+	return ""
+}
+
 // Gossip message - exchanged periodically between neighbors
 // Contains sender's complete view of the mesh network
 type GossipMessage struct {
@@ -409,7 +417,7 @@ type GossipMessage struct {
 
 func (x *GossipMessage) Reset() {
 	*x = GossipMessage{}
-	mi := &file_proto_handshake_proto_msgTypes[4]
+	mi := &file_handshake_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -421,7 +429,7 @@ func (x *GossipMessage) String() string {
 func (*GossipMessage) ProtoMessage() {}
 
 func (x *GossipMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[4]
+	mi := &file_handshake_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -434,7 +442,7 @@ func (x *GossipMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipMessage.ProtoReflect.Descriptor instead.
 func (*GossipMessage) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{4}
+	return file_handshake_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GossipMessage) GetSenderDeviceId() string {
@@ -478,7 +486,7 @@ type PhotoRequestMessage struct {
 
 func (x *PhotoRequestMessage) Reset() {
 	*x = PhotoRequestMessage{}
-	mi := &file_proto_handshake_proto_msgTypes[5]
+	mi := &file_handshake_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -490,7 +498,7 @@ func (x *PhotoRequestMessage) String() string {
 func (*PhotoRequestMessage) ProtoMessage() {}
 
 func (x *PhotoRequestMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[5]
+	mi := &file_handshake_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -503,7 +511,7 @@ func (x *PhotoRequestMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PhotoRequestMessage.ProtoReflect.Descriptor instead.
 func (*PhotoRequestMessage) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{5}
+	return file_handshake_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PhotoRequestMessage) GetRequesterDeviceId() string {
@@ -540,7 +548,7 @@ type ProfileRequestMessage struct {
 
 func (x *ProfileRequestMessage) Reset() {
 	*x = ProfileRequestMessage{}
-	mi := &file_proto_handshake_proto_msgTypes[6]
+	mi := &file_handshake_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -552,7 +560,7 @@ func (x *ProfileRequestMessage) String() string {
 func (*ProfileRequestMessage) ProtoMessage() {}
 
 func (x *ProfileRequestMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[6]
+	mi := &file_handshake_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -565,7 +573,7 @@ func (x *ProfileRequestMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProfileRequestMessage.ProtoReflect.Descriptor instead.
 func (*ProfileRequestMessage) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{6}
+	return file_handshake_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ProfileRequestMessage) GetRequesterDeviceId() string {
@@ -607,7 +615,7 @@ type PhotoChunkMessage struct {
 
 func (x *PhotoChunkMessage) Reset() {
 	*x = PhotoChunkMessage{}
-	mi := &file_proto_handshake_proto_msgTypes[7]
+	mi := &file_handshake_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -619,7 +627,7 @@ func (x *PhotoChunkMessage) String() string {
 func (*PhotoChunkMessage) ProtoMessage() {}
 
 func (x *PhotoChunkMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[7]
+	mi := &file_handshake_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -632,7 +640,7 @@ func (x *PhotoChunkMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PhotoChunkMessage.ProtoReflect.Descriptor instead.
 func (*PhotoChunkMessage) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{7}
+	return file_handshake_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *PhotoChunkMessage) GetSenderDeviceId() string {
@@ -708,7 +716,7 @@ type PhotoChunkAck struct {
 
 func (x *PhotoChunkAck) Reset() {
 	*x = PhotoChunkAck{}
-	mi := &file_proto_handshake_proto_msgTypes[8]
+	mi := &file_handshake_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -720,7 +728,7 @@ func (x *PhotoChunkAck) String() string {
 func (*PhotoChunkAck) ProtoMessage() {}
 
 func (x *PhotoChunkAck) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_handshake_proto_msgTypes[8]
+	mi := &file_handshake_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -733,7 +741,7 @@ func (x *PhotoChunkAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PhotoChunkAck.ProtoReflect.Descriptor instead.
 func (*PhotoChunkAck) Descriptor() ([]byte, []int) {
-	return file_proto_handshake_proto_rawDescGZIP(), []int{8}
+	return file_handshake_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PhotoChunkAck) GetReceiverDeviceId() string {
@@ -785,11 +793,11 @@ func (x *PhotoChunkAck) GetTimestamp() int64 {
 	return 0
 }
 
-var File_proto_handshake_proto protoreflect.FileDescriptor
+var File_handshake_proto protoreflect.FileDescriptor
 
-const file_proto_handshake_proto_rawDesc = "" +
+const file_handshake_proto_rawDesc = "" +
 	"\n" +
-	"\x15proto/handshake.proto\x12\tauraphone\"\xea\x01\n" +
+	"\x0fhandshake.proto\x12\tauraphone\"\xea\x01\n" +
 	"\x10HandshakeMessage\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
@@ -816,7 +824,7 @@ const file_proto_handshake_proto_rawDesc = "" +
 	"\x12PhotoCompletionAck\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12!\n" +
 	"\ftransfer_crc\x18\x02 \x01(\aR\vtransferCrc\x12\x18\n" +
-	"\asuccess\x18\x03 \x01(\bR\asuccess\"\xf3\x01\n" +
+	"\asuccess\x18\x03 \x01(\bR\asuccess\"\x98\x02\n" +
 	"\vDeviceState\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
@@ -825,7 +833,8 @@ const file_proto_handshake_proto_rawDesc = "" +
 	"\n" +
 	"first_name\x18\x04 \x01(\tR\tfirstName\x12'\n" +
 	"\x0fprofile_version\x18\x05 \x01(\x05R\x0eprofileVersion\x120\n" +
-	"\x14profile_summary_hash\x18\x06 \x01(\fR\x12profileSummaryHash\"\xaf\x01\n" +
+	"\x14profile_summary_hash\x18\x06 \x01(\fR\x12profileSummaryHash\x12#\n" +
+	"\rhardware_uuid\x18\a \x01(\tR\fhardwareUuid\"\xaf\x01\n" +
 	"\rGossipMessage\x12(\n" +
 	"\x10sender_device_id\x18\x01 \x01(\tR\x0esenderDeviceId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x123\n" +
@@ -863,19 +872,19 @@ const file_proto_handshake_proto_rawDesc = "" +
 	"\ttimestamp\x18\a \x01(\x03R\ttimestampB-Z+github.com/andrewarrow/auraphone-blue/protob\x06proto3"
 
 var (
-	file_proto_handshake_proto_rawDescOnce sync.Once
-	file_proto_handshake_proto_rawDescData []byte
+	file_handshake_proto_rawDescOnce sync.Once
+	file_handshake_proto_rawDescData []byte
 )
 
-func file_proto_handshake_proto_rawDescGZIP() []byte {
-	file_proto_handshake_proto_rawDescOnce.Do(func() {
-		file_proto_handshake_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_handshake_proto_rawDesc), len(file_proto_handshake_proto_rawDesc)))
+func file_handshake_proto_rawDescGZIP() []byte {
+	file_handshake_proto_rawDescOnce.Do(func() {
+		file_handshake_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_handshake_proto_rawDesc), len(file_handshake_proto_rawDesc)))
 	})
-	return file_proto_handshake_proto_rawDescData
+	return file_handshake_proto_rawDescData
 }
 
-var file_proto_handshake_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
-var file_proto_handshake_proto_goTypes = []any{
+var file_handshake_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_handshake_proto_goTypes = []any{
 	(*HandshakeMessage)(nil),      // 0: auraphone.HandshakeMessage
 	(*ProfileMessage)(nil),        // 1: auraphone.ProfileMessage
 	(*PhotoCompletionAck)(nil),    // 2: auraphone.PhotoCompletionAck
@@ -886,7 +895,7 @@ var file_proto_handshake_proto_goTypes = []any{
 	(*PhotoChunkMessage)(nil),     // 7: auraphone.PhotoChunkMessage
 	(*PhotoChunkAck)(nil),         // 8: auraphone.PhotoChunkAck
 }
-var file_proto_handshake_proto_depIdxs = []int32{
+var file_handshake_proto_depIdxs = []int32{
 	3, // 0: auraphone.GossipMessage.mesh_view:type_name -> auraphone.DeviceState
 	1, // [1:1] is the sub-list for method output_type
 	1, // [1:1] is the sub-list for method input_type
@@ -895,26 +904,26 @@ var file_proto_handshake_proto_depIdxs = []int32{
 	0, // [0:1] is the sub-list for field type_name
 }
 
-func init() { file_proto_handshake_proto_init() }
-func file_proto_handshake_proto_init() {
-	if File_proto_handshake_proto != nil {
+func init() { file_handshake_proto_init() }
+func file_handshake_proto_init() {
+	if File_handshake_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_handshake_proto_rawDesc), len(file_proto_handshake_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_handshake_proto_rawDesc), len(file_handshake_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_proto_handshake_proto_goTypes,
-		DependencyIndexes: file_proto_handshake_proto_depIdxs,
-		MessageInfos:      file_proto_handshake_proto_msgTypes,
+		GoTypes:           file_handshake_proto_goTypes,
+		DependencyIndexes: file_handshake_proto_depIdxs,
+		MessageInfos:      file_handshake_proto_msgTypes,
 	}.Build()
-	File_proto_handshake_proto = out.File
-	file_proto_handshake_proto_goTypes = nil
-	file_proto_handshake_proto_depIdxs = nil
+	File_handshake_proto = out.File
+	file_handshake_proto_goTypes = nil
+	file_handshake_proto_depIdxs = nil
 }

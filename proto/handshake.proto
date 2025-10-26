@@ -51,6 +51,7 @@ message DeviceState {
   string first_name = 4;          // Cached first name
   int32 profile_version = 5;      // Profile version number, increments on ANY profile change
   bytes profile_summary_hash = 6; // SHA-256 hash of all profile fields for change detection
+  string hardware_uuid = 7;       // Hardware UUID (BLE MAC address equivalent) for connection
 }
 
 // Gossip message - exchanged periodically between neighbors
