@@ -18,8 +18,8 @@ func NewBluetoothManager(uuid string) *BluetoothManager {
 
 // OpenGattServer opens a GATT server for peripheral mode
 // Matches: bluetoothManager.openGattServer(context, callback)
-func (m *BluetoothManager) OpenGattServer(callback BluetoothGattServerCallback, platform wire.Platform, deviceName string) *BluetoothGattServer {
-	return NewBluetoothGattServer(m.uuid, callback, platform, deviceName)
+func (m *BluetoothManager) OpenGattServer(callback BluetoothGattServerCallback, platform wire.Platform, deviceName string, sharedWire *wire.Wire) *BluetoothGattServer {
+	return NewBluetoothGattServer(m.uuid, callback, platform, deviceName, sharedWire)
 }
 
 type BluetoothAdapter struct {
@@ -63,9 +63,9 @@ func (a *BluetoothAdapter) ShouldInitiateConnection(targetPlatform wire.Platform
 
 // GetBluetoothLeAdvertiser returns the advertiser for peripheral mode
 // Matches: bluetoothAdapter.getBluetoothLeAdvertiser()
-func (a *BluetoothAdapter) GetBluetoothLeAdvertiser() *BluetoothLeAdvertiser {
+func (a *BluetoothAdapter) GetBluetoothLeAdvertiser(sharedWire *wire.Wire) *BluetoothLeAdvertiser {
 	if a.advertiser == nil {
-		a.advertiser = NewBluetoothLeAdvertiser(a.uuid, a.platform, a.deviceName)
+		a.advertiser = NewBluetoothLeAdvertiser(a.uuid, a.platform, a.deviceName, sharedWire)
 	}
 	return a.advertiser
 }

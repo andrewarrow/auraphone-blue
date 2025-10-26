@@ -24,20 +24,18 @@ type CBCentralManager struct {
 	autoReconnectActive bool                     // Whether auto-reconnect is enabled
 }
 
-func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string) *CBCentralManager {
-	w := wire.NewWire(uuid)
-
+func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedWire *wire.Wire) *CBCentralManager {
 	cm := &CBCentralManager{
 		Delegate:            delegate,
 		State:               "poweredOn",
 		uuid:                uuid,
-		wire:                w,
+		wire:                sharedWire,
 		pendingPeripherals:  make(map[string]*CBPeripheral),
 		autoReconnectActive: true, // iOS auto-reconnect is always active
 	}
 
 	// Set up disconnect callback
-	w.SetDisconnectCallback(func(deviceUUID string) {
+	sharedWire.SetDisconnectCallback(func(deviceUUID string) {
 		// Connection was randomly dropped
 		if delegate != nil {
 			delegate.DidDisconnectPeripheral(*cm, CBPeripheral{

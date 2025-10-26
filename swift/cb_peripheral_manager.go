@@ -100,14 +100,12 @@ type CBPeripheralManager struct {
 
 // NewCBPeripheralManager creates a new peripheral manager
 // Matches: CBPeripheralManager(delegate:queue:options:)
-func NewCBPeripheralManager(delegate CBPeripheralManagerDelegate, uuid string, platform wire.Platform, deviceName string) *CBPeripheralManager {
-	w := wire.NewWireWithPlatform(uuid, platform, deviceName, nil)
-
+func NewCBPeripheralManager(delegate CBPeripheralManagerDelegate, uuid string, platform wire.Platform, deviceName string, sharedWire *wire.Wire) *CBPeripheralManager {
 	pm := &CBPeripheralManager{
 		Delegate:          delegate,
 		State:             "poweredOn",
 		uuid:              uuid,
-		wire:              w,
+		wire:              sharedWire,
 		services:          make([]*CBMutableService, 0),
 		IsAdvertising:     false,
 		connectedCentrals: make(map[string]CBCentral),

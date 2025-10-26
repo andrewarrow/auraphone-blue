@@ -68,12 +68,10 @@ type BluetoothLeAdvertiser struct {
 }
 
 // NewBluetoothLeAdvertiser creates a new advertiser
-func NewBluetoothLeAdvertiser(uuid string, platform wire.Platform, deviceName string) *BluetoothLeAdvertiser {
-	w := wire.NewWireWithPlatform(uuid, platform, deviceName, nil)
-
+func NewBluetoothLeAdvertiser(uuid string, platform wire.Platform, deviceName string, sharedWire *wire.Wire) *BluetoothLeAdvertiser {
 	return &BluetoothLeAdvertiser{
 		uuid:          uuid,
-		wire:          w,
+		wire:          sharedWire,
 		isAdvertising: false,
 	}
 }
@@ -302,12 +300,10 @@ const (
 
 // NewBluetoothGattServer creates a new GATT server
 // Matches: bluetoothManager.openGattServer(context, callback)
-func NewBluetoothGattServer(uuid string, callback BluetoothGattServerCallback, platform wire.Platform, deviceName string) *BluetoothGattServer {
-	w := wire.NewWireWithPlatform(uuid, platform, deviceName, nil)
-
+func NewBluetoothGattServer(uuid string, callback BluetoothGattServerCallback, platform wire.Platform, deviceName string, sharedWire *wire.Wire) *BluetoothGattServer {
 	return &BluetoothGattServer{
 		uuid:             uuid,
-		wire:             w,
+		wire:             sharedWire,
 		services:         make([]*BluetoothGattService, 0),
 		callback:         callback,
 		connectedDevices: make(map[string]*BluetoothDevice),

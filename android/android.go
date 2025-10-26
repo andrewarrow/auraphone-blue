@@ -184,9 +184,9 @@ func (a *Android) initializePeripheralMode() {
 	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
-	// Create GATT server with wrapper callback
+	// Create GATT server with wrapper callback, passing shared wire
 	delegate := &androidGattServerDelegate{android: a}
-	gattServer := kotlin.NewBluetoothGattServer(a.hardwareUUID, delegate, wire.PlatformAndroid, a.deviceName)
+	gattServer := kotlin.NewBluetoothGattServer(a.hardwareUUID, delegate, wire.PlatformAndroid, a.deviceName, a.wire)
 
 	// Add the Aura service
 	service := &kotlin.BluetoothGattService{
@@ -211,8 +211,8 @@ func (a *Android) initializePeripheralMode() {
 	service.Characteristics = append(service.Characteristics, textChar, photoChar, profileChar)
 	gattServer.AddService(service)
 
-	// Create advertiser
-	a.advertiser = kotlin.NewBluetoothLeAdvertiser(a.hardwareUUID, wire.PlatformAndroid, a.deviceName)
+	// Create advertiser, passing shared wire
+	a.advertiser = kotlin.NewBluetoothLeAdvertiser(a.hardwareUUID, wire.PlatformAndroid, a.deviceName, a.wire)
 	a.advertiser.SetGattServer(gattServer)
 }
 

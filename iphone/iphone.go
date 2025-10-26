@@ -157,8 +157,8 @@ func NewIPhone(hardwareUUID string) *iPhone {
 	// Setup BLE
 	ip.setupBLE()
 
-	// Create manager with hardware UUID
-	ip.manager = swift.NewCBCentralManager(ip, hardwareUUID)
+	// Create manager with hardware UUID, passing shared wire
+	ip.manager = swift.NewCBCentralManager(ip, hardwareUUID, ip.wire)
 
 	// Initialize peripheral mode (GATT server + advertising)
 	ip.initializePeripheralMode()
@@ -173,9 +173,9 @@ func (ip *iPhone) initializePeripheralMode() {
 	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 	const auraProfileCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5C"
 
-	// Create peripheral manager with wrapper delegate
+	// Create peripheral manager with wrapper delegate, passing shared wire
 	delegate := &iPhonePeripheralDelegate{iphone: ip}
-	ip.peripheralManager = swift.NewCBPeripheralManager(delegate, ip.hardwareUUID, wire.PlatformIOS, ip.deviceName)
+	ip.peripheralManager = swift.NewCBPeripheralManager(delegate, ip.hardwareUUID, wire.PlatformIOS, ip.deviceName, ip.wire)
 
 	// Create the Aura service
 	service := &swift.CBMutableService{
