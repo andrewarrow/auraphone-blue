@@ -718,8 +718,14 @@ func (pw *PhoneWindow) showPersonModal(device phone.DiscoveredDevice) {
 	}
 
 	// Create profile image (larger for modal)
+	// Use HardwareUUID as key to match how photos are stored in onDeviceDiscovered
+	key := device.HardwareUUID
+	if key == "" {
+		key = device.DeviceID
+	}
+
 	var profileImage *canvas.Image
-	if photoHash, hasHash := pw.devicePhotoHashes[device.DeviceID]; hasHash {
+	if photoHash, hasHash := pw.devicePhotoHashes[key]; hasHash {
 		if img, hasImage := pw.deviceImages[photoHash]; hasImage {
 			profileImage = canvas.NewImageFromImage(img)
 			profileImage.FillMode = canvas.ImageFillContain
