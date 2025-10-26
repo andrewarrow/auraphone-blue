@@ -12,6 +12,9 @@ import (
 
 // TestIOSGossipExchange verifies that gossip protocol works end-to-end with iOS devices
 func TestIOSGossipExchange(t *testing.T) {
+	// Clean up any leftover test data to prevent cross-test contamination
+	os.RemoveAll("data")
+
 	// Create 3 iOS devices
 	device1 := NewIPhone("device1-uuid")
 	device2 := NewIPhone("device2-uuid")
@@ -96,6 +99,9 @@ func TestIOSGossipExchange(t *testing.T) {
 
 // TestIOSGossipPersistence verifies that mesh view survives device restart
 func TestIOSGossipPersistence(t *testing.T) {
+	// Clean up any leftover test data to prevent cross-test contamination
+	os.RemoveAll("data")
+
 	// Create device and get mesh view
 	device1 := NewIPhone("device1-persist-uuid")
 	if device1 == nil {
@@ -155,6 +161,9 @@ func TestIOSGossipPersistence(t *testing.T) {
 
 // TestIOSGossipNeighborSelection verifies that iOS devices select neighbors deterministically
 func TestIOSGossipNeighborSelection(t *testing.T) {
+	// Clean up any leftover test data to prevent cross-test contamination
+	os.RemoveAll("data")
+
 	device := NewIPhone("device-neighbor-uuid")
 	if device == nil {
 		t.Fatal("Failed to create iPhone device")

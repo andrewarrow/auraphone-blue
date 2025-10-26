@@ -18,6 +18,9 @@ type MessageRouter struct {
 	onProfileNeeded  func(deviceID string, version int32)
 	onPhotoRequest   func(senderUUID string, req *proto.PhotoRequestMessage)
 	onProfileRequest func(senderUUID string, req *proto.ProfileRequestMessage)
+
+	// Callback to store hardware UUID → device ID mapping
+	onDeviceIDDiscovered func(hardwareUUID, deviceID string)
 }
 
 // NewMessageRouter creates a new message router
@@ -46,6 +49,11 @@ func (mr *MessageRouter) SetCallbacks(
 	mr.onProfileRequest = onProfileRequest
 }
 
+// SetDeviceIDDiscoveredCallback sets the callback for when a device ID is discovered
+func (mr *MessageRouter) SetDeviceIDDiscoveredCallback(callback func(hardwareUUID, deviceID string)) {
+	mr.onDeviceIDDiscovered = callback
+}
+
 // HandleProtocolMessage handles incoming protocol messages (gossip and requests)
 func (mr *MessageRouter) HandleProtocolMessage(senderUUID string, data []byte) error {
 	// Try GossipMessage first (most common)
@@ -71,6 +79,12 @@ func (mr *MessageRouter) HandleProtocolMessage(senderUUID string, data []byte) e
 
 // handleGossipMessage processes incoming gossip messages
 func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.GossipMessage) error {
+	// Store the mapping: hardware UUID → device ID
+	// This allows us to send requests to devices we learn about via gossip
+	if mr.onDeviceIDDiscovered != nil && gossip.SenderDeviceId != "" {
+		mr.onDeviceIDDiscovered(senderUUID, gossip.SenderDeviceId)
+	}
+
 	// Merge gossip into mesh view
 	newDiscoveries := mr.meshView.MergeGossip(gossip)
 

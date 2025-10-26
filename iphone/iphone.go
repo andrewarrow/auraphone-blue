@@ -82,6 +82,17 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		func(senderUUID string, req *proto.ProfileRequestMessage) { ip.profileHandler.HandleProfileRequest(senderUUID, req) },
 	)
 
+	// Set callback to store hardware UUID → device ID mapping when discovered via gossip
+	ip.messageRouter.SetDeviceIDDiscoveredCallback(func(hardwareUUID, deviceID string) {
+		ip.mu.Lock()
+		ip.peripheralToDeviceID[hardwareUUID] = deviceID
+		ip.mu.Unlock()
+
+		// If we received a message from this device, they must be connected to us
+		// Register them as a peripheral connection so we can send messages back
+		ip.connManager.RegisterPeripheralConnection(hardwareUUID)
+	})
+
 	// Load photo mappings and profile
 	ip.loadReceivedPhotoMappings()
 	ip.localProfile = phone.LoadLocalProfile(hardwareUUID)

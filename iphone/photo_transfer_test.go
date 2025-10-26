@@ -13,6 +13,9 @@ import (
 
 // TestIOSPhotoTransfer verifies end-to-end photo transfer between iOS devices
 func TestIOSPhotoTransfer(t *testing.T) {
+	// Clean up any leftover test data to prevent cross-test contamination
+	os.RemoveAll("data")
+
 	// Create sender and receiver
 	sender := NewIPhone("sender-uuid")
 	receiver := NewIPhone("receiver-uuid")

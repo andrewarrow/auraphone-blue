@@ -977,10 +977,11 @@ func (sw *Wire) sendCharacteristicMessageViaRole(roleConn *RoleConnection, targe
 
 // dispatchMessage routes incoming messages to handlers or queues them
 func (sw *Wire) dispatchMessage(msg *CharacteristicMessage) {
-	// Handle subscription operations specially (they update connection state, not application logic)
+	// Handle subscription operations specially (they update connection state at wire level)
+	// But still dispatch them to the message queue so CBPeripheralManager can process them
 	if msg.Operation == "subscribe" || msg.Operation == "unsubscribe" {
 		sw.handleSubscriptionMessage(msg)
-		return
+		// Continue to dispatch - don't return yet
 	}
 
 	// Handle subscription acknowledgments (informational only, no action needed)
