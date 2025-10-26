@@ -986,6 +986,11 @@ func (sw *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, d
 		SenderUUID:  sw.localUUID,
 	}
 
+	// Log TX notification (matches WriteCharacteristic logging pattern)
+	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		fmt.Sprintf("📤 TX Notify (to %s, svc=%s, char=%s, %d bytes)",
+			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
+
 	// Simulate notification drops
 	if sw.simulator.ShouldNotificationDrop() {
 		logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
@@ -998,7 +1003,12 @@ func (sw *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, d
 		delay := sw.simulator.NotificationDeliveryDelay()
 		go func() {
 			time.Sleep(delay)
-			sw.sendCharacteristicMessage(targetUUID, &msg)
+			// CRITICAL: Log and handle errors from async send
+			// Previously, errors were silently swallowed causing all notifications to fail invisibly
+			if err := sw.sendCharacteristicMessage(targetUUID, &msg); err != nil {
+				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+					"❌ Notification transmission FAILED to %s (async): %v", targetUUID[:8], err)
+			}
 		}()
 		return nil
 	}
