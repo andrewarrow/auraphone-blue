@@ -305,6 +305,10 @@ func TestConcurrentPollingDoesNotLoseMessages(t *testing.T) {
 	// Wait for subscription to be processed
 	time.Sleep(50 * time.Millisecond)
 
+	// Drain the subscribe message from Device1's peripheral_inbox
+	// (subscribe messages are now queued so CBPeripheralManager can process them)
+	wire1.ReadAndConsumeCharacteristicMessagesFromInbox("peripheral_inbox")
+
 	// Send 100 messages alternating between writes and notifies
 	for i := 0; i < 50; i++ {
 		// Send write (should go to peripheral_inbox)
