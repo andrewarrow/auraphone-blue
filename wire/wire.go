@@ -558,89 +558,11 @@ func (sw *Wire) Disconnect(targetUUID string) error {
 	return nil
 }
 
-// SendToDevice sends data to a target device via socket (backward compatibility - tries any connection)
+// SendToDevice sends data via Central connection (deprecated - use SendToDeviceViaRole)
+// This exists for compatibility with old code that doesn't specify role
 func (sw *Wire) SendToDevice(targetUUID string, data []byte) error {
-	// Try to find any connection to this device (prefer Central, fallback to Peripheral)
-	sw.connMutex.RLock()
-	centralKey := connectionKey(targetUUID, ConnectionRoleCentral)
-	peripheralKey := connectionKey(targetUUID, ConnectionRolePeripheral)
-
-	connection := sw.connections[centralKey]
-	key := centralKey
-	if connection == nil {
-		connection = sw.connections[peripheralKey]
-		key = peripheralKey
-	}
-
-	sendMutex := sw.connectionSendMutex[key]
-	sw.connMutex.RUnlock()
-
-	if connection == nil {
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
-	}
-
-	// Lock per-connection mutex to prevent concurrent writes to the same socket
-	// This allows Device A→B and Device C→D to send simultaneously (realistic)
-	if sendMutex != nil {
-		sendMutex.Lock()
-		defer sendMutex.Unlock()
-	}
-
-	// Fragment data based on connection-specific MTU for realistic BLE simulation
-	fragments := sw.simulator.FragmentData(data, connection.mtu)
-
-	// Send complete message length first (so receiver knows total size)
-	totalLen := uint32(len(data))
-	if err := binary.Write(connection.conn, binary.BigEndian, totalLen); err != nil {
-		return fmt.Errorf("failed to write message length: %w", err)
-	}
-
-	// Send each fragment with realistic BLE timing and packet loss
-	for i, fragment := range fragments {
-		// Inter-packet delay (realistic BLE timing)
-		if i > 0 {
-			time.Sleep(2 * time.Millisecond)
-		}
-
-		// Simulate packet loss with retries
-		var lastErr error
-		for attempt := 0; attempt <= sw.simulator.config.MaxRetries; attempt++ {
-			if attempt > 0 {
-				time.Sleep(time.Duration(sw.simulator.config.RetryDelay) * time.Millisecond)
-				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-					"🔄 Retrying packet to %s (attempt %d/%d, fragment %d/%d)",
-					targetUUID[:8], attempt+1, sw.simulator.config.MaxRetries+1, i+1, len(fragments))
-			}
-
-			// Simulate packet loss
-			if !sw.simulator.ShouldPacketSucceed() && attempt < sw.simulator.config.MaxRetries {
-				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-					"📉 Simulated packet loss to %s (attempt %d/%d, fragment %d/%d)",
-					targetUUID[:8], attempt+1, sw.simulator.config.MaxRetries+1, i+1, len(fragments))
-				lastErr = fmt.Errorf("packet loss (attempt %d/%d)", attempt+1, sw.simulator.config.MaxRetries+1)
-				continue
-			}
-
-			// Write fragment data (no per-fragment length prefix)
-			if _, err := connection.conn.Write(fragment); err != nil {
-				lastErr = fmt.Errorf("failed to write fragment: %w", err)
-				continue
-			}
-
-			// Success
-			lastErr = nil
-			break
-		}
-
-		if lastErr != nil {
-			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"❌ Failed to send fragment %d/%d to %s after %d retries: %v",
-				i+1, len(fragments), targetUUID[:8], sw.simulator.config.MaxRetries, lastErr)
-			return lastErr
-		}
-	}
-
-	return nil
+	// Default to Central role for backward compatibility
+	return sw.SendToDeviceViaRole(targetUUID, data, ConnectionRoleCentral)
 }
 
 // SendToDeviceViaRole sends data using a specific connection role (for dual connections)
@@ -714,50 +636,26 @@ func (sw *Wire) SendToDeviceViaRole(targetUUID string, data []byte, role Connect
 	return nil
 }
 
-// WriteCharacteristic sends a write request to target device (backward compatibility - tries any connection)
+// WriteCharacteristic writes to a characteristic as Central (must have Central connection)
 func (sw *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
-	// Try to find any connection (prefer Central since writes are typically from Central)
-	sw.connMutex.RLock()
-	centralKey := connectionKey(targetUUID, ConnectionRoleCentral)
-	peripheralKey := connectionKey(targetUUID, ConnectionRolePeripheral)
-
-	hasCentral := sw.connections[centralKey] != nil
-	hasPeripheral := sw.connections[peripheralKey] != nil
-	sw.connMutex.RUnlock()
-
-	if !hasCentral && !hasPeripheral {
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
-	}
-
-	msg := CharacteristicMessage{
-		Operation:   "write",
-		ServiceUUID: serviceUUID,
-		CharUUID:    charUUID,
-		Data:        data,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  sw.localUUID,
-	}
-
-	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		fmt.Sprintf("📤 TX Write WITH Response (to %s, svc=%s, char=%s, %d bytes)",
-			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
-
-	return sw.sendCharacteristicMessage(targetUUID, &msg)
+	return sw.WriteCharacteristicAsRole(targetUUID, serviceUUID, charUUID, data, ConnectionRoleCentral)
 }
 
-// WriteCharacteristicNoResponse sends a write without waiting for response (backward compatibility)
+// WriteCharacteristicNoResponse sends a write without waiting for response as Central
 func (sw *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID string, data []byte) error {
-	// Check if we have any connection
+	// Check if connection exists for Central role
+	key := connectionKey(targetUUID, ConnectionRoleCentral)
 	sw.connMutex.RLock()
-	centralKey := connectionKey(targetUUID, ConnectionRoleCentral)
-	peripheralKey := connectionKey(targetUUID, ConnectionRolePeripheral)
-
-	hasCentral := sw.connections[centralKey] != nil
-	hasPeripheral := sw.connections[peripheralKey] != nil
+	connection, exists := sw.connections[key]
 	sw.connMutex.RUnlock()
 
-	if !hasCentral && !hasPeripheral {
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
+	if !exists {
+		return fmt.Errorf("not connected to %s as central", targetUUID[:8])
+	}
+
+	// Enforce: Can only write if we are Central
+	if connection.role != ConnectionRoleCentral {
+		return fmt.Errorf("cannot write characteristic: connection role is %s, must be central", connection.role)
 	}
 
 	msg := CharacteristicMessage{
@@ -770,12 +668,12 @@ func (sw *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID 
 	}
 
 	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		fmt.Sprintf("📤 TX Write NO Response (to %s, svc=%s, char=%s, %d bytes)",
+		fmt.Sprintf("📤 TX Write NO Response [central] (to %s, svc=%s, char=%s, %d bytes)",
 			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
 
 	// Send asynchronously (fire and forget)
 	go func() {
-		if err := sw.sendCharacteristicMessage(targetUUID, &msg); err != nil {
+		if err := sw.sendCharacteristicMessageViaRole(targetUUID, &msg, ConnectionRoleCentral); err != nil {
 			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 				"❌ Write NO Response transmission FAILED to %s: %v", targetUUID[:8], err)
 		}
@@ -1184,58 +1082,9 @@ func (sw *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error)
 	return &advData, nil
 }
 
-// NotifyCharacteristic sends a notification (backward compatibility - tries any connection)
+// NotifyCharacteristic sends a notification as Peripheral (must have Peripheral connection)
 func (sw *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
-	// Check if we have any connection
-	sw.connMutex.RLock()
-	centralKey := connectionKey(targetUUID, ConnectionRoleCentral)
-	peripheralKey := connectionKey(targetUUID, ConnectionRolePeripheral)
-
-	hasCentral := sw.connections[centralKey] != nil
-	hasPeripheral := sw.connections[peripheralKey] != nil
-	sw.connMutex.RUnlock()
-
-	if !hasCentral && !hasPeripheral {
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
-	}
-
-	msg := CharacteristicMessage{
-		Operation:   "notify",
-		ServiceUUID: serviceUUID,
-		CharUUID:    charUUID,
-		Data:        data,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  sw.localUUID,
-	}
-
-	// Log TX notification (matches WriteCharacteristic logging pattern)
-	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		fmt.Sprintf("📤 TX Notify (to %s, svc=%s, char=%s, %d bytes)",
-			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
-
-	// Simulate notification drops
-	if sw.simulator.ShouldNotificationDrop() {
-		logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"📉 Notification DROPPED (realistic BLE behavior, %d bytes lost)", len(data))
-		return nil
-	}
-
-	// Simulate notification latency
-	if sw.simulator.EnableNotificationReordering() {
-		delay := sw.simulator.NotificationDeliveryDelay()
-		go func() {
-			time.Sleep(delay)
-			// CRITICAL: Log and handle errors from async send
-			// Previously, errors were silently swallowed causing all notifications to fail invisibly
-			if err := sw.sendCharacteristicMessage(targetUUID, &msg); err != nil {
-				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-					"❌ Notification transmission FAILED to %s (async): %v", targetUUID[:8], err)
-			}
-		}()
-		return nil
-	}
-
-	return sw.sendCharacteristicMessage(targetUUID, &msg)
+	return sw.NotifyCharacteristicAsRole(targetUUID, serviceUUID, charUUID, data, ConnectionRolePeripheral)
 }
 
 // WriteCharacteristicAsRole writes to a characteristic using a specific connection role
@@ -1302,6 +1151,26 @@ func (sw *Wire) NotifyCharacteristicAsRole(targetUUID, serviceUUID, charUUID str
 	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 		fmt.Sprintf("📤 TX Notify [%s] (to %s, svc=%s, char=%s, %d bytes)",
 			role, targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
+
+	// Simulate notification drops (realistic BLE behavior)
+	if sw.simulator.ShouldNotificationDrop() {
+		logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"📉 Notification DROPPED (realistic BLE behavior, %d bytes lost)", len(data))
+		return nil
+	}
+
+	// Simulate notification latency
+	if sw.simulator.EnableNotificationReordering() {
+		delay := sw.simulator.NotificationDeliveryDelay()
+		go func() {
+			time.Sleep(delay)
+			if err := sw.sendCharacteristicMessageViaRole(targetUUID, &msg, role); err != nil {
+				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+					"❌ Notification transmission FAILED to %s (async): %v", targetUUID[:8], err)
+			}
+		}()
+		return nil
+	}
 
 	return sw.sendCharacteristicMessageViaRole(targetUUID, &msg, role)
 }
