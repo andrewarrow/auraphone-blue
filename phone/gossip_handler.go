@@ -151,7 +151,7 @@ func CalculateProfileSummaryHash(profile *LocalProfile) []byte {
 }
 
 // RequestPhoto requests a photo from a device (triggered by gossip)
-func (gh *GossipHandler) RequestPhoto(deviceID, photoHash string) {
+func (gh *GossipHandler) RequestPhoto(deviceID, photoHash string) error {
 	device := gh.device
 	prefix := fmt.Sprintf("%s %s", device.GetHardwareUUID()[:8], device.GetPlatform())
 	logger.Info(prefix, "📸 Requesting photo %s from device %s (via gossip)", TruncateHash(photoHash, 8), deviceID[:8])
@@ -167,7 +167,7 @@ func (gh *GossipHandler) RequestPhoto(deviceID, photoHash string) {
 	data, err := proto2.Marshal(req)
 	if err != nil {
 		logger.Error(prefix, "❌ Failed to marshal photo request: %v", err)
-		return
+		return fmt.Errorf("failed to marshal photo request: %w", err)
 	}
 
 	// Get hardware UUID from mesh view (learned via gossip)
@@ -176,23 +176,22 @@ func (gh *GossipHandler) RequestPhoto(deviceID, photoHash string) {
 
 	if targetUUID == "" {
 		logger.Warn(prefix, "⚠️  Cannot request photo: don't know hardware UUID for device %s", deviceID[:8])
-		return
+		return fmt.Errorf("hardware UUID not known for device %s", deviceID)
 	}
 
 	// Send request
 	connManager := device.GetConnManager()
 	if err := connManager.SendToDevice(targetUUID, AuraProtocolCharUUID, data); err != nil {
 		logger.Error(prefix, "❌ Failed to send photo request: %v", err)
-		return
+		return fmt.Errorf("failed to send photo request: %w", err)
 	}
 
-	meshView = device.GetMeshView()
-	meshView.MarkPhotoRequested(deviceID)
 	logger.Debug(prefix, "📤 Sent photo request for %s", TruncateHash(photoHash, 8))
+	return nil
 }
 
 // RequestProfile requests a profile from a device (triggered by gossip)
-func (gh *GossipHandler) RequestProfile(deviceID string, version int32) {
+func (gh *GossipHandler) RequestProfile(deviceID string, version int32) error {
 	device := gh.device
 	prefix := fmt.Sprintf("%s %s", device.GetHardwareUUID()[:8], device.GetPlatform())
 	logger.Info(prefix, "📝 Requesting profile v%d from device %s (via gossip)", version, deviceID[:8])
@@ -207,7 +206,7 @@ func (gh *GossipHandler) RequestProfile(deviceID string, version int32) {
 	data, err := proto2.Marshal(req)
 	if err != nil {
 		logger.Error(prefix, "❌ Failed to marshal profile request: %v", err)
-		return
+		return fmt.Errorf("failed to marshal profile request: %w", err)
 	}
 
 	// Get hardware UUID from mesh view (learned via gossip)
@@ -216,19 +215,18 @@ func (gh *GossipHandler) RequestProfile(deviceID string, version int32) {
 
 	if targetUUID == "" {
 		logger.Warn(prefix, "⚠️  Cannot request profile: don't know hardware UUID for device %s", deviceID[:8])
-		return
+		return fmt.Errorf("hardware UUID not known for device %s", deviceID)
 	}
 
 	// Send request
 	connManager := device.GetConnManager()
 	if err := connManager.SendToDevice(targetUUID, AuraProtocolCharUUID, data); err != nil {
 		logger.Error(prefix, "❌ Failed to send profile request: %v", err)
-		return
+		return fmt.Errorf("failed to send profile request: %w", err)
 	}
 
-	meshView = device.GetMeshView()
-	meshView.MarkProfileRequested(deviceID)
 	logger.Debug(prefix, "📤 Sent profile request for v%d", version)
+	return nil
 }
 
 // PruneNonNeighborConnections disconnects from devices that are not our neighbors

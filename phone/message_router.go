@@ -14,8 +14,8 @@ type MessageRouter struct {
 	photoCoordinator *PhotoTransferCoordinator
 
 	// Callbacks for device-specific actions
-	onPhotoNeeded    func(deviceID, photoHash string)
-	onProfileNeeded  func(deviceID string, version int32)
+	onPhotoNeeded    func(deviceID, photoHash string) error
+	onProfileNeeded  func(deviceID string, version int32) error
 	onPhotoRequest   func(senderUUID string, req *proto.PhotoRequestMessage)
 	onProfileRequest func(senderUUID string, req *proto.ProfileRequestMessage)
 
@@ -38,8 +38,8 @@ func NewMessageRouter(
 
 // SetCallbacks configures the callback functions
 func (mr *MessageRouter) SetCallbacks(
-	onPhotoNeeded func(deviceID, photoHash string),
-	onProfileNeeded func(deviceID string, version int32),
+	onPhotoNeeded func(deviceID, photoHash string) error,
+	onProfileNeeded func(deviceID string, version int32) error,
 	onPhotoRequest func(senderUUID string, req *proto.PhotoRequestMessage),
 	onProfileRequest func(senderUUID string, req *proto.ProfileRequestMessage),
 ) {
@@ -95,8 +95,11 @@ func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.Go
 	if mr.onPhotoNeeded != nil {
 		missingPhotos := mr.meshView.GetMissingPhotos()
 		for _, device := range missingPhotos {
-			mr.onPhotoNeeded(device.DeviceID, device.PhotoHash)
-			mr.meshView.MarkPhotoRequested(device.DeviceID)
+			err := mr.onPhotoNeeded(device.DeviceID, device.PhotoHash)
+			if err == nil {
+				// Only mark as requested if send succeeded
+				mr.meshView.MarkPhotoRequested(device.DeviceID)
+			}
 		}
 	}
 
@@ -104,8 +107,11 @@ func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.Go
 	if mr.onProfileNeeded != nil {
 		missingProfiles := mr.meshView.GetMissingProfiles()
 		for _, device := range missingProfiles {
-			mr.onProfileNeeded(device.DeviceID, device.ProfileVersion)
-			mr.meshView.MarkProfileRequested(device.DeviceID)
+			err := mr.onProfileNeeded(device.DeviceID, device.ProfileVersion)
+			if err == nil {
+				// Only mark as requested if send succeeded
+				mr.meshView.MarkProfileRequested(device.DeviceID)
+			}
 		}
 	}
 

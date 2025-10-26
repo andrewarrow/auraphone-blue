@@ -76,8 +76,8 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		ip.photoCoordinator,
 	)
 	ip.messageRouter.SetCallbacks(
-		func(deviceID, photoHash string) { ip.gossipHandler.RequestPhoto(deviceID, photoHash) },
-		func(deviceID string, version int32) { ip.gossipHandler.RequestProfile(deviceID, version) },
+		func(deviceID, photoHash string) error { return ip.gossipHandler.RequestPhoto(deviceID, photoHash) },
+		func(deviceID string, version int32) error { return ip.gossipHandler.RequestProfile(deviceID, version) },
 		func(senderUUID string, req *proto.PhotoRequestMessage) { ip.photoHandler.HandlePhotoRequest(senderUUID, req) },
 		func(senderUUID string, req *proto.ProfileRequestMessage) { ip.profileHandler.HandleProfileRequest(senderUUID, req) },
 	)

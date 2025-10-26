@@ -80,8 +80,8 @@ func NewAndroid(hardwareUUID string) *Android {
 		a.photoCoordinator,
 	)
 	a.messageRouter.SetCallbacks(
-		func(deviceID, photoHash string) { a.gossipHandler.RequestPhoto(deviceID, photoHash) },
-		func(deviceID string, version int32) { a.gossipHandler.RequestProfile(deviceID, version) },
+		func(deviceID, photoHash string) error { return a.gossipHandler.RequestPhoto(deviceID, photoHash) },
+		func(deviceID string, version int32) error { return a.gossipHandler.RequestProfile(deviceID, version) },
 		func(senderUUID string, req *proto.PhotoRequestMessage) { a.photoHandler.HandlePhotoRequest(senderUUID, req) },
 		func(senderUUID string, req *proto.ProfileRequestMessage) { a.profileHandler.HandleProfileRequest(senderUUID, req) },
 	)
