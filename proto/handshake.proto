@@ -77,3 +77,31 @@ message ProfileRequestMessage {
   string target_device_id = 2;     // Whose profile we want
   int32 expected_version = 3;      // Version number we're requesting
 }
+
+// Chunked Photo Transfer Protocol - For resilient photo delivery
+// =================================================================
+
+// Photo chunk message - single fragment of a photo transfer
+// Sized to fit within MTU after protobuf encoding overhead
+message PhotoChunkMessage {
+  string sender_device_id = 1;     // Who is sending this chunk
+  string target_device_id = 2;     // Who should receive this chunk
+  bytes photo_hash = 3;            // SHA-256 hash of COMPLETE photo (32 bytes)
+  int32 chunk_index = 4;           // Zero-based index of this chunk
+  int32 total_chunks = 5;          // Total number of chunks in transfer
+  bytes chunk_data = 6;            // Raw data for this chunk (typically 4KB)
+  int64 timestamp = 7;             // When this chunk was sent
+  uint32 chunk_crc = 8;            // CRC-32 of this chunk's data for integrity check
+}
+
+// Photo chunk acknowledgment - confirms receipt and requests missing chunks
+// Supports resume after connection loss by listing missing chunk indices
+message PhotoChunkAck {
+  string receiver_device_id = 1;    // Who is acknowledging
+  string sender_device_id = 2;      // Who sent the chunks
+  bytes photo_hash = 3;             // Which photo transfer this acks
+  int32 last_chunk_received = 4;    // Highest contiguous chunk index received
+  repeated int32 missing_chunks = 5; // List of chunk indices still needed (for resume)
+  bool transfer_complete = 6;       // True when all chunks received and verified
+  int64 timestamp = 7;              // When this ack was sent
+}

@@ -683,7 +683,61 @@ func (sw *Wire) Connect(targetUUID string) error {
 	// Start connection monitoring
 	sw.startConnectionMonitoring(targetUUID)
 
+	// Start automatic MTU negotiation in background for both connections
+	// This simulates iOS auto-negotiation and Android RequestMtu() behavior
+	go sw.negotiateMTU(centralRoleConn, targetUUID, "Central")
+	go sw.negotiateMTU(peripheralRoleConn, targetUUID, "Peripheral")
+
 	return nil
+}
+
+// negotiateMTU performs automatic MTU negotiation after connection is established
+// This simulates:
+//   - iOS: OS automatically negotiates MTU after service discovery (~500ms delay)
+//   - Android: App calls RequestMtu() after discovering services
+func (sw *Wire) negotiateMTU(roleConn *RoleConnection, targetUUID string, roleName string) {
+	// Simulate service discovery delay before MTU negotiation
+	// Real BLE: iOS takes 500ms-2s, Android varies by device
+	delay := sw.simulator.ServiceDiscoveryDelay()
+	time.Sleep(delay)
+
+	// Check if connection still exists
+	sw.connMutex.RLock()
+	dualConn, exists := sw.connections[targetUUID]
+	sw.connMutex.RUnlock()
+
+	if !exists {
+		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"⚠️  MTU negotiation skipped: connection to %s no longer exists", targetUUID[:8])
+		return
+	}
+
+	dualConn.stateMutex.RLock()
+	state := dualConn.state
+	dualConn.stateMutex.RUnlock()
+
+	if state != StateConnected {
+		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"⚠️  MTU negotiation skipped: connection to %s not in Connected state (current: %s)",
+			targetUUID[:8], state.String())
+		return
+	}
+
+	// Negotiate MTU (both sides propose their max, take minimum)
+	// iOS: typically 185 bytes, Android: 185-512 bytes
+	proposedMTU := sw.simulator.config.DefaultMTU
+	negotiatedMTU := sw.simulator.NegotiatedMTU(proposedMTU, proposedMTU)
+
+	// Update MTU for this connection
+	roleConn.sendMutex.Lock()
+	roleConn.mtu = negotiatedMTU
+	roleConn.mtuNegotiated = true
+	roleConn.mtuNegotiationTime = time.Now()
+	roleConn.sendMutex.Unlock()
+
+	logger.Info(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		"📏 MTU negotiated: %d bytes with %s [%s role] (delay: %dms)",
+		negotiatedMTU, targetUUID[:8], roleName, delay.Milliseconds())
 }
 
 // dialAndHandshake dials a socket and performs UUID handshake
