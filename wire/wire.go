@@ -923,6 +923,12 @@ func (sw *Wire) sendCharacteristicMessageViaRole(roleConn *RoleConnection, targe
 
 // dispatchMessage routes incoming messages to handlers or queues them
 func (sw *Wire) dispatchMessage(msg *CharacteristicMessage) {
+	// Handle subscription operations specially (they update connection state, not application logic)
+	if msg.Operation == "subscribe" || msg.Operation == "unsubscribe" {
+		sw.handleSubscriptionMessage(msg)
+		return
+	}
+
 	sw.handlerMutex.RLock()
 	handler, exists := sw.messageHandlers[msg.ServiceUUID+msg.CharUUID]
 	sw.handlerMutex.RUnlock()
@@ -935,6 +941,43 @@ func (sw *Wire) dispatchMessage(msg *CharacteristicMessage) {
 		sw.messageQueue = append(sw.messageQueue, msg)
 		sw.queueMutex.Unlock()
 	}
+}
+
+// handleSubscriptionMessage processes subscribe/unsubscribe requests from Central
+// This updates the subscription state on the Peripheral connection so notifications can be sent
+func (sw *Wire) handleSubscriptionMessage(msg *CharacteristicMessage) {
+	sw.connMutex.RLock()
+	dualConn := sw.connections[msg.SenderUUID]
+	sw.connMutex.RUnlock()
+
+	if dualConn == nil {
+		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"⚠️  Received %s from unknown device %s", msg.Operation, msg.SenderUUID[:8])
+		return
+	}
+
+	if dualConn.asPeripheral == nil {
+		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"⚠️  Received %s but no Peripheral connection exists to %s", msg.Operation, msg.SenderUUID[:8])
+		return
+	}
+
+	// Update subscription state on our Peripheral connection
+	// When they subscribe, we can now send notifications to them
+	key := msg.ServiceUUID + msg.CharUUID
+	dualConn.asPeripheral.subMutex.Lock()
+	if msg.Operation == "subscribe" {
+		dualConn.asPeripheral.subscriptions[key] = true
+		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"✅ Central %s subscribed to characteristic %s (svc=%s) - notifications enabled",
+			msg.SenderUUID[:8], msg.CharUUID[len(msg.CharUUID)-4:], msg.ServiceUUID[len(msg.ServiceUUID)-4:])
+	} else {
+		delete(dualConn.asPeripheral.subscriptions, key)
+		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"🔕 Central %s unsubscribed from characteristic %s (svc=%s) - notifications disabled",
+			msg.SenderUUID[:8], msg.CharUUID[len(msg.CharUUID)-4:], msg.ServiceUUID[len(msg.ServiceUUID)-4:])
+	}
+	dualConn.asPeripheral.subMutex.Unlock()
 }
 
 // ReadAndConsumeCharacteristicMessages reads and consumes queued messages
@@ -1331,6 +1374,20 @@ func (sw *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, d
 
 	if dualConn.asPeripheral == nil {
 		return fmt.Errorf("no Peripheral connection to %s (cannot notify)", targetUUID[:8])
+	}
+
+	// Check subscription state - notifications require prior subscription
+	// This matches real BLE behavior where Central must subscribe before receiving notifications
+	key := serviceUUID + charUUID
+	dualConn.asPeripheral.subMutex.RLock()
+	subscribed := dualConn.asPeripheral.subscriptions[key]
+	dualConn.asPeripheral.subMutex.RUnlock()
+
+	if !subscribed {
+		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"⚠️  Cannot notify %s: not subscribed to characteristic %s (svc=%s)",
+			targetUUID[:8], charUUID[len(charUUID)-4:], serviceUUID[len(serviceUUID)-4:])
+		return fmt.Errorf("central not subscribed to characteristic %s", charUUID[:8])
 	}
 
 	msg := CharacteristicMessage{

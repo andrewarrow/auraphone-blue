@@ -137,9 +137,27 @@ func (a *Android) setupBLE() {
 				UUID: phone.AuraServiceUUID,
 				Type: "primary",
 				Characteristics: []wire.GATTCharacteristic{
-					{UUID: phone.AuraProtocolCharUUID, Properties: []string{"read", "write", "notify"}},
-					{UUID: phone.AuraPhotoCharUUID, Properties: []string{"read", "write", "notify"}},
-					{UUID: phone.AuraProfileCharUUID, Properties: []string{"read", "write", "notify"}},
+					{
+						UUID:       phone.AuraProtocolCharUUID,
+						Properties: []string{"read", "write", "notify"},
+						Descriptors: []wire.GATTDescriptor{
+							{UUID: "00002902-0000-1000-8000-00805f9b34fb", Type: "CCCD"},
+						},
+					},
+					{
+						UUID:       phone.AuraPhotoCharUUID,
+						Properties: []string{"read", "write", "notify"},
+						Descriptors: []wire.GATTDescriptor{
+							{UUID: "00002902-0000-1000-8000-00805f9b34fb", Type: "CCCD"},
+						},
+					},
+					{
+						UUID:       phone.AuraProfileCharUUID,
+						Properties: []string{"read", "write", "notify"},
+						Descriptors: []wire.GATTDescriptor{
+							{UUID: "00002902-0000-1000-8000-00805f9b34fb", Type: "CCCD"},
+						},
+					},
 				},
 			},
 		},
