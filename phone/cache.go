@@ -14,7 +14,7 @@ import (
 
 // DeviceCacheManager manages persistent storage for device data and photos
 type DeviceCacheManager struct {
-	baseDir string // Base directory for this device's cache (e.g., "data/{uuid}/cache")
+	baseDir string // Base directory for this device's cache (e.g., "~/.auraphone-blue-data/{uuid}/cache")
 }
 
 // DeviceMetadata stores cached information about a remote device

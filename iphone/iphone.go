@@ -193,7 +193,7 @@ func (ip *iPhone) setupBLE() {
 
 func (ip *iPhone) loadReceivedPhotoMappings() {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
-	photosDir := fmt.Sprintf("data/%s/cache/photos", ip.hardwareUUID)
+	photosDir := filepath.Join(phone.GetDeviceCacheDir(ip.hardwareUUID), "photos")
 	entries, err := os.ReadDir(photosDir)
 	if err != nil {
 		return
@@ -206,7 +206,7 @@ func (ip *iPhone) loadReceivedPhotoMappings() {
 		}
 
 		photoHash := entry.Name()[:len(entry.Name())-4]
-		metadataFiles, _ := filepath.Glob(fmt.Sprintf("data/%s/cache/*_metadata.json", ip.hardwareUUID))
+		metadataFiles, _ := filepath.Glob(filepath.Join(phone.GetDeviceCacheDir(ip.hardwareUUID), "*_metadata.json"))
 
 		for _, metadataFile := range metadataFiles {
 			deviceID := filepath.Base(metadataFile)[:len(filepath.Base(metadataFile))-len("_metadata.json")]
@@ -310,7 +310,7 @@ func (ip *iPhone) SetProfilePhoto(photoPath string) error {
 	hash := sha256.Sum256(data)
 	photoHash := hex.EncodeToString(hash[:])
 
-	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", ip.hardwareUUID)
+	cachePath := filepath.Join(phone.GetDeviceCacheDir(ip.hardwareUUID), "my_photo.jpg")
 	cacheDir := filepath.Dir(cachePath)
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return err

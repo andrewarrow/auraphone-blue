@@ -640,7 +640,7 @@ func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
 	}
 
 	// Try to load from disk cache using photo hash as filename
-	cachePath := fmt.Sprintf("data/%s/cache/photos/%s.jpg", pw.phone.GetDeviceUUID(), photoHash)
+	cachePath := filepath.Join(phone.GetDeviceCacheDir(pw.phone.GetDeviceUUID()), "photos", photoHash+".jpg")
 	logger.Debug(prefix, "   └─ Attempting to load from: %s", cachePath)
 
 	// Check if file exists first
@@ -958,7 +958,7 @@ func (l *Launcher) Run() {
 
 // cleanupOldDevices removes all device directories from previous runs
 func cleanupOldDevices() error {
-	dataPath := "data"
+	dataPath := phone.GetDataDir()
 
 	// Check if data directory exists
 	if _, err := os.Stat(dataPath); os.IsNotExist(err) {

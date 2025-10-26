@@ -1,6 +1,8 @@
 package phone
 
 import (
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -9,18 +11,20 @@ import (
 var (
 	dataDir     string
 	dataDirOnce sync.Once
+	dataDirErr  error
 )
 
 // GetDataDir returns the centralized data directory for auraphone-blue
 // It uses ~/.auraphone-blue-data for all persistent storage
 // This ensures consistent storage location regardless of where tests/binaries are run
+// Panics if the directory cannot be created (fail fast rather than silent fallback)
 func GetDataDir() string {
 	dataDirOnce.Do(func() {
 		// Get user's home directory
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			// Fallback to ./data if we can't get home dir (should be rare)
-			dataDir = "data"
+			dataDirErr = fmt.Errorf("failed to get user home directory: %w", err)
+			log.Fatalf("FATAL: %v", dataDirErr)
 			return
 		}
 
@@ -29,8 +33,9 @@ func GetDataDir() string {
 
 		// Ensure the directory exists
 		if err := os.MkdirAll(dataDir, 0755); err != nil {
-			// Fallback to ./data if we can't create the directory
-			dataDir = "data"
+			dataDirErr = fmt.Errorf("failed to create data directory %s: %w", dataDir, err)
+			log.Fatalf("FATAL: %v", dataDirErr)
+			return
 		}
 	})
 

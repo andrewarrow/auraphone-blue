@@ -195,7 +195,7 @@ func (a *Android) setupBLE() {
 
 func (a *Android) loadReceivedPhotoMappings() {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
-	photosDir := fmt.Sprintf("data/%s/cache/photos", a.hardwareUUID)
+	photosDir := filepath.Join(phone.GetDeviceCacheDir(a.hardwareUUID), "photos")
 	entries, err := os.ReadDir(photosDir)
 	if err != nil {
 		return
@@ -208,7 +208,7 @@ func (a *Android) loadReceivedPhotoMappings() {
 		}
 
 		photoHash := entry.Name()[:len(entry.Name())-4]
-		metadataFiles, _ := filepath.Glob(fmt.Sprintf("data/%s/cache/*_metadata.json", a.hardwareUUID))
+		metadataFiles, _ := filepath.Glob(filepath.Join(phone.GetDeviceCacheDir(a.hardwareUUID), "*_metadata.json"))
 
 		for _, metadataFile := range metadataFiles {
 			deviceID := filepath.Base(metadataFile)[:len(filepath.Base(metadataFile))-len("_metadata.json")]
@@ -321,7 +321,7 @@ func (a *Android) SetProfilePhoto(photoPath string) error {
 	hash := sha256.Sum256(data)
 	photoHash := hex.EncodeToString(hash[:])
 
-	cachePath := fmt.Sprintf("data/%s/cache/my_photo.jpg", a.hardwareUUID)
+	cachePath := filepath.Join(phone.GetDeviceCacheDir(a.hardwareUUID), "my_photo.jpg")
 	cacheDir := filepath.Dir(cachePath)
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return err
