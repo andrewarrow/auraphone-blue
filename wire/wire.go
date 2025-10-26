@@ -1610,12 +1610,45 @@ func (w *Wire) ReadCharacteristic(targetUUID, serviceUUID, charUUID string) erro
 // This provides compatibility with dual-role devices (iOS/Android) that have separate
 // central_inbox and peripheral_inbox for bidirectional communication
 //
-// In the socket implementation, there's only one message queue, so we just return all messages
-// regardless of the inbox type specified. The role-based separation was a filesystem artifact.
+// In the socket implementation, there's one unified message queue, but we need to filter
+// messages by their intended recipient role to prevent one polling loop from consuming
+// messages meant for the other role.
 func (w *Wire) ReadAndConsumeCharacteristicMessagesFromInbox(inboxType string) ([]*CharacteristicMessage, error) {
-	// In socket implementation, we don't have separate inboxes
-	// All messages go to the same queue, so just return them all
+	w.queueMutex.Lock()
+	defer w.queueMutex.Unlock()
+
 	logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-		"📬 Reading from %s (socket impl: unified queue)", inboxType)
-	return w.ReadAndConsumeCharacteristicMessages()
+		"📬 Reading from %s (filtering by role)", inboxType)
+
+	if len(w.messageQueue) == 0 {
+		return nil, nil
+	}
+
+	// Filter messages based on inbox type (operation determines which role should handle it)
+	var filtered []*CharacteristicMessage
+	var remaining []*CharacteristicMessage
+
+	for _, msg := range w.messageQueue {
+		var belongsToThisInbox bool
+
+		if inboxType == "central_inbox" {
+			// Central inbox receives notifications/indications from peripherals
+			belongsToThisInbox = (msg.Operation == "notify" || msg.Operation == "indicate")
+		} else { // "peripheral_inbox"
+			// Peripheral inbox receives writes/reads/subscribes from centrals
+			belongsToThisInbox = (msg.Operation == "write" || msg.Operation == "write_no_response" ||
+			                      msg.Operation == "read" || msg.Operation == "subscribe" || msg.Operation == "unsubscribe")
+		}
+
+		if belongsToThisInbox {
+			filtered = append(filtered, msg)
+		} else {
+			remaining = append(remaining, msg)
+		}
+	}
+
+	// Update queue to only contain messages not consumed by this call
+	w.messageQueue = remaining
+
+	return filtered, nil
 }
