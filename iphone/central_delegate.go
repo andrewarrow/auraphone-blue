@@ -64,6 +64,9 @@ func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, periphera
 	// Set delegate and discover services
 	peripheral.Delegate = ip
 	peripheral.DiscoverServices([]string{phone.AuraServiceUUID})
+
+	// Start listening for notifications from this peripheral
+	peripheral.StartListening()
 }
 
 func (ip *iPhone) DidFailToConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, err error) {

@@ -2,6 +2,7 @@ package phone
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,9 +24,9 @@ func (ph *PhotoHandler) HandlePhotoRequest(senderUUID string, req *auraphone.Pho
 
 	logger.Info(prefix, "📸 Sending our photo to %s in response to request", req.RequesterDeviceId[:8])
 
-	// Load our photo from cache
+	// Load our photo from cache (stored as my_photo.jpg by SetProfilePhoto)
 	cacheManager := device.GetCacheManager()
-	photoPath := filepath.Join("data", device.GetHardwareUUID(), "cache", "local_user_photo.jpg")
+	photoPath := filepath.Join("data", device.GetHardwareUUID(), "cache", "my_photo.jpg")
 	photoData, err := os.ReadFile(photoPath)
 	if err != nil {
 		logger.Warn(prefix, "❌ Failed to read our photo: %v", err)
@@ -117,7 +118,9 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 	// Start receive if this is the first chunk
 	recvState := coordinator.GetReceiveState(deviceID)
 	if recvState == nil {
-		coordinator.StartReceive(deviceID, string(chunk.PhotoHash), int(chunk.TotalChunks))
+		// Convert binary photo hash to hex string for storage
+		photoHashHex := hex.EncodeToString(chunk.PhotoHash)
+		coordinator.StartReceive(deviceID, photoHashHex, int(chunk.TotalChunks))
 	}
 
 	// Record this chunk
@@ -143,8 +146,10 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 
 		// Verify hash
 		calculatedHash := sha256.Sum256(photoData)
-		if string(calculatedHash[:]) != recvState.PhotoHash {
-			logger.Warn(prefix, "❌ Photo hash mismatch from %s", deviceID[:8])
+		calculatedHashHex := hex.EncodeToString(calculatedHash[:])
+		if calculatedHashHex != recvState.PhotoHash {
+			logger.Warn(prefix, "❌ Photo hash mismatch from %s (expected %s, got %s)",
+				deviceID[:8], recvState.PhotoHash[:8], calculatedHashHex[:8])
 			coordinator.FailReceive(deviceID, "photo hash mismatch")
 			return
 		}
