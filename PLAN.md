@@ -173,130 +173,36 @@ protoc --go_out=. --go_opt=paths=source_relative handshake.proto
 
 ---
 
-### Phase 2: Shared Infrastructure (phone/ package)
+### Phase 2: Shared Infrastructure (phone/ package) ✅ COMPLETE
 
-**Step 2.1**: Enhance `MeshView` (`phone/mesh_view.go`)
-- [ ] Add `ProfileVersion int32` to `MeshDeviceState`
-- [ ] Add `ProfileSummaryHash string` to `MeshDeviceState`
-- [ ] Add `HaveProfile bool` to `MeshDeviceState`
-- [ ] Add `ProfileRequestSent bool` to `MeshDeviceState`
-- [ ] Update `UpdateDevice()` to accept `profileVersion` and `profileSummaryHash`
-- [ ] Update `MergeGossip()` to detect profile changes (version diff or hash diff)
-- [ ] Add `GetMissingProfiles() []*MeshDeviceState` - returns devices whose profiles we need
-- [ ] Add `MarkProfileRequested(deviceID string)`
-- [ ] Add `MarkProfileReceived(deviceID string, version int32)`
-- [ ] Update `BuildGossipMessage()` to include profile_version and profile_summary_hash
+**Step 2.1**: Enhance `MeshView` (`phone/mesh_view.go`) ✅ COMPLETE
+- [x] Add `ProfileVersion int32` to `MeshDeviceState`
+- [x] Add `ProfileSummaryHash string` to `MeshDeviceState`
+- [x] Add `HaveProfile bool` to `MeshDeviceState`
+- [x] Add `ProfileRequestSent bool` to `MeshDeviceState`
+- [x] Update `UpdateDevice()` to accept `profileVersion` and `profileSummaryHash`
+- [x] Update `MergeGossip()` to detect profile changes (version diff or hash diff)
+- [x] Add `GetMissingProfiles() []*MeshDeviceState` - returns devices whose profiles we need
+- [x] Add `MarkProfileRequested(deviceID string)`
+- [x] Add `MarkProfileReceived(deviceID string, version int32)`
+- [x] Update `BuildGossipMessage()` to include profile_version and profile_summary_hash
 
-**Step 2.2**: Create `phone/message_router.go` (NEW FILE)
-```go
-// MessageRouter handles incoming protocol messages and routes to appropriate handlers
-type MessageRouter struct {
-    meshView         *MeshView
-    cacheManager     *DeviceCacheManager
-    photoCoordinator *PhotoTransferCoordinator
+**Step 2.2**: Create `phone/message_router.go` (NEW FILE) ✅ COMPLETE
+- [x] Created MessageRouter struct with mesh view, cache manager, photo coordinator
+- [x] Implemented HandleProtocolMessage() for routing gossip/handshake/request messages
+- [x] Implemented handleGossipMessage() with photo/profile need detection
+- [x] Implemented handlePhotoRequest() and handleProfileRequest()
+- [x] Added handleLegacyHandshake() for backwards compatibility
+- [x] Set up callback system for onPhotoNeeded and onProfileNeeded
 
-    // Callbacks for device-specific actions
-    onPhotoNeeded    func(deviceID, photoHash string)
-    onProfileNeeded  func(deviceID string, version int32)
-}
-
-func (mr *MessageRouter) HandleProtocolMessage(senderUUID string, data []byte) error {
-    // Detect message type by trying to unmarshal
-    // Try GossipMessage first (most common)
-    gossip := &proto.GossipMessage{}
-    if err := proto.Unmarshal(data, gossip); err == nil && gossip.SenderDeviceId != "" {
-        return mr.handleGossipMessage(senderUUID, gossip)
-    }
-
-    // Try HandshakeMessage (for backwards compat during transition - REMOVE LATER)
-    handshake := &proto.HandshakeMessage{}
-    if err := proto.Unmarshal(data, handshake); err == nil && handshake.DeviceId != "" {
-        return mr.handleLegacyHandshake(senderUUID, handshake)
-    }
-
-    return fmt.Errorf("unknown protocol message type")
-}
-
-func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.GossipMessage) error {
-    // Merge gossip into mesh view
-    newDiscoveries := mr.meshView.MergeGossip(gossip)
-
-    // Check for missing photos
-    missingPhotos := mr.meshView.GetMissingPhotos()
-    for _, device := range missingPhotos {
-        mr.onPhotoNeeded(device.DeviceID, device.PhotoHash)
-    }
-
-    // Check for missing/updated profiles
-    missingProfiles := mr.meshView.GetMissingProfiles()
-    for _, device := range missingProfiles {
-        mr.onProfileNeeded(device.DeviceID, device.ProfileVersion)
-    }
-
-    return nil
-}
-```
-
-**Step 2.3**: Create `phone/connection_manager.go` (NEW FILE)
-```go
-// ConnectionManager tracks dual-role connections and provides unified send interface
-type ConnectionManager struct {
-    hardwareUUID string
-
-    // Connection tracking
-    centralConnections    map[string]interface{} // remoteUUID -> peripheral/gatt object
-    peripheralConnections map[string]bool        // remoteUUID -> true (devices that connected to us)
-
-    // Role-specific senders
-    sendViaCentral    func(remoteUUID, charUUID string, data []byte) error
-    sendViaPeripheral func(remoteUUID, charUUID string, data []byte) error
-
-    mu sync.RWMutex
-}
-
-func (cm *ConnectionManager) SendToDevice(remoteUUID, charUUID string, data []byte) error {
-    cm.mu.RLock()
-    defer cm.mu.RUnlock()
-
-    // Check if we're connected as Central
-    if _, exists := cm.centralConnections[remoteUUID]; exists {
-        return cm.sendViaCentral(remoteUUID, charUUID, data)
-    }
-
-    // Check if we're connected as Peripheral
-    if cm.peripheralConnections[remoteUUID] {
-        return cm.sendViaPeripheral(remoteUUID, charUUID, data)
-    }
-
-    return fmt.Errorf("not connected to %s", remoteUUID[:8])
-}
-
-func (cm *ConnectionManager) GetAllConnectedUUIDs() []string {
-    cm.mu.RLock()
-    defer cm.mu.RUnlock()
-
-    uuids := []string{}
-    for uuid := range cm.centralConnections {
-        uuids = append(uuids, uuid)
-    }
-    for uuid := range cm.peripheralConnections {
-        // Avoid duplicates (shouldn't happen, but be defensive)
-        if _, exists := cm.centralConnections[uuid]; !exists {
-            uuids = append(uuids, uuid)
-        }
-    }
-    return uuids
-}
-
-func (cm *ConnectionManager) IsConnected(remoteUUID string) bool {
-    cm.mu.RLock()
-    defer cm.mu.RUnlock()
-
-    _, inCentral := cm.centralConnections[remoteUUID]
-    inPeripheral := cm.peripheralConnections[remoteUUID]
-    return inCentral || inPeripheral
-}
-```
+**Step 2.3**: Create `phone/connection_manager.go` (NEW FILE) ✅ COMPLETE
+- [x] Created ConnectionManager struct for dual-role tracking
+- [x] Implemented RegisterCentralConnection/UnregisterCentralConnection
+- [x] Implemented RegisterPeripheralConnection/UnregisterPeripheralConnection
+- [x] Implemented SendToDevice() with automatic role detection
+- [x] Implemented GetAllConnectedUUIDs() with deduplication
+- [x] Implemented IsConnected(), IsConnectedAsCentral(), IsConnectedAsPeripheral()
+- [x] Added GetCentralConnection() and GetConnectionCount() helpers
 
 ---
 

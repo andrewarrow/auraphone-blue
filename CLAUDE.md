@@ -8,8 +8,9 @@ and act like real phones. They cache things to disk. When they start up if that 
 then they have no photo to display. No cheating and just using the fact that the test photos are in
 testdata/*.jpg and you know the path and could just display the photo.
 
-its ok to make iphone/iphone.go and android/android.go not share any code and be very UN-dry
-but also ok to let them share code in phone/ pacakge
+its ok to make iphone/iphone.go and android/android.go not share any code and be very UN-dry 
+if they are doing things with their respecitive swift/ and kotlin/ libraries. But if possible
+ok to let them share code in phone/ package.
 
 testdata/hardware_uuids.txt are the never changing UUIDs of the bluetooth radio. Make sure
 no logic uses these to map a device when it should be using the base36 device id. The only time
