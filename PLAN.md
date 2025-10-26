@@ -1072,3 +1072,23 @@ A ←→ B ←→ C ←→ D
    - Pro: Faster bootstrap, remember devices seen while offline
    - Con: Stale data, need expiration logic
    - **Decision**: Already implemented in `mesh_view.go`, keep it
+
+---
+
+## Implementation Notes
+
+### No Legacy Support Required
+**Date**: 2025-10-26
+
+Since this is a new system with no existing users, we can implement gossip protocol cleanly **without backwards compatibility for handshakes**. All references to "will be removed once devices migrate" or "backwards compatibility" can be ignored.
+
+**What this means**:
+- ❌ No need to support `HandshakeMessage` in parallel with `GossipMessage`
+- ❌ No dual-mode operation period
+- ✅ Go directly to gossip-only mode from day one
+- ✅ Simpler code, fewer edge cases
+- ✅ `MessageRouter.HandleProtocolMessage()` already implements gossip-only (no legacy handshake support)
+
+**Changes already applied**:
+- Removed `handleLegacyHandshake()` from `phone/message_router.go`
+- `HandleProtocolMessage()` only handles: GossipMessage, PhotoRequestMessage, ProfileRequestMessage
