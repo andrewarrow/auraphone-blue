@@ -1915,16 +1915,16 @@ func (a *Android) sendPhotoToDevice(targetUUID string, remoteRxPhotoHash string)
 	const auraServiceUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
 	const auraPhotoCharUUID = "E621E1F8-C36C-495A-93FC-0C247A3E6E5E"
 
-	// Send metadata packet
+	// Send metadata packet via notification (server mode sends to subscribed centrals)
 	metadata := phototransfer.EncodeMetadata(uint32(len(photoData)), totalCRC, uint16(len(chunks)), nil)
-	if err := a.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, metadata); err != nil {
+	if err := a.wire.NotifyCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, metadata); err != nil {
 		return fmt.Errorf("failed to send metadata: %w", err)
 	}
 
-	// Send chunks
+	// Send chunks via notifications
 	for i, chunk := range chunks {
 		chunkPacket := phototransfer.EncodeChunk(uint16(i), chunk)
-		if err := a.wire.WriteCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, chunkPacket); err != nil {
+		if err := a.wire.NotifyCharacteristic(targetUUID, auraServiceUUID, auraPhotoCharUUID, chunkPacket); err != nil {
 			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s (server mode): %v", i+1, len(chunks), targetUUID[:8], err)
 			return fmt.Errorf("failed to send chunk %d: %w", i, err)
 		}
