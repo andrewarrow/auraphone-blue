@@ -193,7 +193,7 @@ func (a *Android) initializePeripheralMode() {
 	}
 
 	// Add characteristics (no Permissions field, it's server-side so properties are enough)
-	textChar := &kotlin.BluetoothGattCharacteristic{
+	protocolChar := &kotlin.BluetoothGattCharacteristic{
 		UUID:       phone.AuraProtocolCharUUID,
 		Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
 	}
@@ -206,7 +206,7 @@ func (a *Android) initializePeripheralMode() {
 		Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
 	}
 
-	service.Characteristics = append(service.Characteristics, textChar, photoChar, profileChar)
+	service.Characteristics = append(service.Characteristics, protocolChar, photoChar, profileChar)
 	gattServer.AddService(service)
 
 	// Create advertiser, passing shared wire
@@ -615,10 +615,10 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 
 
 	// Enable notifications for characteristics (matches real Android behavior)
-	textChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
-	if textChar != nil {
-		if !gatt.SetCharacteristicNotification(textChar, true) {
-			logger.Error(prefix, "❌ Failed to enable notifications for text characteristic")
+	protocolChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
+	if protocolChar != nil {
+		if !gatt.SetCharacteristicNotification(protocolChar, true) {
+			logger.Error(prefix, "❌ Failed to enable notifications for protocol characteristic")
 		}
 	}
 
@@ -661,7 +661,7 @@ func (a *Android) OnCharacteristicChanged(gatt *kotlin.BluetoothGatt, characteri
 
 	// Handle based on characteristic type
 	if characteristic.UUID == phone.AuraProtocolCharUUID {
-		// Text characteristic is for HandshakeMessage only
+		// Protocol characteristic is for HandshakeMessage and GossipMessage (binary protobuf)
 		a.handleHandshakeMessage(gatt, characteristic.Value)
 	} else if characteristic.UUID == phone.AuraPhotoCharUUID {
 		// Photo characteristic is for photo transfer
@@ -677,10 +677,10 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 
 
-	// Get the text characteristic
-	textChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
-	if textChar == nil {
-		return fmt.Errorf("text characteristic not found")
+	// Get the protocol characteristic
+	protocolChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
+	if protocolChar == nil {
+		return fmt.Errorf("protocol characteristic not found")
 	}
 
 	firstName := a.localProfile.FirstName
@@ -718,9 +718,9 @@ func (a *Android) sendHandshakeMessage(gatt *kotlin.BluetoothGatt) error {
 	logger.Debug(prefix, "📤 TX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
 	// Handshake is critical - use withResponse to ensure delivery
-	textChar.Value = data
-	textChar.WriteType = kotlin.WRITE_TYPE_DEFAULT
-	success := gatt.WriteCharacteristic(textChar)
+	protocolChar.Value = data
+	protocolChar.WriteType = kotlin.WRITE_TYPE_DEFAULT
+	success := gatt.WriteCharacteristic(protocolChar)
 	if success {
 		// Record handshake timestamp on successful send (indexed by hardware UUID for connection-scoped state)
 		a.mu.Lock()

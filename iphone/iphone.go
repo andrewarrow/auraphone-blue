@@ -90,7 +90,7 @@ type iPhone struct {
 	photoCoordinator     *phone.PhotoTransferCoordinator // Photo transfer state (single source of truth)
 	manager              *swift.CBCentralManager
 	peripheralManager    *swift.CBPeripheralManager     // Peripheral mode: GATT server + advertising
-	textChar             *swift.CBMutableCharacteristic // Reference to text characteristic for notifications
+	protocolChar         *swift.CBMutableCharacteristic // Reference to protocol characteristic for notifications
 	photoChar            *swift.CBMutableCharacteristic // Reference to photo characteristic for notifications
 	profileChar          *swift.CBMutableCharacteristic // Reference to profile characteristic for notifications
 	discoveryCallback    phone.DeviceDiscoveryCallback
@@ -185,7 +185,7 @@ func (ip *iPhone) initializePeripheralMode() {
 	}
 
 	// Add characteristics and store references for sending notifications
-	ip.textChar = &swift.CBMutableCharacteristic{
+	ip.protocolChar = &swift.CBMutableCharacteristic{
 		UUID:       phone.AuraProtocolCharUUID,
 		Properties: swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
 		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
@@ -204,7 +204,7 @@ func (ip *iPhone) initializePeripheralMode() {
 		Service:    service,
 	}
 
-	service.Characteristics = []*swift.CBMutableCharacteristic{ip.textChar, ip.photoChar, ip.profileChar}
+	service.Characteristics = []*swift.CBMutableCharacteristic{ip.protocolChar, ip.photoChar, ip.profileChar}
 
 	ip.peripheralManager.AddService(service)
 }
@@ -651,7 +651,7 @@ func (ip *iPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral
 
 	// Handle based on characteristic type
 	if characteristic.UUID == phone.AuraProtocolCharUUID {
-		// Text characteristic is for HandshakeMessage only
+		// Protocol characteristic is for HandshakeMessage and GossipMessage (binary protobuf)
 		ip.handleHandshakeMessage(peripheral, characteristic.Value)
 	} else if characteristic.UUID == phone.AuraPhotoCharUUID {
 		// Photo characteristic is for photo transfer
@@ -667,10 +667,10 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
 
 
-	// Get the text characteristic
-	textChar := peripheral.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
-	if textChar == nil {
-		return fmt.Errorf("text characteristic not found")
+	// Get the protocol characteristic
+	protocolChar := peripheral.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
+	if protocolChar == nil {
+		return fmt.Errorf("protocol characteristic not found")
 	}
 
 	firstName := ip.localProfile.FirstName
@@ -707,7 +707,7 @@ func (ip *iPhone) sendHandshakeMessage(peripheral *swift.CBPeripheral) error {
 	logger.Debug(prefix, "📤 TX Handshake (binary protobuf, %d bytes): %s", len(data), string(jsonData))
 
 	// Handshake is critical - use withResponse to ensure delivery
-	err = peripheral.WriteValue(data, textChar, swift.CBCharacteristicWriteWithResponse)
+	err = peripheral.WriteValue(data, protocolChar, swift.CBCharacteristicWriteWithResponse)
 	if err == nil {
 		// Record handshake timestamp on successful send (indexed by hardware UUID for connection-scoped state)
 		ip.mu.Lock()
@@ -1772,7 +1772,7 @@ func (ip *iPhone) sendHandshakeToDevice(targetUUID string) {
 
 	// Send notification to the specific central (peripheral mode)
 	central := swift.CBCentral{UUID: targetUUID}
-	if success := ip.peripheralManager.UpdateValue(data, ip.textChar, []swift.CBCentral{central}); !success {
+	if success := ip.peripheralManager.UpdateValue(data, ip.protocolChar, []swift.CBCentral{central}); !success {
 		logger.Error(prefix, "❌ Failed to send handshake notification (queue full)")
 	} else {
 		logger.Debug(prefix, "📤 Sent handshake notification to %s", targetUUID[:8])
