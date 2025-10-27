@@ -982,100 +982,94 @@ func cleanupOldDevices() error {
 	return nil
 }
 
-// runStressTest runs 2 iPhones and 2 Android devices in headless mode
-func runStressTest() {
+// runStressTest runs N phones (mix of iOS and Android) in headless mode for specified duration
+func runStressTest(numPhones int, duration time.Duration) {
 	fmt.Println("=== Auraphone Blue - Stress Test Mode ===")
-	fmt.Println("Starting 2 iOS and 2 Android devices in headless mode...")
+	fmt.Printf("Starting %d devices in headless mode for %v...\n", numPhones, duration)
 
 	// Note: Log level is already set from CLI flag in main(), don't override it here
 
 	// Create device manager for hardware UUIDs
 	manager := phone.GetHardwareUUIDManager()
 
-	// Create 2 iPhones
-	iphones := make([]phone.Phone, 2)
-	for i := 0; i < 2; i++ {
+	// Create mix of iOS and Android devices
+	// Alternate between iOS and Android (e.g., iOS, Android, iOS, Android, iOS for 5 phones)
+	phones := make([]phone.Phone, numPhones)
+	for i := 0; i < numPhones; i++ {
 		hardwareUUID, err := manager.AllocateNextUUID()
 		if err != nil {
-			fmt.Printf("ERROR: Failed to allocate UUID for iPhone %d: %v\n", i+1, err)
+			fmt.Printf("ERROR: Failed to allocate UUID for phone %d: %v\n", i+1, err)
 			return
 		}
 
-		iphones[i] = iphone.NewIPhone(hardwareUUID)
-		if iphones[i] == nil {
-			fmt.Printf("ERROR: Failed to create iPhone %d\n", i+1)
+		// Alternate between iOS and Android
+		var p phone.Phone
+		var platform string
+		if i%2 == 0 {
+			p = iphone.NewIPhone(hardwareUUID)
+			platform = "iOS"
+		} else {
+			p = android.NewAndroid(hardwareUUID)
+			platform = "Android"
+		}
+
+		if p == nil {
+			fmt.Printf("ERROR: Failed to create %s phone %d\n", platform, i+1)
 			return
 		}
 
-		// Set profile photo (face1 for first iPhone, face2 for second)
-		photoPath := fmt.Sprintf("testdata/face%d.jpg", i+1)
-		if err := iphones[i].SetProfilePhoto(photoPath); err != nil {
-			fmt.Printf("Warning: Failed to set profile photo for iPhone %d: %v\n", i+1, err)
+		// Set profile photo (cycle through face1.jpg to face12.jpg)
+		photoIndex := (i % 12) + 1
+		photoPath := fmt.Sprintf("testdata/face%d.jpg", photoIndex)
+		if err := p.SetProfilePhoto(photoPath); err != nil {
+			fmt.Printf("Warning: Failed to set profile photo for %s phone %d: %v\n", platform, i+1, err)
 		}
 
 		// Start the phone
-		iphones[i].Start()
-		fmt.Printf("Started iPhone %d (UUID: %s, Device ID: %s)\n",
-			i+1, hardwareUUID[:8], iphones[i].GetDeviceUUID()[:8])
+		p.Start()
+		phones[i] = p
+		fmt.Printf("Started %s phone %d (UUID: %s, Device ID: %s)\n",
+			platform, i+1, hardwareUUID[:8], p.GetDeviceUUID()[:8])
 	}
 
-	// Create 2 Android devices
-	androids := make([]phone.Phone, 2)
-	for i := 0; i < 2; i++ {
-		hardwareUUID, err := manager.AllocateNextUUID()
-		if err != nil {
-			fmt.Printf("ERROR: Failed to allocate UUID for Android %d: %v\n", i+1, err)
-			return
-		}
+	fmt.Printf("\nAll %d devices started.\n", numPhones)
 
-		androids[i] = android.NewAndroid(hardwareUUID)
-		if androids[i] == nil {
-			fmt.Printf("ERROR: Failed to create Android %d\n", i+1)
-			return
-		}
-
-		// Set profile photo (face3 for first Android, face4 for second)
-		photoPath := fmt.Sprintf("testdata/face%d.jpg", i+3)
-		if err := androids[i].SetProfilePhoto(photoPath); err != nil {
-			fmt.Printf("Warning: Failed to set profile photo for Android %d: %v\n", i+1, err)
-		}
-
-		// Start the phone
-		androids[i].Start()
-		fmt.Printf("Started Android %d (UUID: %s, Device ID: %s)\n",
-			i+1, hardwareUUID[:8], androids[i].GetDeviceUUID()[:8])
-	}
-
-	fmt.Println("\nAll devices started. Press Ctrl+C to stop...")
-
-	// Wait for interrupt signal
+	// Wait for duration or interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	<-sigChan
 
-	fmt.Println("\nShutting down devices...")
+	if duration > 0 {
+		fmt.Printf("Running for %v (or press Ctrl+C to stop early)...\n", duration)
+		timer := time.NewTimer(duration)
+		select {
+		case <-timer.C:
+			fmt.Println("\nDuration elapsed, shutting down...")
+		case <-sigChan:
+			timer.Stop()
+			fmt.Println("\nInterrupted, shutting down...")
+		}
+	} else {
+		fmt.Println("Running until Ctrl+C...")
+		<-sigChan
+		fmt.Println("\nShutting down devices...")
+	}
 
 	// Stop all devices
-	for i, p := range iphones {
+	for i, p := range phones {
 		if p != nil {
 			p.Stop()
-			fmt.Printf("Stopped iPhone %d\n", i+1)
+			fmt.Printf("Stopped phone %d\n", i+1)
 		}
 	}
 
-	for i, p := range androids {
-		if p != nil {
-			p.Stop()
-			fmt.Printf("Stopped Android %d\n", i+1)
-		}
-	}
-
-	fmt.Println("Stress test completed.")
+	fmt.Println("Test completed.")
 }
 
 func main() {
 	// Parse CLI flags
-	stressTest := flag.Bool("stress-test", false, "Run headless stress test with 2 iPhones and 2 Android devices")
+	headless := flag.Bool("headless", false, "Run in headless mode without GUI")
+	numPhones := flag.Int("phones", 4, "Number of phones to simulate (default: 4)")
+	duration := flag.Duration("duration", 0, "How long to run the test (e.g., 120s, 5m). 0 means run until Ctrl+C")
 	logLevel := flag.String("log-level", "TRACE", "Set log level (ERROR, WARN, INFO, DEBUG, TRACE)")
 	flag.Parse()
 
@@ -1090,9 +1084,9 @@ func main() {
 		fmt.Printf("Warning: failed to cleanup old devices: %v\n", err)
 	}
 
-	// Run in stress test mode if flag is provided
-	if *stressTest {
-		runStressTest()
+	// Run in headless mode if flag is provided
+	if *headless {
+		runStressTest(*numPhones, *duration)
 		return
 	}
 
