@@ -1134,7 +1134,7 @@ func runStressTest(numPhones int, duration time.Duration) {
 func main() {
 	// Parse CLI flags
 	headless := flag.Bool("headless", false, "Run in headless mode without GUI")
-	numPhones := flag.Int("phones", 4, "Number of phones to simulate (default: 4)")
+	numPhones := flag.Int("phones", 0, "Number of phones to auto-launch (default: 0 = launch GUI with no phones)")
 	duration := flag.Duration("duration", 0, "How long to run the test (e.g., 120s, 5m). 0 means run until Ctrl+C")
 	logLevel := flag.String("log-level", "TRACE", "Set log level (ERROR, WARN, INFO, DEBUG, TRACE)")
 	flag.Parse()
@@ -1152,6 +1152,10 @@ func main() {
 
 	// Run in headless mode if flag is provided
 	if *headless {
+		// Headless requires explicit phone count
+		if *numPhones <= 0 {
+			*numPhones = 4 // Default to 4 phones in headless mode
+		}
 		runStressTest(*numPhones, *duration)
 		return
 	}
@@ -1162,7 +1166,7 @@ func main() {
 		return
 	}
 
-	// Otherwise, run the normal GUI launcher
+	// Otherwise, run the normal GUI launcher with no phones
 	fmt.Println("Starting launcher menu...")
 	launcher := NewLauncher(*logLevel)
 	launcher.Run()
