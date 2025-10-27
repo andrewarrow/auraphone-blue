@@ -107,16 +107,26 @@ type Wire struct {
 	stopListening chan struct{}
 	stopReading   map[string]chan struct{}
 	stopMu        sync.RWMutex
+
+	// Audit logging
+	connectionEventLog  *ConnectionEventLogger
+	socketHealthMonitor *SocketHealthMonitor
 }
 
 // NewWire creates a new Wire instance
 func NewWire(hardwareUUID string) *Wire {
-	return &Wire{
+	w := &Wire{
 		hardwareUUID: hardwareUUID,
 		socketPath:   fmt.Sprintf("/tmp/auraphone-%s.sock", hardwareUUID),
 		connections:  make(map[string]*Connection),
 		stopReading:  make(map[string]chan struct{}),
 	}
+
+	// Initialize audit loggers
+	w.connectionEventLog = NewConnectionEventLogger(hardwareUUID, true)
+	w.socketHealthMonitor = NewSocketHealthMonitor(hardwareUUID)
+
+	return w
 }
 
 // Start begins listening on the Unix domain socket
@@ -132,6 +142,11 @@ func (w *Wire) Start() error {
 
 	w.listener = listener
 	w.stopListening = make(chan struct{})
+
+	// Log socket creation and initialize health monitoring
+	w.connectionEventLog.LogSocketCreated("peripheral", w.socketPath)
+	w.socketHealthMonitor.InitializeSocket("peripheral", w.socketPath)
+	w.socketHealthMonitor.StartPeriodicSnapshots()
 
 	// Accept incoming connections
 	go w.acceptConnections()
@@ -180,6 +195,13 @@ func (w *Wire) Stop() {
 	}
 	w.connections = make(map[string]*Connection)
 	w.mu.Unlock()
+
+	// Stop health monitor and log socket closure
+	if w.socketHealthMonitor != nil {
+		w.socketHealthMonitor.MarkSocketClosed("peripheral")
+		w.socketHealthMonitor.Stop()
+	}
+	w.connectionEventLog.LogSocketClosed("peripheral", "", "", "shutdown")
 
 	// Clean up socket file
 	os.Remove(w.socketPath)
@@ -239,6 +261,9 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 
 	peerUUID := string(uuidBytes)
 
+	// Log connection accepted
+	w.connectionEventLog.LogConnectionAccepted("peripheral", peerUUID, "")
+
 	// Check if already connected
 	w.mu.Lock()
 	if _, exists := w.connections[peerUUID]; exists {
@@ -256,6 +281,10 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 	w.connections[peerUUID] = connection
 	w.mu.Unlock()
 
+	// Log connection established and record in health monitor
+	w.connectionEventLog.LogConnectionEstablished("peripheral", peerUUID, "", "")
+	w.socketHealthMonitor.RecordConnection("peripheral", peerUUID)
+
 	// Notify callback
 	w.callbackMu.RLock()
 	connectCb := w.connectCallback
@@ -263,6 +292,9 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 	if connectCb != nil {
 		connectCb(peerUUID, RolePeripheral)
 	}
+
+	// Log read loop started
+	w.connectionEventLog.LogReadLoopStarted("peripheral", peerUUID, "")
 
 	// Start reading messages from this connection
 	stopChan := make(chan struct{})
@@ -318,6 +350,10 @@ func (w *Wire) Connect(peerUUID string) error {
 	w.connections[peerUUID] = connection
 	w.mu.Unlock()
 
+	// Log connection established and record in health monitor
+	w.connectionEventLog.LogConnectionEstablished("central", peerUUID, "", peerSocketPath)
+	w.socketHealthMonitor.RecordConnection("central", peerUUID)
+
 	// Notify callback
 	w.callbackMu.RLock()
 	connectCb := w.connectCallback
@@ -325,6 +361,9 @@ func (w *Wire) Connect(peerUUID string) error {
 	if connectCb != nil {
 		connectCb(peerUUID, RoleCentral)
 	}
+
+	// Log read loop started
+	w.connectionEventLog.LogReadLoopStarted("central", peerUUID, "")
 
 	// Start reading messages from this connection
 	stopChan := make(chan struct{})
@@ -340,6 +379,16 @@ func (w *Wire) Connect(peerUUID string) error {
 // readMessages continuously reads messages from a connection
 func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan chan struct{}) {
 	defer func() {
+		// Log read loop ended
+		socketType := string(connection.role)
+		if connection.role == RolePeripheral {
+			socketType = "peripheral"
+		} else {
+			socketType = "central"
+		}
+		w.connectionEventLog.LogReadLoopEnded(socketType, peerUUID, "", "connection closed")
+		w.socketHealthMonitor.RemoveConnection(socketType, peerUUID)
+
 		// Clean up on exit
 		w.mu.Lock()
 		delete(w.connections, peerUUID)
@@ -389,6 +438,15 @@ func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan ch
 			continue
 		}
 
+		// Track message received in health monitor
+		socketType := string(connection.role)
+		if connection.role == RolePeripheral {
+			socketType = "peripheral"
+		} else {
+			socketType = "central"
+		}
+		w.socketHealthMonitor.RecordMessageReceived(socketType, peerUUID)
+
 		// Call GATT handler
 		w.handlerMu.RLock()
 		handler := w.gattHandler
@@ -434,6 +492,15 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 	if err != nil {
 		return fmt.Errorf("failed to send message data: %w", err)
 	}
+
+	// Track message sent in health monitor
+	socketType := string(connection.role)
+	if connection.role == RolePeripheral {
+		socketType = "peripheral"
+	} else {
+		socketType = "central"
+	}
+	w.socketHealthMonitor.RecordMessageSent(socketType, peerUUID)
 
 	return nil
 }
