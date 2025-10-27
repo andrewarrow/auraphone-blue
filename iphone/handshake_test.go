@@ -8,8 +8,8 @@ import (
 // TestTwoIPhonesHandshake verifies that two iPhones can discover each other, connect, and exchange handshakes
 func TestTwoIPhonesHandshake(t *testing.T) {
 	// Create two iPhones
-	iphone1 := NewIPhone("11111111-1111-1111-1111-111111111111", "DEVICE01", "Alice")
-	iphone2 := NewIPhone("22222222-2222-2222-2222-222222222222", "DEVICE02", "Bob")
+	iphone1 := NewIPhone("11111111-1111-1111-1111-111111111111")
+	iphone2 := NewIPhone("22222222-2222-2222-2222-222222222222")
 
 	// Start both iPhones
 	iphone1.Start()
@@ -61,18 +61,18 @@ func TestTwoIPhonesHandshake(t *testing.T) {
 	t.Logf("   iPhone 2 received: %s (ID: %s)", handshake1.FirstName, handshake1.DeviceID)
 
 	// Verify handshake data is correct
-	if handshake1.FirstName != "Alice" {
-		t.Errorf("Expected Alice, got %s", handshake1.FirstName)
+	if handshake1.FirstName != iphone1.firstName {
+		t.Errorf("Expected %s, got %s", iphone1.firstName, handshake1.FirstName)
 	}
-	if handshake1.DeviceID != "DEVICE01" {
-		t.Errorf("Expected DEVICE01, got %s", handshake1.DeviceID)
+	if handshake1.DeviceID != iphone1.deviceID {
+		t.Errorf("Expected %s, got %s", iphone1.deviceID, handshake1.DeviceID)
 	}
 
-	if handshake2.FirstName != "Bob" {
-		t.Errorf("Expected Bob, got %s", handshake2.FirstName)
+	if handshake2.FirstName != iphone2.firstName {
+		t.Errorf("Expected %s, got %s", iphone2.firstName, handshake2.FirstName)
 	}
-	if handshake2.DeviceID != "DEVICE02" {
-		t.Errorf("Expected DEVICE02, got %s", handshake2.DeviceID)
+	if handshake2.DeviceID != iphone2.deviceID {
+		t.Errorf("Expected %s, got %s", iphone2.deviceID, handshake2.DeviceID)
 	}
 
 	// Cleanup
@@ -88,8 +88,8 @@ func TestRoleNegotiation(t *testing.T) {
 	// UUID1 = "aaaaaaaa..." > UUID2 = "11111111..."
 	// So device1 should be Central, device2 should be Peripheral
 
-	iphone1 := NewIPhone("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "DEVICEAA", "Alice")
-	iphone2 := NewIPhone("11111111-1111-1111-1111-111111111111", "DEVICE11", "Bob")
+	iphone1 := NewIPhone("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	iphone2 := NewIPhone("11111111-1111-1111-1111-111111111111")
 
 	iphone1.Start()
 	iphone2.Start()
@@ -124,9 +124,9 @@ func TestRoleNegotiation(t *testing.T) {
 
 // TestThreeIPhonesHandshake verifies that three devices can all handshake with each other
 func TestThreeIPhonesHandshake(t *testing.T) {
-	iphone1 := NewIPhone("11111111-1111-1111-1111-111111111111", "DEVICE01", "Alice")
-	iphone2 := NewIPhone("22222222-2222-2222-2222-222222222222", "DEVICE02", "Bob")
-	iphone3 := NewIPhone("33333333-3333-3333-3333-333333333333", "DEVICE03", "Charlie")
+	iphone1 := NewIPhone("11111111-1111-1111-1111-111111111111")
+	iphone2 := NewIPhone("22222222-2222-2222-2222-222222222222")
+	iphone3 := NewIPhone("33333333-3333-3333-3333-333333333333")
 
 	iphone1.Start()
 	iphone2.Start()
@@ -136,7 +136,7 @@ func TestThreeIPhonesHandshake(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	// Verify all connections established
-	checkHandshake := func(from, to *IPhone, expectedName string) {
+	checkHandshake := func(from, to *IPhone) {
 		from.mu.RLock()
 		handshake, exists := from.handshaked[to.hardwareUUID]
 		from.mu.RUnlock()
@@ -146,17 +146,17 @@ func TestThreeIPhonesHandshake(t *testing.T) {
 			return
 		}
 
-		if handshake.FirstName != expectedName {
-			t.Errorf("Expected %s, got %s", expectedName, handshake.FirstName)
+		if handshake.FirstName != to.firstName {
+			t.Errorf("Expected %s, got %s", to.firstName, handshake.FirstName)
 		}
 	}
 
-	checkHandshake(iphone1, iphone2, "Bob")
-	checkHandshake(iphone1, iphone3, "Charlie")
-	checkHandshake(iphone2, iphone1, "Alice")
-	checkHandshake(iphone2, iphone3, "Charlie")
-	checkHandshake(iphone3, iphone1, "Alice")
-	checkHandshake(iphone3, iphone2, "Bob")
+	checkHandshake(iphone1, iphone2)
+	checkHandshake(iphone1, iphone3)
+	checkHandshake(iphone2, iphone1)
+	checkHandshake(iphone2, iphone3)
+	checkHandshake(iphone3, iphone1)
+	checkHandshake(iphone3, iphone2)
 
 	t.Logf("✅ Three-way handshake successful")
 	t.Logf("   All devices connected and exchanged handshakes")
