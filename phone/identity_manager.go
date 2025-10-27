@@ -123,8 +123,15 @@ func (im *IdentityManager) MarkConnected(hardwareUUID string) {
 
 	if !wasConnected {
 		deviceID := im.hardwareToDevice[hardwareUUID]
+		deviceIDDisplay := deviceID
+		if len(deviceIDDisplay) > 8 {
+			deviceIDDisplay = deviceIDDisplay[:8]
+		}
+		if deviceIDDisplay == "" {
+			deviceIDDisplay = "(unknown)"
+		}
 		logger.Debug(im.ourHardwareUUID[:8], "Device marked as connected: hardware=%s device=%s",
-			hardwareUUID[:8], deviceID[:8])
+			hardwareUUID[:8], deviceIDDisplay)
 	}
 }
 
@@ -142,8 +149,15 @@ func (im *IdentityManager) MarkDisconnected(hardwareUUID string) {
 
 	if wasConnected {
 		deviceID := im.hardwareToDevice[hardwareUUID]
+		deviceIDDisplay := deviceID
+		if len(deviceIDDisplay) > 8 {
+			deviceIDDisplay = deviceIDDisplay[:8]
+		}
+		if deviceIDDisplay == "" {
+			deviceIDDisplay = "(unknown)"
+		}
 		logger.Debug(im.ourHardwareUUID[:8], "Device marked as disconnected: hardware=%s device=%s",
-			hardwareUUID[:8], deviceID[:8])
+			hardwareUUID[:8], deviceIDDisplay)
 	}
 }
 

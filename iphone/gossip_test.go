@@ -111,8 +111,8 @@ func TestIOSGossipPersistence(t *testing.T) {
 	mesh1 := device1.GetMeshView()
 
 	// Add some devices to mesh view
-	mesh1.UpdateDevice("DEVICE2", "uuid-2", "photohash2", "Alice", 1, "profile2")
-	mesh1.UpdateDevice("DEVICE3", "uuid-3", "photohash3", "Bob", 1, "profile3")
+	mesh1.UpdateDevice("DEVICE2", "photohash2", "Alice", 1, "profile2")
+	mesh1.UpdateDevice("DEVICE3", "photohash3", "Bob", 1, "profile3")
 
 	// Save to disk
 	if err := mesh1.SaveToDisk(); err != nil {
@@ -175,8 +175,7 @@ func TestIOSGossipNeighborSelection(t *testing.T) {
 	// Add 10 devices to mesh
 	for i := 2; i <= 11; i++ {
 		deviceID := fmt.Sprintf("DEVICE%d", i)
-		hardwareUUID := fmt.Sprintf("uuid-%d", i)
-		meshView.UpdateDevice(deviceID, hardwareUUID, "photohash", "Name", 1, "profile")
+		meshView.UpdateDevice(deviceID, "photohash", "Name", 1, "profile")
 	}
 
 	// Select neighbors twice - should be deterministic
