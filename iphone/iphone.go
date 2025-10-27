@@ -3,6 +3,7 @@ package iphone
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	"github.com/user/auraphone-blue/logger"
@@ -29,6 +30,7 @@ type IPhone struct {
 	wire            *wire.Wire
 	central         *swift.CBCentralManager
 	peripheral      *swift.CBPeripheralManager
+	identityManager *phone.IdentityManager // THE ONLY place for UUID ↔ DeviceID mapping
 
 	discovered      map[string]phone.DiscoveredDevice // hardwareUUID -> device
 	handshaked      map[string]*HandshakeMessage      // hardwareUUID -> handshake data
@@ -41,18 +43,37 @@ type IPhone struct {
 }
 
 // NewIPhone creates a new iPhone instance
-func NewIPhone(hardwareUUID string, deviceID string, firstName string) *IPhone {
+// Hardware UUID is provided, DeviceID is loaded from cache or generated
+func NewIPhone(hardwareUUID string) *IPhone {
+	// Load or generate device ID (persists to ~/.auraphone-blue-data/{uuid}/cache/device_id.json)
+	deviceID, err := phone.LoadOrGenerateDeviceID(hardwareUUID)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to load/generate device ID: %v", err))
+	}
+
+	// Generate first name from device ID (first 4 chars for now, will be customizable later)
+	firstName := deviceID[:4]
 	deviceName := fmt.Sprintf("iPhone (%s)", firstName)
 
+	// Create identity manager (tracks all hardware UUID ↔ device ID mappings)
+	dataDir := filepath.Join(phone.GetDataDir(), hardwareUUID)
+	identityManager := phone.NewIdentityManager(hardwareUUID, deviceID, dataDir)
+
+	// Load previously known device mappings from disk
+	if err := identityManager.LoadFromDisk(); err != nil {
+		logger.Warn(fmt.Sprintf("%s iOS", hardwareUUID[:8]), "Failed to load identity mappings: %v", err)
+	}
+
 	return &IPhone{
-		hardwareUUID:   hardwareUUID,
-		deviceID:       deviceID,
-		deviceName:     deviceName,
-		firstName:      firstName,
-		discovered:     make(map[string]phone.DiscoveredDevice),
-		handshaked:     make(map[string]*HandshakeMessage),
-		connectedPeers: make(map[string]*swift.CBPeripheral),
-		profile:        make(map[string]string),
+		hardwareUUID:    hardwareUUID,
+		deviceID:        deviceID,
+		deviceName:      deviceName,
+		firstName:       firstName,
+		identityManager: identityManager,
+		discovered:      make(map[string]phone.DiscoveredDevice),
+		handshaked:      make(map[string]*HandshakeMessage),
+		connectedPeers:  make(map[string]*swift.CBPeripheral),
+		profile:         make(map[string]string),
 	}
 }
 
@@ -98,6 +119,13 @@ func (ip *IPhone) Stop() {
 
 	if ip.peripheral != nil {
 		ip.peripheral.StopAdvertising()
+	}
+
+	// Save identity mappings before shutdown
+	if ip.identityManager != nil {
+		if err := ip.identityManager.SaveToDisk(); err != nil {
+			logger.Warn(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Failed to save identity mappings: %v", err)
+		}
 	}
 
 	if ip.wire != nil {
@@ -234,6 +262,9 @@ func (ip *IPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 func (ip *IPhone) DidConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral) {
 	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "✅ Connected to %s", peripheral.UUID[:8])
 
+	// Mark as connected in IdentityManager (tracks connection state by hardware UUID)
+	ip.identityManager.MarkConnected(peripheral.UUID)
+
 	// Send handshake
 	ip.sendHandshake(peripheral.UUID)
 }
@@ -244,6 +275,9 @@ func (ip *IPhone) DidFailToConnectPeripheral(central swift.CBCentralManager, per
 
 func (ip *IPhone) DidDisconnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, err error) {
 	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🔌 Disconnected from %s", peripheral.UUID[:8])
+
+	// Mark as disconnected in IdentityManager
+	ip.identityManager.MarkDisconnected(peripheral.UUID)
 
 	ip.mu.Lock()
 	delete(ip.handshaked, peripheral.UUID)
@@ -341,14 +375,24 @@ func (ip *IPhone) handleHandshake(peerUUID string, data []byte) {
 	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🤝 Received handshake from %s: %s (ID: %s)",
 		peerUUID[:8], handshake.FirstName, handshake.DeviceID)
 
+	// CRITICAL: Register the hardware UUID ↔ device ID mapping in IdentityManager
+	// This is THE ONLY place where we learn about other devices' DeviceIDs
+	ip.identityManager.RegisterDevice(peerUUID, handshake.DeviceID)
+
+	// Persist mappings to disk
+	if err := ip.identityManager.SaveToDisk(); err != nil {
+		logger.Warn(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Failed to save identity mappings: %v", err)
+	}
+
 	ip.mu.Lock()
 	alreadyHandshaked := ip.handshaked[peerUUID] != nil
 
 	// Mark handshake complete
 	ip.handshaked[peerUUID] = &handshake
 
-	// Update discovered device with real name
+	// Update discovered device with DeviceID and real name
 	if device, exists := ip.discovered[peerUUID]; exists {
+		device.DeviceID = handshake.DeviceID
 		device.Name = handshake.DeviceName
 		ip.discovered[peerUUID] = device
 
@@ -385,6 +429,10 @@ func (ip *IPhone) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
 
 func (ip *IPhone) GetDeviceUUID() string {
 	return ip.hardwareUUID
+}
+
+func (ip *IPhone) GetDeviceID() string {
+	return ip.deviceID
 }
 
 func (ip *IPhone) GetDeviceName() string {

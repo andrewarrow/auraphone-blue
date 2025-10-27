@@ -86,6 +86,7 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 	}
 
 	// Create platform-specific phone with hardware UUID (only iOS for now)
+	// NewIPhone will load/generate DeviceID and firstName internally
 	if platformType == "iOS" {
 		pw.phone = iphone.NewIPhone(hardwareUUID)
 	} else {
