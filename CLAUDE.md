@@ -1,3 +1,9 @@
+# how to read results from a run
+
+read ~/Documents/1.txt look at `ls -lR ~/.auraphone-blue-data/` gossip_audit.jsonl, socket_health.json, photo_timeline.jsonl, connection_events.jsonl, and test_report_* files. 
+
+# notes
+
 you can edit the code just please do not run go build or go run yourself. Just edit the code and tell me when you are done and I'll run go run or go build.
 
 make sure never to write logic that cheats. this program is a simulator to simulate real phones
