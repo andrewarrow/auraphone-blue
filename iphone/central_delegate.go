@@ -55,11 +55,14 @@ func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, periphera
 	logger.Info(prefix, "✅ Connected to %s (Central mode)", peripheral.UUID[:8])
 
 	// Store peripheral and register with connection manager
+	// IMPORTANT: Store a copy in the map first, then work with the stored pointer
+	// to avoid issues with the peripheral being passed by value
 	ip.mu.Lock()
 	ip.connectedPeripherals[peripheral.UUID] = &peripheral
+	storedPeripheral := ip.connectedPeripherals[peripheral.UUID]
 	ip.mu.Unlock()
 
-	ip.connManager.RegisterCentralConnection(peripheral.UUID, &peripheral)
+	ip.connManager.RegisterCentralConnection(peripheral.UUID, storedPeripheral)
 
 	// Mark device as connected in identity manager (connection manager will do this too, but this is explicit)
 	ip.identityManager.MarkConnected(peripheral.UUID)
@@ -69,12 +72,13 @@ func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, periphera
 		ip.meshView.MarkDeviceConnected(deviceID)
 	}
 
-	// Set delegate and discover services
-	peripheral.Delegate = ip
-	peripheral.DiscoverServices([]string{phone.AuraServiceUUID})
+	// Set delegate and discover services on the stored peripheral
+	storedPeripheral.Delegate = ip
+	storedPeripheral.DiscoverServices([]string{phone.AuraServiceUUID})
 
 	// Start listening for notifications from this peripheral
-	peripheral.StartListening()
+	// Use the stored pointer, not the local copy
+	storedPeripheral.StartListening()
 
 	// Retry any pending photo/profile requests for devices reachable via this connection
 	// This handles race condition where gossip arrives before connection completes
