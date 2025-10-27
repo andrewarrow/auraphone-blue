@@ -1,7 +1,6 @@
-package phone
+package main
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -10,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/auraphone-blue/proto"
+	"github.com/user/auraphone-blue/phone"
 	"github.com/user/auraphone-blue/wire"
 )
 
 // TestLateConnectionAfterGossip verifies Week 1 fix: devices don't immediately
 // try to send to devices learned via gossip before establishing direct connection
 func TestLateConnectionAfterGossip(t *testing.T) {
-	CleanupDataDir()
-	defer CleanupDataDir()
+	phone.CleanupDataDir()
+	defer phone.CleanupDataDir()
 
 	tempDir := t.TempDir()
 	config := wire.PerfectSimulationConfig()
@@ -54,12 +53,9 @@ func TestLateConnectionAfterGossip(t *testing.T) {
 	}
 
 	// Step 3: Verify A doesn't immediately try to send to C
-	// Check request queue - should have queued request for C
+	// Check request queue - should have queued request for C (or filtered by connection state)
 	queuedRequests := deviceA.requestQueue.GetPendingForDevice(deviceC.deviceID)
-	if len(queuedRequests) == 0 {
-		// This is expected if GetMissingPhotos() filters by connection state
-		t.Logf("✅ A correctly did not attempt to send to unreachable C")
-	}
+	t.Logf("✅ A has %d queued requests for unreachable C", len(queuedRequests))
 
 	// Step 4: Connect A <-> C
 	if err := deviceA.wire.Connect(deviceC.hardwareUUID); err != nil {
@@ -77,15 +73,13 @@ func TestLateConnectionAfterGossip(t *testing.T) {
 	remainingRequests := deviceA.requestQueue.GetPendingForDevice(deviceC.deviceID)
 	t.Logf("✅ Requests remaining in queue for C: %d (should be 0 or fewer after flush)", len(remainingRequests))
 
-	// Step 7: Verify no duplicate sends
-	// This is implicit - if queue was properly managed, no duplicates
 	t.Logf("✅ Late connection after gossip test passed")
 }
 
 // TestMultiHopDiscovery verifies gossip spreads across multiple hops
 func TestMultiHopDiscovery(t *testing.T) {
-	CleanupDataDir()
-	defer CleanupDataDir()
+	phone.CleanupDataDir()
+	defer phone.CleanupDataDir()
 
 	tempDir := t.TempDir()
 	config := wire.PerfectSimulationConfig()
@@ -164,17 +158,14 @@ func TestMultiHopDiscovery(t *testing.T) {
 		}
 	}
 
-	if !foundCInMissing {
-		t.Logf("Note: C not in missing photos (may already have photo or not need it)")
-	}
-
+	t.Logf("Note: C found in missing photos: %v", foundCInMissing)
 	t.Logf("✅ Multi-hop discovery test passed")
 }
 
 // TestConnectionChurn verifies system handles random connect/disconnect gracefully
 func TestConnectionChurn(t *testing.T) {
-	CleanupDataDir()
-	defer CleanupDataDir()
+	phone.CleanupDataDir()
+	defer phone.CleanupDataDir()
 
 	tempDir := t.TempDir()
 	config := wire.PerfectSimulationConfig()
@@ -223,13 +214,13 @@ func TestConnectionChurn(t *testing.T) {
 
 // TestIdentityMappingPersistence verifies identity mappings survive restart
 func TestIdentityMappingPersistence(t *testing.T) {
-	CleanupDataDir()
-	defer CleanupDataDir()
+	phone.CleanupDataDir()
+	defer phone.CleanupDataDir()
 
 	tempDir := t.TempDir()
 
 	// Step 1: Create device A, connect to B and C
-	deviceA1 := NewIdentityManager("device-a-uuid", "DEVICEA", tempDir)
+	deviceA1 := phone.NewIdentityManager("device-a-uuid", "DEVICEA", tempDir)
 	deviceA1.RegisterDevice("device-b-uuid", "DEVICEB")
 	deviceA1.RegisterDevice("device-c-uuid", "DEVICEC")
 	deviceA1.MarkConnected("device-b-uuid")
@@ -240,7 +231,7 @@ func TestIdentityMappingPersistence(t *testing.T) {
 	}
 
 	// Step 3: Restart device A (create new instance)
-	deviceA2 := NewIdentityManager("device-a-uuid", "DEVICEA", tempDir)
+	deviceA2 := phone.NewIdentityManager("device-a-uuid", "DEVICEA", tempDir)
 	if err := deviceA2.LoadFromDisk(); err != nil {
 		t.Fatalf("Failed to load identity manager: %v", err)
 	}
@@ -266,19 +257,19 @@ func TestIdentityMappingPersistence(t *testing.T) {
 
 // TestRequestQueuePersistence verifies request queue survives restart
 func TestRequestQueuePersistence(t *testing.T) {
-	CleanupDataDir()
-	defer CleanupDataDir()
+	phone.CleanupDataDir()
+	defer phone.CleanupDataDir()
 
 	tempDir := t.TempDir()
 
 	// Step 1: Create device A
-	rq1 := NewRequestQueue("device-a-uuid", tempDir)
+	rq1 := phone.NewRequestQueue("device-a-uuid", tempDir)
 
 	// Step 2: Learn about B via gossip (not connected) and queue request
-	req := &PendingRequest{
+	req := &phone.PendingRequest{
 		DeviceID:     "DEVICEB",
 		HardwareUUID: "device-b-uuid",
-		Type:         RequestTypePhoto,
+		Type:         phone.RequestTypePhoto,
 		PhotoHash:    "photo-hash-b",
 		CreatedAt:    time.Now(),
 		Attempts:     0,
@@ -298,7 +289,7 @@ func TestRequestQueuePersistence(t *testing.T) {
 	}
 
 	// Step 5: Restart device A
-	rq2 := NewRequestQueue("device-a-uuid", tempDir)
+	rq2 := phone.NewRequestQueue("device-a-uuid", tempDir)
 	if err := rq2.LoadFromDisk(); err != nil {
 		t.Fatalf("Failed to load request queue: %v", err)
 	}
@@ -327,8 +318,8 @@ func TestScaleTwentyDevices(t *testing.T) {
 		t.Skip("Skipping scale test in short mode")
 	}
 
-	CleanupDataDir()
-	defer CleanupDataDir()
+	phone.CleanupDataDir()
+	defer phone.CleanupDataDir()
 
 	tempDir := t.TempDir()
 	config := wire.PerfectSimulationConfig()
@@ -388,8 +379,8 @@ func TestScaleTwentyDevices(t *testing.T) {
 
 // TestConnectionManagerSendRouting verifies dual-role connection management
 func TestConnectionManagerSendRouting(t *testing.T) {
-	CleanupDataDir()
-	defer CleanupDataDir()
+	phone.CleanupDataDir()
+	defer phone.CleanupDataDir()
 
 	tempDir := t.TempDir()
 	config := wire.PerfectSimulationConfig()
@@ -457,11 +448,11 @@ type testDevice struct {
 	deviceID      string
 	photoHash     string
 	wire          *wire.Wire
-	meshView      *MeshView
-	identityMgr   *IdentityManager
-	requestQueue  *RequestQueue
-	messageRouter *MessageRouter
-	connMgr       *ConnectionManager
+	meshView      *phone.MeshView
+	identityMgr   *phone.IdentityManager
+	requestQueue  *phone.RequestQueue
+	messageRouter *phone.MessageRouter
+	connMgr       *phone.ConnectionManager
 }
 
 func createTestDevice(t *testing.T, hardwareUUID, deviceID, tempDir string, config *wire.SimulationConfig) *testDevice {
@@ -483,13 +474,13 @@ func createTestDevice(t *testing.T, hardwareUUID, deviceID, tempDir string, conf
 	photoHash := hex.EncodeToString(hash[:])
 
 	// Create components
-	identityMgr := NewIdentityManager(hardwareUUID, deviceID, deviceDataDir)
-	meshView := NewMeshView(deviceID, hardwareUUID, deviceDataDir, identityMgr)
-	requestQueue := NewRequestQueue(hardwareUUID, deviceDataDir)
-	connMgr := NewConnectionManager(hardwareUUID)
+	identityMgr := phone.NewIdentityManager(hardwareUUID, deviceID, deviceDataDir)
+	meshView := phone.NewMeshView(deviceID, hardwareUUID, deviceDataDir, identityMgr)
+	requestQueue := phone.NewRequestQueue(hardwareUUID, deviceDataDir)
+	connMgr := phone.NewConnectionManager(hardwareUUID)
 
 	// Create message router
-	messageRouter := NewMessageRouter(hardwareUUID, wire.PlatformIOS, deviceDataDir)
+	messageRouter := phone.NewMessageRouter(hardwareUUID, wire.PlatformIOS, deviceDataDir)
 	messageRouter.SetIdentityManager(identityMgr)
 	messageRouter.SetMeshView(meshView)
 	messageRouter.SetRequestQueue(requestQueue)
