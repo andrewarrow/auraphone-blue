@@ -103,6 +103,12 @@ func (mv *MeshView) MarkDeviceDisconnected(deviceID string) {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
 	delete(mv.connectedNeighbors, deviceID)
+
+	// Reset request flags so we retry incomplete transfers after reconnect
+	if device, exists := mv.devices[deviceID]; exists {
+		device.PhotoRequestSent = false
+		device.ProfileRequestSent = false
+	}
 }
 
 // IsDeviceConnected checks if a device is currently connected
