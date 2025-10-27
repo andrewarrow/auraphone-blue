@@ -39,7 +39,7 @@ func NewConnectionEventLogger(localUUID string, enabled bool) *ConnectionEventLo
 		return &ConnectionEventLogger{enabled: false}
 	}
 
-	deviceDir := phone.GetDeviceDir(localUUID)
+	deviceDir := phone.GetDeviceCacheDir(localUUID)
 	logPath := filepath.Join(deviceDir, "connection_events.jsonl")
 
 	return &ConnectionEventLogger{

@@ -41,7 +41,7 @@ func NewPhotoTimelineLogger(hardwareUUID string, enabled bool) *PhotoTimelineLog
 		return &PhotoTimelineLogger{enabled: false}
 	}
 
-	deviceDir := GetDeviceDir(hardwareUUID)
+	deviceDir := GetDeviceCacheDir(hardwareUUID)
 	logPath := filepath.Join(deviceDir, "photo_timeline.jsonl")
 
 	return &PhotoTimelineLogger{
