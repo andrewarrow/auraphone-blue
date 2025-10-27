@@ -410,11 +410,13 @@ func (c *PhotoTransferCoordinator) UpdateReceiveProgress(deviceID string, chunks
 }
 
 // RecordReceivedChunk stores a received chunk and updates missing chunks list
+// Handles out-of-order chunk arrival correctly
 func (c *PhotoTransferCoordinator) RecordReceivedChunk(deviceID string, chunkIndex int, chunkData []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if state, exists := c.inProgressReceives[deviceID]; exists {
+		// Store chunk by index (supports out-of-order arrival)
 		state.ReceivedChunks[chunkIndex] = chunkData
 		state.LastActivity = time.Now()
 		state.ChunksReceived = len(state.ReceivedChunks)
@@ -429,6 +431,62 @@ func (c *PhotoTransferCoordinator) RecordReceivedChunk(deviceID string, chunkInd
 
 		c.timelineLogger.LogChunkReceived(deviceID, "", state.PhotoHash[:8], chunkIndex, state.TotalChunks, len(chunkData))
 	}
+}
+
+// GetMissingChunks returns the list of chunk indices that haven't been received yet
+func (c *PhotoTransferCoordinator) GetMissingChunks(deviceID string) []int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if state, exists := c.inProgressReceives[deviceID]; exists {
+		// Return a copy of the missing chunks list
+		missing := make([]int, len(state.MissingChunks))
+		copy(missing, state.MissingChunks)
+		return missing
+	}
+
+	return nil
+}
+
+// IsReceiveComplete checks if all chunks have been received for a transfer
+func (c *PhotoTransferCoordinator) IsReceiveComplete(deviceID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if state, exists := c.inProgressReceives[deviceID]; exists {
+		return len(state.MissingChunks) == 0 && len(state.ReceivedChunks) == state.TotalChunks
+	}
+
+	return false
+}
+
+// GetReceivedChunksForAssembly returns all received chunks in order for assembly
+// Returns nil if not all chunks are received
+func (c *PhotoTransferCoordinator) GetReceivedChunksForAssembly(deviceID string) [][]byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	state, exists := c.inProgressReceives[deviceID]
+	if !exists {
+		return nil
+	}
+
+	// Check if all chunks received
+	if len(state.MissingChunks) != 0 {
+		return nil
+	}
+
+	// Assemble chunks in correct order
+	chunks := make([][]byte, state.TotalChunks)
+	for i := 0; i < state.TotalChunks; i++ {
+		chunk, hasChunk := state.ReceivedChunks[i]
+		if !hasChunk {
+			return nil // Missing chunk
+		}
+		chunks[i] = chunk
+	}
+
+	return chunks
 }
 
 // CompleteReceive marks a photo receive as successfully completed

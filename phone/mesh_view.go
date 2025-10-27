@@ -255,6 +255,7 @@ func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
 				HaveProfile:        haveProfile,
 				ProfileRequestSent: false,
 			}
+			// Only add to discoveries if this is truly new (not a re-discovery of same photo)
 			newDiscoveries = append(newDiscoveries, deviceID)
 		} else {
 			// Update if gossip has newer information
@@ -262,7 +263,7 @@ func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
 			if lastSeenTime.After(existing.LastSeenTime) {
 				// Hardware UUID is no longer stored here - it's managed by IdentityManager
 				if photoHashHex != "" && photoHashHex != existing.PhotoHash {
-					// Photo changed
+					// Photo changed - this is a NEW photo for this device
 					existing.PhotoHash = photoHashHex
 					existing.PhotoRequestSent = false
 					existing.HavePhoto = false // Need to fetch new photo
@@ -279,6 +280,7 @@ func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
 				existing.LastSeenTime = lastSeenTime
 				existing.FirstName = firstName
 			}
+			// Only add to newDiscoveries if photo or profile actually changed
 			if updated {
 				newDiscoveries = append(newDiscoveries, deviceID)
 			}
@@ -315,12 +317,16 @@ func (mv *MeshView) GetMissingPhotos() []*MeshDeviceState {
 }
 
 // MarkPhotoRequested marks that we've sent a request for this device's photo
+// This function is idempotent - calling it multiple times has no additional effect
 func (mv *MeshView) MarkPhotoRequested(deviceID string) {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
 
 	if device, exists := mv.devices[deviceID]; exists {
-		device.PhotoRequestSent = true
+		// Only set if not already set (idempotent)
+		if !device.PhotoRequestSent {
+			device.PhotoRequestSent = true
+		}
 	}
 }
 

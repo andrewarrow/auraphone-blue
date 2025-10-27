@@ -447,12 +447,14 @@ type testDevice struct {
 	hardwareUUID  string
 	deviceID      string
 	photoHash     string
+	dataDir       string
 	wire          *wire.Wire
 	meshView      *phone.MeshView
 	identityMgr   *phone.IdentityManager
 	requestQueue  *phone.RequestQueue
 	messageRouter *phone.MessageRouter
 	connMgr       *phone.ConnectionManager
+	coordinator   *phone.PhotoTransferCoordinator
 }
 
 func createTestDevice(t *testing.T, hardwareUUID, deviceID, tempDir string, config *wire.SimulationConfig) *testDevice {
@@ -491,12 +493,14 @@ func createTestDevice(t *testing.T, hardwareUUID, deviceID, tempDir string, conf
 		hardwareUUID:  hardwareUUID,
 		deviceID:      deviceID,
 		photoHash:     photoHash,
+		dataDir:       deviceDataDir,
 		wire:          w,
 		meshView:      meshView,
 		identityMgr:   identityMgr,
 		requestQueue:  requestQueue,
 		messageRouter: messageRouter,
 		connMgr:       connMgr,
+		coordinator:   photoCoordinator,
 	}
 }
 
