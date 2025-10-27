@@ -685,6 +685,9 @@ func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
 		pw.deviceImages[photoHash] = img
 		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
 		logger.Debug(prefix, "📷 Loaded cached photo %s from disk", truncateHash(photoHash, 8))
+
+		// Trigger GUI refresh so the photo actually displays
+		pw.needsRefresh = true
 	}
 }
 

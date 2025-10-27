@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
@@ -52,6 +53,11 @@ type IPhone struct {
 	connectedPeers  map[string]*swift.CBPeripheral    // hardwareUUID -> peripheral object
 	photoTransfers  map[string]*phone.PhotoTransferState // hardwareUUID -> in-progress transfer
 
+	// Gossip protocol (shared logic in phone/mesh_view.go)
+	meshView        *phone.MeshView
+	gossipTicker    *time.Ticker
+	stopGossip      chan struct{}
+
 	mu              sync.RWMutex
 	callback        phone.DeviceDiscoveryCallback
 	profilePhoto    string
@@ -82,18 +88,24 @@ func NewIPhone(hardwareUUID string) *IPhone {
 		logger.Warn(fmt.Sprintf("%s iOS", hardwareUUID[:8]), "Failed to load identity mappings: %v", err)
 	}
 
+	photoCache := phone.NewPhotoCache(hardwareUUID)
+	meshView := phone.NewMeshView(deviceID, hardwareUUID, dataDir, photoCache)
+	meshView.SetIdentityManager(identityManager)
+
 	return &IPhone{
 		hardwareUUID:    hardwareUUID,
 		deviceID:        deviceID,
 		deviceName:      deviceName,
 		firstName:       firstName,
 		identityManager: identityManager,
-		photoCache:      phone.NewPhotoCache(hardwareUUID),
+		photoCache:      photoCache,
 		photoChunker:    phone.NewPhotoChunker(),
 		discovered:      make(map[string]phone.DiscoveredDevice),
 		handshaked:      make(map[string]*HandshakeMessage),
 		connectedPeers:  make(map[string]*swift.CBPeripheral),
 		photoTransfers:  make(map[string]*phone.PhotoTransferState),
+		meshView:        meshView,
+		stopGossip:      make(chan struct{}),
 		profile:         make(map[string]string),
 	}
 }
@@ -138,11 +150,27 @@ func (ip *IPhone) Start() {
 	// Start scanning
 	ip.startScanning()
 
+	// Start gossip protocol timer (sends gossip every 5 seconds to connected peers)
+	ip.startGossipTimer()
+
 	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "✅ Started iPhone: %s (ID: %s)", ip.firstName, ip.deviceID)
 }
 
 // Stop shuts down the iPhone
 func (ip *IPhone) Stop() {
+	// Stop gossip timer first
+	if ip.gossipTicker != nil {
+		ip.gossipTicker.Stop()
+		close(ip.stopGossip)
+	}
+
+	// Save mesh view before shutdown
+	if ip.meshView != nil {
+		if err := ip.meshView.Close(); err != nil {
+			logger.Warn(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Failed to save mesh view: %v", err)
+		}
+	}
+
 	if ip.central != nil {
 		ip.central.StopScan()
 	}
@@ -340,6 +368,11 @@ func (ip *IPhone) DidDisconnectPeripheral(central swift.CBCentralManager, periph
 	// Mark as disconnected in IdentityManager
 	ip.identityManager.MarkDisconnected(peripheral.UUID)
 
+	// Mark as disconnected in mesh view
+	if deviceID, exists := ip.identityManager.GetDeviceID(peripheral.UUID); exists {
+		ip.meshView.MarkDeviceDisconnected(deviceID)
+	}
+
 	ip.mu.Lock()
 	delete(ip.handshaked, peripheral.UUID)
 	delete(ip.connectedPeers, peripheral.UUID)
@@ -377,8 +410,16 @@ func (ip *IPhone) DidReceiveWriteRequests(peripheralManager *swift.CBPeripheralM
 
 		// Handle based on characteristic
 		if request.Characteristic.UUID == phone.AuraProtocolCharUUID {
-			// Handshake message
-			ip.handleHandshake(request.Central.UUID, request.Value)
+			// Protocol characteristic receives both handshakes and gossip messages
+			// Try to distinguish by parsing as gossip first (has MeshView field)
+			var gossipMsg pb.GossipMessage
+			if proto.Unmarshal(request.Value, &gossipMsg) == nil && len(gossipMsg.MeshView) > 0 {
+				// It's a gossip message
+				ip.handleGossipMessage(request.Central.UUID, request.Value)
+			} else {
+				// It's a handshake message
+				ip.handleHandshake(request.Central.UUID, request.Value)
+			}
 		} else if request.Characteristic.UUID == phone.AuraPhotoCharUUID {
 			// Photo data
 			ip.handlePhotoData(request.Central.UUID, request.Value)
@@ -479,6 +520,10 @@ func (ip *IPhone) handleHandshake(peerUUID string, data []byte) {
 	if err := ip.identityManager.SaveToDisk(); err != nil {
 		logger.Warn(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Failed to save identity mappings: %v", err)
 	}
+
+	// Update mesh view with peer's device state
+	ip.meshView.UpdateDevice(pbHandshake.DeviceId, photoHashHex, pbHandshake.FirstName, pbHandshake.ProfileVersion)
+	ip.meshView.MarkDeviceConnected(pbHandshake.DeviceId)
 
 	ip.mu.Lock()
 	alreadyHandshaked := ip.handshaked[peerUUID] != nil
@@ -749,6 +794,9 @@ func (ip *IPhone) handlePhotoData(peerUUID string, data []byte) {
 		} else {
 			logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "💾 Saved photo to cache (hash: %s)", shortHash(savedHash))
 
+			// Mark photo as received in mesh view
+			ip.meshView.MarkPhotoReceived(chunkMsg.SenderDeviceId)
+
 			// Update discovered device with photo data
 			ip.mu.Lock()
 			if device, exists := ip.discovered[peerUUID]; exists {
@@ -843,4 +891,116 @@ func (ip *IPhone) UpdateLocalProfile(profile map[string]string) error {
 	}
 	// TODO: Step 8 - broadcast profile changes
 	return nil
+}
+
+// ============================================================================
+// Gossip Protocol Implementation
+// ============================================================================
+
+// startGossipTimer starts periodic gossip broadcasts
+func (ip *IPhone) startGossipTimer() {
+	// Send gossip every 5 seconds to all connected devices
+	ip.gossipTicker = time.NewTicker(5 * time.Second)
+
+	go func() {
+		for {
+			select {
+			case <-ip.gossipTicker.C:
+				ip.sendGossipToConnected()
+			case <-ip.stopGossip:
+				return
+			}
+		}
+	}()
+
+	logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "📡 Started gossip timer (interval: 5s)")
+}
+
+// sendGossipToConnected sends gossip to all currently connected devices
+func (ip *IPhone) sendGossipToConnected() {
+	if !ip.meshView.ShouldGossip() {
+		return // Not time yet
+	}
+
+	// Get list of connected peers
+	ip.mu.RLock()
+	connectedPeers := make([]string, 0, len(ip.connectedPeers))
+	for peerUUID := range ip.connectedPeers {
+		// Get deviceID from hardware UUID
+		if deviceID, exists := ip.identityManager.GetDeviceID(peerUUID); exists {
+			connectedPeers = append(connectedPeers, deviceID)
+		}
+	}
+	ip.mu.RUnlock()
+
+	if len(connectedPeers) == 0 {
+		return // No one to gossip with
+	}
+
+	// Build gossip message with our current mesh view
+	ip.mu.RLock()
+	photoHash := ip.photoHash
+	ip.mu.RUnlock()
+
+	gossipMsg := ip.meshView.BuildGossipMessage(photoHash)
+
+	// Send to all connected peers
+	data, err := proto.Marshal(gossipMsg)
+	if err != nil {
+		logger.Error(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to marshal gossip: %v", err)
+		return
+	}
+
+	sentCount := 0
+	for _, peerDeviceID := range connectedPeers {
+		// Get hardware UUID from device ID
+		if peerUUID, exists := ip.identityManager.GetHardwareUUID(peerDeviceID); exists {
+			err := ip.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+			if err == nil {
+				sentCount++
+			}
+		}
+	}
+
+	if sentCount > 0 {
+		logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+			"📡 Sent gossip to %d peers (%d devices in mesh)",
+			sentCount, len(gossipMsg.MeshView))
+	}
+}
+
+// handleGossipMessage processes incoming gossip from a peer
+func (ip *IPhone) handleGossipMessage(peerUUID string, data []byte) {
+	var gossipMsg pb.GossipMessage
+	err := proto.Unmarshal(data, &gossipMsg)
+	if err != nil {
+		logger.Error(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to unmarshal gossip: %v", err)
+		return
+	}
+
+	// Merge gossip into our mesh view
+	newDevices := ip.meshView.MergeGossip(&gossipMsg)
+
+	if len(newDevices) > 0 {
+		logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+			"🌐 Discovered %d new devices via gossip from %s",
+			len(newDevices), shortHash(gossipMsg.SenderDeviceId))
+	}
+
+	// Check for photos we need to request
+	missingPhotos := ip.meshView.GetMissingPhotos()
+	for _, device := range missingPhotos {
+		// Only request from directly connected devices for now
+		// TODO: Multi-hop photo routing via gossip
+		if peerUUID, exists := ip.identityManager.GetHardwareUUID(device.DeviceID); exists {
+			if ip.meshView.IsDeviceConnected(device.DeviceID) {
+				logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+					"📸 Requesting photo %s from %s (learned via gossip)",
+					shortHash(device.PhotoHash), shortHash(device.DeviceID))
+
+				ip.meshView.MarkPhotoRequested(device.DeviceID)
+				go ip.requestAndReceivePhoto(peerUUID, device.PhotoHash, device.DeviceID)
+			}
+		}
+	}
 }

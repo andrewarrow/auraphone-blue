@@ -1,15 +1,31 @@
 # PLAN_IOS.md - Making Wire + Swift Work Like Real iOS BLE
 
-## Current Status: Step 2 Complete ✅
+## Current Status: Steps 2-8 Complete + Gossip Protocol ✅
 
 We have:
-- ✅ Single socket per device: `/tmp/auraphone-{uuid}.sock`
-- ✅ Basic discovery via socket scanning
-- ✅ Minimal wire layer (326 lines)
-- ✅ Two iPhones discover each other
-- ✅ No callbacks, no indirection
+- ✅ Step 2: Basic discovery via socket scanning
+- ✅ Step 3: Single connection between devices (role negotiation)
+- ✅ Step 4: GATT message protocol (handshake, gossip, photos)
+- ✅ Step 5: Swift Central integration (scan, connect, read/write/notify)
+- ✅ Step 6: Swift Peripheral integration (advertise, accept, respond)
+- ✅ Step 7: iPhone handshake protocol (DeviceID assignment, identity mapping)
+- ✅ Step 8: Photo transfer (chunking, caching, display)
+- ✅ **Gossip Protocol**: Mesh network device/photo discovery
+  - `phone/mesh_view.go` - Shared gossip logic (400 lines)
+  - Gossip timer (5-second intervals)
+  - Gossip message routing (distinguishes from handshakes)
+  - Mesh view persistence (`cache/mesh_view.json`)
+  - Gossip audit logging (`gossip_audit.jsonl`)
+- ✅ **GUI Fix**: Cached photos now trigger UI refresh
 
-**Next Goal:** Make wire + swift packages work like real iOS CoreBluetooth without repeating the mistakes from `~/Documents/fix.txt`.
+**Current Architecture:**
+- Single socket per device: `/tmp/auraphone-{uuid}.sock`
+- Hardware UUID for wire routing, DeviceID for application logic
+- Direct delegate pattern (no callback hell)
+- Photo transfer works 100% (test report: 12/12 successful)
+- Gossip protocol integrated (multi-hop discovery ready)
+
+**Next Goal:** Test gossip with 4+ devices to verify multi-hop mesh discovery works correctly.
 
 ---
 

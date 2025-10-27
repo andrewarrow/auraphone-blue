@@ -1,24 +1,43 @@
 # Auraphone Blue - Back to Basics Refactor Plan
 
-## Current Status: Step 2 Implementation Complete ✅
+## Current Status: Gossip Protocol Implementation Complete ✅
 
 **What's implemented:**
-- ✅ New minimal `phone/phone.go` (~170 lines)
-  - `Phone` interface with Hardware UUID identification
-  - `DiscoveredDevice` struct with stub fields for GUI compatibility
-  - `HardwareUUIDManager` for UUID allocation
-  - Stub methods: `SetProfilePhoto()`, `GetLocalProfileMap()`, etc.
-- ✅ New minimal `iphone/iphone.go` (~186 lines)
-  - Uses Hardware UUID only (no DeviceID yet)
-  - Device discovery via socket scanning
-  - Stub implementations for profile/photo methods
-- ✅ New minimal `wire/wire.go` (~151 lines)
+- ✅ New minimal `phone/phone.go` with additional components:
+  - `Phone` interface with Hardware UUID + DeviceID
+  - `DiscoveredDevice` struct with photo support
+  - `IdentityManager` for UUID ↔ DeviceID mapping
+  - `PhotoCache` for content-addressed photo storage
+  - `MeshView` for gossip protocol (shared iOS/Android logic)
+  - Gossip audit logging to `gossip_audit.jsonl`
+- ✅ Full `iphone/iphone.go` implementation (~1000 lines)
+  - Hardware UUID + DeviceID (base36) identity system
+  - BLE handshake protocol with protobuf messages
+  - Photo transfer with chunking and retry logic
+  - **Gossip protocol integration** (sends/receives mesh state)
+  - Connection management (tracks connected devices)
+  - Mesh view updates on handshake, disconnect, photo receipt
+- ✅ `wire/wire.go` with realistic BLE simulation
   - Single socket per device at `/tmp/auraphone-{uuid}.sock`
-  - `ListAvailableDevices()` scans for other sockets
-  - No connections yet, just discovery
-- ✅ Updated `main.go` (removed android, kept full GUI intact)
+  - GATT message routing (handshake, gossip, photos)
+  - MTU-based fragmentation, packet loss simulation
+  - Connection state tracking
+- ✅ Updated `main.go` with GUI fixes
+  - Fixed cached photo display bug (adds refresh trigger)
+  - Full 5-tab GUI with profile/photo support
+  - Removed android (coming back later)
 
-**Next step:** Test that 2 iPhones can discover each other via socket scanning
+**Recent additions (this session):**
+- ✅ `phone/mesh_view.go` - Shared gossip logic (~400 lines)
+- ✅ Gossip timer in iphone.go (5-second intervals)
+- ✅ Gossip message handling (distinguishes from handshakes)
+- ✅ Mesh view persistence to `cache/mesh_view.json`
+- ✅ GUI fix: cached photos now trigger refresh
+
+**Next steps:**
+- Test gossip with 4+ devices to verify multi-hop discovery
+- Verify gossip_audit.jsonl logging
+- Android implementation (reuse phone/mesh_view.go)
 
 ---
 
