@@ -114,13 +114,23 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 	device := ph.device
 	prefix := fmt.Sprintf("%s %s", device.GetHardwareUUID()[:8], device.GetPlatform())
 
-	logger.Debug(prefix, "🔍 Looking up deviceID for sender: %s", senderUUID[:8])
+	// Decode protobuf chunk FIRST to get the sender's device ID
+	chunk, err := DecodePhotoChunk(data)
+	if err != nil {
+		logger.Warn(prefix, "❌ Failed to decode photo chunk from %s: %v", senderUUID[:8], err)
+		return
+	}
 
-	// Get deviceID for this sender
+	// Use device ID from the chunk itself (more reliable than UUID→DeviceID map)
+	deviceID := chunk.SenderDeviceId
+
+	logger.Debug(prefix, "🔍 Looking up deviceID for sender: %s (from chunk: %s)", senderUUID[:8], deviceID[:8])
+
+	// Verify the UUID→DeviceID mapping exists and update if needed
 	mutex := device.GetMutex()
 	mutex.RLock()
 	uuidToDeviceID := device.GetUUIDToDeviceIDMap()
-	deviceID, exists := uuidToDeviceID[senderUUID]
+	existingDeviceID, exists := uuidToDeviceID[senderUUID]
 
 	// Debug: log the entire map
 	logger.Debug(prefix, "📋 Current UUID→DeviceID map has %d entries:", len(uuidToDeviceID))
@@ -130,16 +140,16 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 	mutex.RUnlock()
 
 	if !exists {
-		logger.Warn(prefix, "⚠️  Received photo chunk from unknown device %s (full UUID: %s)", senderUUID[:8], senderUUID)
-		logger.Warn(prefix, "⚠️  Map does not contain this UUID. Map size: %d", len(uuidToDeviceID))
-		return
-	}
-
-	// Decode protobuf chunk
-	chunk, err := DecodePhotoChunk(data)
-	if err != nil {
-		logger.Warn(prefix, "❌ Failed to decode photo chunk from %s: %v", senderUUID[:8], err)
-		return
+		// Mapping doesn't exist yet - add it from the chunk data
+		logger.Debug(prefix, "📝 Adding UUID→DeviceID mapping: %s → %s (from photo chunk)", senderUUID[:8], deviceID[:8])
+		mutex.Lock()
+		uuidToDeviceID[senderUUID] = deviceID
+		mutex.Unlock()
+	} else if existingDeviceID != deviceID {
+		logger.Warn(prefix, "⚠️  Device ID mismatch for %s: map has %s, chunk has %s",
+			senderUUID[:8], existingDeviceID[:8], deviceID[:8])
+		// Use the device ID from the chunk (it's more current)
+		deviceID = existingDeviceID
 	}
 
 	logger.Debug(prefix, "📥 Photo chunk %d/%d from %s (%d bytes)",
