@@ -22,10 +22,10 @@ func TestLateConnectionAfterGossip(t *testing.T) {
 	tempDir := t.TempDir()
 	config := wire.PerfectSimulationConfig()
 
-	// Create 3 devices: A, B, C
-	deviceA := createTestDevice(t, "device-a-uuid", "DEVICEA", tempDir, config)
-	deviceB := createTestDevice(t, "device-b-uuid", "DEVICEB", tempDir, config)
-	deviceC := createTestDevice(t, "device-c-uuid", "DEVICEC", tempDir, config)
+	// Create 3 devices: A, B, C (use 8+ char device IDs for logging)
+	deviceA := createTestDevice(t, "device-a-uuid", "DEVICEAAA", tempDir, config)
+	deviceB := createTestDevice(t, "device-b-uuid", "DEVICEBBB", tempDir, config)
+	deviceC := createTestDevice(t, "device-c-uuid", "DEVICECCC", tempDir, config)
 
 	defer deviceA.wire.Cleanup()
 	defer deviceB.wire.Cleanup()
@@ -44,7 +44,7 @@ func TestLateConnectionAfterGossip(t *testing.T) {
 	deviceB.identityMgr.MarkConnected(deviceA.hardwareUUID)
 
 	// Step 2: B sends gossip about C to A (A learns C exists but not connected)
-	deviceB.meshView.UpdateDevice(deviceC.deviceID, deviceC.hardwareUUID, deviceC.photoHash, "Charlie", 1, "profile-c")
+	deviceB.meshView.UpdateDevice(deviceC.deviceID, deviceC.photoHash, "Charlie", 1, "profile-c")
 	gossipMsg := deviceB.meshView.BuildGossipMessage(deviceB.photoHash, "Bob", 1, "profile-b")
 
 	newDiscoveries := deviceA.meshView.MergeGossip(gossipMsg)
@@ -85,10 +85,10 @@ func TestMultiHopDiscovery(t *testing.T) {
 	config := wire.PerfectSimulationConfig()
 
 	// Setup: A <-> B <-> C <-> D (chain topology)
-	deviceA := createTestDevice(t, "device-a-uuid", "DEVICEA", tempDir, config)
-	deviceB := createTestDevice(t, "device-b-uuid", "DEVICEB", tempDir, config)
-	deviceC := createTestDevice(t, "device-c-uuid", "DEVICEC", tempDir, config)
-	deviceD := createTestDevice(t, "device-d-uuid", "DEVICED", tempDir, config)
+	deviceA := createTestDevice(t, "device-a-uuid", "DEVICEAAA", tempDir, config)
+	deviceB := createTestDevice(t, "device-b-uuid", "DEVICEBBB", tempDir, config)
+	deviceC := createTestDevice(t, "device-c-uuid", "DEVICECCC", tempDir, config)
+	deviceD := createTestDevice(t, "device-d-uuid", "DEVICEDDD", tempDir, config)
 
 	defer deviceA.wire.Cleanup()
 	defer deviceB.wire.Cleanup()
@@ -101,7 +101,7 @@ func TestMultiHopDiscovery(t *testing.T) {
 	connectDevices(t, deviceC, deviceD)
 
 	// Step 1: C gossips about D to B
-	deviceC.meshView.UpdateDevice(deviceD.deviceID, deviceD.hardwareUUID, deviceD.photoHash, "David", 1, "profile-d")
+	deviceC.meshView.UpdateDevice(deviceD.deviceID, deviceD.photoHash, "David", 1, "profile-d")
 	gossipC := deviceC.meshView.BuildGossipMessage(deviceC.photoHash, "Charlie", 1, "profile-c")
 	deviceB.meshView.MergeGossip(gossipC)
 
@@ -171,13 +171,13 @@ func TestConnectionChurn(t *testing.T) {
 	config := wire.PerfectSimulationConfig()
 
 	// Create A and 5 other devices (reduced from 10 for faster test)
-	deviceA := createTestDevice(t, "device-a-uuid", "DEVICEA", tempDir, config)
+	deviceA := createTestDevice(t, "device-a-uuid", "DEVICEAAA", tempDir, config)
 	defer deviceA.wire.Cleanup()
 
 	devices := []*testDevice{deviceA}
 	for i := 1; i <= 5; i++ {
 		uuid := fmt.Sprintf("device-%d-uuid", i)
-		devID := fmt.Sprintf("DEVICE%d", i)
+		devID := fmt.Sprintf("DEVICE%03d", i) // Zero-padded to ensure 8+ chars
 		dev := createTestDevice(t, uuid, devID, tempDir, config)
 		defer dev.wire.Cleanup()
 		devices = append(devices, dev)
@@ -220,9 +220,9 @@ func TestIdentityMappingPersistence(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// Step 1: Create device A, connect to B and C
-	deviceA1 := phone.NewIdentityManager("device-a-uuid", "DEVICEA", tempDir)
-	deviceA1.RegisterDevice("device-b-uuid", "DEVICEB")
-	deviceA1.RegisterDevice("device-c-uuid", "DEVICEC")
+	deviceA1 := phone.NewIdentityManager("device-a-uuid", "DEVICEAAA", tempDir)
+	deviceA1.RegisterDevice("device-b-uuid", "DEVICEBBB")
+	deviceA1.RegisterDevice("device-c-uuid", "DEVICECCC")
 	deviceA1.MarkConnected("device-b-uuid")
 
 	// Step 2: Save state
@@ -231,19 +231,19 @@ func TestIdentityMappingPersistence(t *testing.T) {
 	}
 
 	// Step 3: Restart device A (create new instance)
-	deviceA2 := phone.NewIdentityManager("device-a-uuid", "DEVICEA", tempDir)
+	deviceA2 := phone.NewIdentityManager("device-a-uuid", "DEVICEAAA", tempDir)
 	if err := deviceA2.LoadFromDisk(); err != nil {
 		t.Fatalf("Failed to load identity manager: %v", err)
 	}
 
 	// Step 4: Verify identity mappings restored
 	deviceIDB, ok := deviceA2.GetDeviceID("device-b-uuid")
-	if !ok || deviceIDB != "DEVICEB" {
+	if !ok || deviceIDB != "DEVICEBBB" {
 		t.Errorf("Expected to restore mapping for B, got %s, %v", deviceIDB, ok)
 	}
 
 	deviceIDC, ok := deviceA2.GetDeviceID("device-c-uuid")
-	if !ok || deviceIDC != "DEVICEC" {
+	if !ok || deviceIDC != "DEVICECCC" {
 		t.Errorf("Expected to restore mapping for C, got %s, %v", deviceIDC, ok)
 	}
 
@@ -267,7 +267,7 @@ func TestRequestQueuePersistence(t *testing.T) {
 
 	// Step 2: Learn about B via gossip (not connected) and queue request
 	req := &phone.PendingRequest{
-		DeviceID:     "DEVICEB",
+		DeviceID:     "DEVICEBBB",
 		HardwareUUID: "device-b-uuid",
 		Type:         phone.RequestTypePhoto,
 		PhotoHash:    "photo-hash-b",
@@ -328,7 +328,7 @@ func TestScaleTwentyDevices(t *testing.T) {
 	devices := make([]*testDevice, 20)
 	for i := 0; i < 20; i++ {
 		uuid := fmt.Sprintf("device-%d-uuid", i)
-		devID := fmt.Sprintf("DEVICE%d", i)
+		devID := fmt.Sprintf("DEVICE%03d", i) // Zero-padded to ensure 8+ chars
 		devices[i] = createTestDevice(t, uuid, devID, tempDir, config)
 		defer devices[i].wire.Cleanup()
 	}
@@ -386,9 +386,9 @@ func TestConnectionManagerSendRouting(t *testing.T) {
 	config := wire.PerfectSimulationConfig()
 
 	// Step 1: Device A connects to B as Central
-	deviceA := createTestDevice(t, "device-a-uuid", "DEVICEA", tempDir, config)
-	deviceB := createTestDevice(t, "device-b-uuid", "DEVICEB", tempDir, config)
-	deviceC := createTestDevice(t, "device-c-uuid", "DEVICEC", tempDir, config)
+	deviceA := createTestDevice(t, "device-a-uuid", "DEVICEAAA", tempDir, config)
+	deviceB := createTestDevice(t, "device-b-uuid", "DEVICEBBB", tempDir, config)
+	deviceC := createTestDevice(t, "device-c-uuid", "DEVICECCC", tempDir, config)
 
 	defer deviceA.wire.Cleanup()
 	defer deviceB.wire.Cleanup()
@@ -475,16 +475,17 @@ func createTestDevice(t *testing.T, hardwareUUID, deviceID, tempDir string, conf
 
 	// Create components
 	identityMgr := phone.NewIdentityManager(hardwareUUID, deviceID, deviceDataDir)
-	meshView := phone.NewMeshView(deviceID, hardwareUUID, deviceDataDir, identityMgr)
+	cacheManager := phone.NewDeviceCacheManager(deviceDataDir)
+	photoCoordinator := phone.NewPhotoTransferCoordinator(hardwareUUID) // Use hardwareUUID, not deviceID
+	meshView := phone.NewMeshView(deviceID, hardwareUUID, deviceDataDir, cacheManager)
+	meshView.SetIdentityManager(identityMgr)
 	requestQueue := phone.NewRequestQueue(hardwareUUID, deviceDataDir)
 	connMgr := phone.NewConnectionManager(hardwareUUID)
 
 	// Create message router
-	messageRouter := phone.NewMessageRouter(hardwareUUID, wire.PlatformIOS, deviceDataDir)
+	messageRouter := phone.NewMessageRouter(meshView, cacheManager, photoCoordinator, hardwareUUID, deviceDataDir)
 	messageRouter.SetIdentityManager(identityMgr)
-	messageRouter.SetMeshView(meshView)
-	messageRouter.SetRequestQueue(requestQueue)
-	messageRouter.SetConnectionManager(connMgr)
+	messageRouter.SetDeviceContext(hardwareUUID, string(wire.PlatformIOS))
 
 	return &testDevice{
 		hardwareUUID:  hardwareUUID,
