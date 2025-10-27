@@ -103,6 +103,15 @@ func (ip *IPhone) Start() {
 		ip.handleGATTMessage(peerUUID, msg)
 	})
 
+	// Set up connection callback - handles when Centrals connect to us (as Peripheral)
+	ip.wire.SetConnectCallback(func(peerUUID string, role wire.ConnectionRole) {
+		if role == wire.RolePeripheral {
+			// Someone connected to us as Central - create peripheral object for them
+			// This enables bidirectional photo requests
+			ip.handleIncomingCentralConnection(peerUUID)
+		}
+	})
+
 	// Create CBCentralManager (for scanning and connecting as Central)
 	ip.central = swift.NewCBCentralManager(ip, ip.hardwareUUID, ip.wire)
 
@@ -220,6 +229,32 @@ func (ip *IPhone) handleGATTMessage(peerUUID string, msg *wire.GATTMessage) {
 	if !handled {
 		logger.Trace(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "⚠️  Unhandled GATT message: %s", msg.Type)
 	}
+}
+
+// handleIncomingCentralConnection handles when a Central connects to us (we're Peripheral)
+// This creates a CBPeripheral object so we can send requests back to them
+func (ip *IPhone) handleIncomingCentralConnection(peerUUID string) {
+	ip.mu.Lock()
+	defer ip.mu.Unlock()
+
+	// Check if already tracked
+	if _, exists := ip.connectedPeers[peerUUID]; exists {
+		return
+	}
+
+	// Get device name from discovered devices
+	deviceName := "Unknown"
+	if device, exists := ip.discovered[peerUUID]; exists {
+		deviceName = device.Name
+	}
+
+	// Create CBPeripheral object for the Central that connected to us
+	// This allows us to make requests back to them
+	peripheral := swift.NewCBPeripheralFromConnection(peerUUID, deviceName, ip.wire)
+
+	ip.connectedPeers[peerUUID] = peripheral
+
+	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🔌 Central %s connected (created reverse peripheral object)", peerUUID[:8])
 }
 
 // ============================================================================

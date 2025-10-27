@@ -342,3 +342,17 @@ func (p *CBPeripheral) StopListening() {
 		p.stopChan = nil
 	}
 }
+
+// NewCBPeripheralFromConnection creates a CBPeripheral for an existing connection
+// Used when a Central connects to us (we're Peripheral) and we need to create
+// a reverse peripheral object to make requests back to them
+func NewCBPeripheralFromConnection(peerUUID string, name string, w *wire.Wire) *CBPeripheral {
+	return &CBPeripheral{
+		Name:                     name,
+		UUID:                     peerUUID,
+		Services:                 []*CBService{}, // Will be discovered on-demand
+		wire:                     w,
+		remoteUUID:               peerUUID,
+		notifyingCharacteristics: make(map[string]bool),
+	}
+}

@@ -502,3 +502,133 @@ func TestCleanupRemovesSocketFiles(t *testing.T) {
 		t.Error("Socket file should be removed after Stop()")
 	}
 }
+
+// TestBidirectionalPhotoSubscription verifies photo transfers work in both directions
+// Regression Prevention: Device acting as Peripheral couldn't request photos from Central
+// Root Cause: connectedPeers map only tracked peripherals we connected to, not centrals that connected to us
+// Issue: Device B (Central) connects to Device A (Peripheral)
+//        - B can subscribe to A's photos ✅
+//        - A cannot subscribe to B's photos ❌ (bug - "not connected" error)
+// Fix: When Central connects, Peripheral creates reverse CBPeripheral object
+func TestBidirectionalPhotoSubscription(t *testing.T) {
+	wireA := wire.NewWire("device-a")
+	wireB := wire.NewWire("device-b")
+
+	if err := wireA.Start(); err != nil {
+		t.Fatalf("Failed to start A: %v", err)
+	}
+	defer wireA.Stop()
+
+	if err := wireB.Start(); err != nil {
+		t.Fatalf("Failed to start B: %v", err)
+	}
+	defer wireB.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Track subscriptions
+	subscriptionsA := make(map[string]bool) // which centrals subscribed to A's photos
+	subscriptionsB := make(map[string]bool) // which centrals subscribed to B's photos
+
+	// Set up peripheral managers (both act as Peripherals)
+	delegateA := &photoTestDelegate{subscriptions: subscriptionsA}
+	delegateB := &photoTestDelegate{subscriptions: subscriptionsB}
+
+	pmA := NewCBPeripheralManager(delegateA, "device-a", "Device A", wireA)
+	pmB := NewCBPeripheralManager(delegateB, "device-b", "Device B", wireB)
+
+	// Add photo characteristic
+	photoChar := &CBMutableCharacteristic{
+		UUID:        "E621E1F8-C36C-495A-93FC-0C247A3E6E5E", // AuraPhotoCharUUID
+		Properties:  CBCharacteristicPropertyNotify,
+		Permissions: CBAttributePermissionsReadable,
+	}
+
+	serviceA := &CBMutableService{
+		UUID:            "E621E1F8-C36C-495A-93FC-0C247A3E6E5F", // AuraServiceUUID
+		IsPrimary:       true,
+		Characteristics: []*CBMutableCharacteristic{photoChar},
+	}
+
+	serviceB := &CBMutableService{
+		UUID:            "E621E1F8-C36C-495A-93FC-0C247A3E6E5F",
+		IsPrimary:       true,
+		Characteristics: []*CBMutableCharacteristic{photoChar},
+	}
+
+	pmA.AddService(serviceA)
+	pmB.AddService(serviceB)
+
+	wireA.SetGATTMessageHandler(func(peerUUID string, msg *wire.GATTMessage) {
+		pmA.HandleGATTMessage(peerUUID, msg)
+	})
+
+	wireB.SetGATTMessageHandler(func(peerUUID string, msg *wire.GATTMessage) {
+		pmB.HandleGATTMessage(peerUUID, msg)
+	})
+
+	pmA.StartAdvertising(map[string]interface{}{"kCBAdvDataLocalName": "Device A"})
+	pmB.StartAdvertising(map[string]interface{}{"kCBAdvDataLocalName": "Device B"})
+
+	time.Sleep(200 * time.Millisecond)
+
+	// B connects to A (B is Central, A is Peripheral)
+	if err := wireB.Connect("device-a"); err != nil {
+		t.Fatalf("Failed to connect B to A: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// B (Central) subscribes to A's photos - this should work
+	subscribeMsg := &wire.GATTMessage{
+		Type:               "gatt_request",
+		Operation:          "subscribe",
+		ServiceUUID:        "E621E1F8-C36C-495A-93FC-0C247A3E6E5F",
+		CharacteristicUUID: "E621E1F8-C36C-495A-93FC-0C247A3E6E5E",
+	}
+	if err := wireB.SendGATTMessage("device-a", subscribeMsg); err != nil {
+		t.Fatalf("B failed to subscribe to A: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify B subscribed to A
+	if !subscriptionsA["device-b"] {
+		t.Error("B (Central) failed to subscribe to A (Peripheral) - forward direction broken")
+	}
+
+	// CRITICAL TEST: A (Peripheral) subscribes to B's photos - this was BROKEN before fix
+	// Without fix: A doesn't have B in its connectedPeers map (error: "not connected")
+	// With fix: A creates reverse CBPeripheral for B when B connects
+	if err := wireA.SendGATTMessage("device-b", subscribeMsg); err != nil {
+		t.Errorf("A (Peripheral) failed to subscribe to B (Central): %v (REGRESSION: unidirectional bug!)", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify A subscribed to B
+	if !subscriptionsB["device-a"] {
+		t.Error("A (Peripheral) failed to subscribe to B (Central) - REGRESSION: unidirectional bug!")
+		t.Error("This means the fix for bidirectional photo transfer broke. Check iphone.go handleIncomingCentralConnection()")
+	}
+
+	t.Log("✅ Bidirectional photo subscription works (both Central and Peripheral can subscribe)")
+}
+
+// photoTestDelegate tracks subscriptions for TestBidirectionalPhotoSubscription
+type photoTestDelegate struct {
+	subscriptions map[string]bool
+}
+
+func (d *photoTestDelegate) DidUpdatePeripheralState(pm *CBPeripheralManager)                {}
+func (d *photoTestDelegate) DidStartAdvertising(pm *CBPeripheralManager, err error)          {}
+func (d *photoTestDelegate) DidReceiveReadRequest(pm *CBPeripheralManager, req *CBATTRequest) {}
+func (d *photoTestDelegate) DidReceiveWriteRequests(pm *CBPeripheralManager, reqs []*CBATTRequest) {}
+
+func (d *photoTestDelegate) CentralDidSubscribe(pm *CBPeripheralManager, central CBCentral, char *CBMutableCharacteristic) {
+	d.subscriptions[central.UUID] = true
+}
+
+func (d *photoTestDelegate) CentralDidUnsubscribe(pm *CBPeripheralManager, central CBCentral, char *CBMutableCharacteristic) {
+	delete(d.subscriptions, central.UUID)
+}
