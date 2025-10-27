@@ -257,7 +257,8 @@ func (ip *iPhone) Start() {
 
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		ip.manager.ScanForPeripherals(nil, nil)
+		// Filter by AuraServiceUUID - required for iOS-to-iOS discovery on real devices
+		ip.manager.ScanForPeripherals([]string{phone.AuraServiceUUID}, nil)
 		logger.Info(prefix, "Started scanning (Central mode)")
 	}()
 

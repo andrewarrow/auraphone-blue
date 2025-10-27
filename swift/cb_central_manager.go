@@ -66,6 +66,27 @@ func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map
 			}
 		}
 
+		// Service UUID filtering (matches real iOS CoreBluetooth behavior)
+		// If withServices is specified, only report devices advertising those services
+		if len(withServices) > 0 {
+			found := false
+			for _, requestedService := range withServices {
+				for _, advertisedService := range advData.ServiceUUIDs {
+					if requestedService == advertisedService {
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+			if !found {
+				// Device doesn't advertise the requested services, skip it
+				return
+			}
+		}
+
 		// Build advertisement data map matching iOS CoreBluetooth format
 		advertisementData := make(map[string]interface{})
 
