@@ -92,6 +92,8 @@ func (gh *GossipHandler) SendGossipToNeighbors() {
 		if err := connManager.SendToDevice(neighborUUID, AuraProtocolCharUUID, data); err != nil {
 			logger.Warn(prefix, "⚠️  Failed to send gossip to %s: %v", neighborUUID[:8], err)
 		} else {
+			// Log gossip sent to audit log
+			meshView.LogGossipSent(neighborDeviceID, neighborUUID, len(gossip.MeshView), fmt.Sprintf("/tmp/auraphone-%s.sock", neighborUUID))
 			sentCount++
 		}
 	}
@@ -129,6 +131,15 @@ func (gh *GossipHandler) SendGossipToDevice(remoteUUID string) {
 	if err := connManager.SendToDevice(remoteUUID, AuraProtocolCharUUID, data); err != nil {
 		logger.Warn(prefix, "⚠️  Failed to send initial gossip to %s: %v", remoteUUID[:8], err)
 	} else {
+		// Log gossip sent to audit log
+		// Get device ID for this UUID
+		mutex := device.GetMutex()
+		mutex.RLock()
+		uuidToDeviceID := device.GetUUIDToDeviceIDMap()
+		toDeviceID := uuidToDeviceID[remoteUUID]
+		mutex.RUnlock()
+
+		meshView.LogGossipSent(toDeviceID, remoteUUID, len(gossip.MeshView), fmt.Sprintf("/tmp/auraphone-%s.sock", remoteUUID))
 		logger.Debug(prefix, "📤 Sent initial gossip to %s", remoteUUID[:8])
 	}
 }

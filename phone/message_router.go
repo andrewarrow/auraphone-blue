@@ -144,8 +144,32 @@ func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.Go
 	logger.Debug(prefix, "📊 Merged gossip: %d new discoveries, total mesh size=%d",
 		len(newDiscoveries), len(mr.meshView.GetAllDevices()))
 
-	// Log new discoveries (caller can handle logging with proper prefix)
-	_ = newDiscoveries
+	// Separate new devices from new photos
+	newDevicesList := []string{}
+	newPhotosList := []string{}
+	for _, deviceID := range newDiscoveries {
+		// Check if this is a completely new device or just an updated photo
+		device := mr.meshView.GetAllDevices()
+		for _, d := range device {
+			if d.DeviceID == deviceID {
+				if d.PhotoHash != "" {
+					newPhotosList = append(newPhotosList, deviceID)
+				} else {
+					newDevicesList = append(newDevicesList, deviceID)
+				}
+				break
+			}
+		}
+	}
+
+	// Log gossip received to audit log
+	mr.meshView.LogGossipReceived(
+		gossip.SenderDeviceId,
+		senderUUID,
+		len(gossip.MeshView),
+		newDevicesList,
+		newPhotosList,
+	)
 
 	// Check for missing photos
 	// NEW (Week 3): GetMissingPhotos() now only returns connected devices, so we can send directly
@@ -156,6 +180,8 @@ func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.Go
 			err := mr.onPhotoNeeded(device.DeviceID, device.PhotoHash)
 			if err == nil {
 				mr.meshView.MarkPhotoRequested(device.DeviceID)
+				// Log photo discovered via gossip
+				mr.meshView.LogPhotoDiscovered(device.DeviceID, device.PhotoHash, gossip.SenderDeviceId)
 			} else {
 				logger.Warn(prefix, "Failed to send photo request for %s: %v", device.DeviceID[:8], err)
 			}
