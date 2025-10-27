@@ -3,6 +3,8 @@ package phone
 import (
 	"fmt"
 	"sync"
+
+	"github.com/user/auraphone-blue/logger"
 )
 
 // ConnectionManager tracks dual-role connections and provides unified send interface
@@ -88,6 +90,7 @@ func (cm *ConnectionManager) SendToDevice(remoteUUID, charUUID string, data []by
 		if cm.sendViaCentral == nil {
 			return fmt.Errorf("sendViaCentral function not set")
 		}
+		logger.Debug(fmt.Sprintf("%s ConnMgr", cm.hardwareUUID[:8]), "📡 Sending to %s via CENTRAL mode (char=%s, %d bytes)", remoteUUID[:8], charUUID[len(charUUID)-4:], len(data))
 		return cm.sendViaCentral(remoteUUID, charUUID, data)
 	}
 
@@ -96,9 +99,12 @@ func (cm *ConnectionManager) SendToDevice(remoteUUID, charUUID string, data []by
 		if cm.sendViaPeripheral == nil {
 			return fmt.Errorf("sendViaPeripheral function not set")
 		}
+		logger.Debug(fmt.Sprintf("%s ConnMgr", cm.hardwareUUID[:8]), "📡 Sending to %s via PERIPHERAL mode (char=%s, %d bytes)", remoteUUID[:8], charUUID[len(charUUID)-4:], len(data))
 		return cm.sendViaPeripheral(remoteUUID, charUUID, data)
 	}
 
+	logger.Warn(fmt.Sprintf("%s ConnMgr", cm.hardwareUUID[:8]), "⚠️  Not connected to %s! Central=%v, Peripheral=%v",
+		remoteUUID[:8], len(cm.centralConnections), len(cm.peripheralConnections))
 	return fmt.Errorf("not connected to %s", remoteUUID[:8])
 }
 

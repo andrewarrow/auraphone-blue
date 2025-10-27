@@ -75,6 +75,7 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		ip.cacheManager,
 		ip.photoCoordinator,
 	)
+	ip.messageRouter.SetDeviceContext(hardwareUUID, "iOS")
 	ip.messageRouter.SetCallbacks(
 		func(deviceID, photoHash string) error { return ip.gossipHandler.RequestPhoto(deviceID, photoHash) },
 		func(deviceID string, version int32) error { return ip.gossipHandler.RequestProfile(deviceID, version) },
@@ -84,9 +85,14 @@ func NewIPhone(hardwareUUID string) *iPhone {
 
 	// Set callback to store hardware UUID → device ID mapping when discovered via gossip
 	ip.messageRouter.SetDeviceIDDiscoveredCallback(func(hardwareUUID, deviceID string) {
+		prefix := fmt.Sprintf("%s iOS", hardwareUUID[:8])
+		logger.Debug(prefix, "🔑 Storing deviceID mapping: %s → %s", hardwareUUID[:8], deviceID[:8])
+
 		ip.mu.Lock()
 		ip.peripheralToDeviceID[hardwareUUID] = deviceID
 		ip.mu.Unlock()
+
+		logger.Debug(prefix, "✅ Mapping stored. Map size: %d", len(ip.peripheralToDeviceID))
 
 		// If we received a message from this device, they must be connected to us
 		// Register them as a peripheral connection so we can send messages back

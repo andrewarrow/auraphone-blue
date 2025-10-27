@@ -14,6 +14,10 @@ type MessageRouter struct {
 	cacheManager     *DeviceCacheManager
 	photoCoordinator *PhotoTransferCoordinator
 
+	// Device context for logging
+	deviceHardwareUUID string
+	devicePlatform     string
+
 	// Callbacks for device-specific actions
 	onPhotoNeeded    func(deviceID, photoHash string) error
 	onProfileNeeded  func(deviceID string, version int32) error
@@ -55,6 +59,12 @@ func (mr *MessageRouter) SetDeviceIDDiscoveredCallback(callback func(hardwareUUI
 	mr.onDeviceIDDiscovered = callback
 }
 
+// SetDeviceContext sets device info for logging
+func (mr *MessageRouter) SetDeviceContext(hardwareUUID, platform string) {
+	mr.deviceHardwareUUID = hardwareUUID
+	mr.devicePlatform = platform
+}
+
 // HandleProtocolMessage handles incoming protocol messages (gossip and requests)
 func (mr *MessageRouter) HandleProtocolMessage(senderUUID string, data []byte) error {
 	// Try GossipMessage first (most common)
@@ -80,18 +90,28 @@ func (mr *MessageRouter) HandleProtocolMessage(senderUUID string, data []byte) e
 
 // handleGossipMessage processes incoming gossip messages
 func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.GossipMessage) error {
-	logger.Debug("MessageRouter", "📨 Received gossip from %s (deviceID=%s, meshViewSize=%d)",
+	prefix := fmt.Sprintf("%s %s", mr.deviceHardwareUUID[:8], mr.devicePlatform)
+	logger.Debug(prefix, "📨 Received gossip from %s (deviceID=%s, meshViewSize=%d)",
 		senderUUID[:8], gossip.SenderDeviceId[:8], len(gossip.MeshView))
 
 	// Store the mapping: hardware UUID → device ID
 	// This allows us to send requests to devices we learn about via gossip
 	if mr.onDeviceIDDiscovered != nil && gossip.SenderDeviceId != "" {
+		logger.Debug(prefix, "🔑 Calling deviceID discovered callback: %s → %s", senderUUID[:8], gossip.SenderDeviceId[:8])
 		mr.onDeviceIDDiscovered(senderUUID, gossip.SenderDeviceId)
+		logger.Debug(prefix, "✅ Callback completed")
+	} else {
+		if mr.onDeviceIDDiscovered == nil {
+			logger.Warn(prefix, "⚠️  Callback is nil! Cannot store mapping for %s", senderUUID[:8])
+		}
+		if gossip.SenderDeviceId == "" {
+			logger.Warn(prefix, "⚠️  SenderDeviceId is empty! Cannot store mapping")
+		}
 	}
 
 	// Merge gossip into mesh view
 	newDiscoveries := mr.meshView.MergeGossip(gossip)
-	logger.Debug("MessageRouter", "📊 Merged gossip: %d new discoveries, total mesh size=%d",
+	logger.Debug(prefix, "📊 Merged gossip: %d new discoveries, total mesh size=%d",
 		len(newDiscoveries), len(mr.meshView.GetAllDevices()))
 
 	// Log new discoveries (caller can handle logging with proper prefix)

@@ -72,11 +72,13 @@ func (ph *PhotoHandler) HandlePhotoRequest(senderUUID string, req *auraphone.Pho
 		}
 
 		// Send via photo characteristic
+		logger.Debug(prefix, "📤 Sending chunk %d/%d to %s (%d bytes)", i+1, totalChunks, req.RequesterDeviceId[:8], len(encodedChunk))
 		if err := connManager.SendToDevice(senderUUID, AuraPhotoCharUUID, encodedChunk); err != nil {
-			logger.Warn(prefix, "❌ Failed to send chunk %d: %v", i, err)
+			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s: %v", i+1, totalChunks, req.RequesterDeviceId[:8], err)
 			coordinator.FailSend(req.RequesterDeviceId, fmt.Sprintf("failed to send chunk: %v", err))
 			return
 		}
+		logger.Debug(prefix, "✅ Chunk %d/%d sent successfully to %s", i+1, totalChunks, req.RequesterDeviceId[:8])
 
 		coordinator.UpdateSendProgress(req.RequesterDeviceId, i+1)
 	}
@@ -91,15 +93,24 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 	device := ph.device
 	prefix := fmt.Sprintf("%s %s", device.GetHardwareUUID()[:8], device.GetPlatform())
 
+	logger.Debug(prefix, "🔍 Looking up deviceID for sender: %s", senderUUID[:8])
+
 	// Get deviceID for this sender
 	mutex := device.GetMutex()
 	mutex.RLock()
 	uuidToDeviceID := device.GetUUIDToDeviceIDMap()
 	deviceID, exists := uuidToDeviceID[senderUUID]
+
+	// Debug: log the entire map
+	logger.Debug(prefix, "📋 Current UUID→DeviceID map has %d entries:", len(uuidToDeviceID))
+	for uuid, devID := range uuidToDeviceID {
+		logger.Debug(prefix, "   - %s → %s", uuid[:8], devID[:8])
+	}
 	mutex.RUnlock()
 
 	if !exists {
-		logger.Warn(prefix, "⚠️  Received photo chunk from unknown device %s", senderUUID[:8])
+		logger.Warn(prefix, "⚠️  Received photo chunk from unknown device %s (full UUID: %s)", senderUUID[:8], senderUUID)
+		logger.Warn(prefix, "⚠️  Map does not contain this UUID. Map size: %d", len(uuidToDeviceID))
 		return
 	}
 
@@ -128,6 +139,9 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 
 	// Check if transfer is complete
 	recvState = coordinator.GetReceiveState(deviceID)
+	logger.Debug(prefix, "📊 Progress: %d/%d chunks received from %s",
+		recvState.ChunksReceived, recvState.TotalChunks, deviceID[:8])
+
 	if recvState != nil && recvState.ChunksReceived == recvState.TotalChunks {
 		logger.Info(prefix, "✅ Received all %d chunks from %s, assembling photo",
 			recvState.TotalChunks, deviceID[:8])

@@ -79,6 +79,7 @@ func NewAndroid(hardwareUUID string) *Android {
 		a.cacheManager,
 		a.photoCoordinator,
 	)
+	a.messageRouter.SetDeviceContext(hardwareUUID, "Android")
 	a.messageRouter.SetCallbacks(
 		func(deviceID, photoHash string) error { return a.gossipHandler.RequestPhoto(deviceID, photoHash) },
 		func(deviceID string, version int32) error { return a.gossipHandler.RequestProfile(deviceID, version) },
