@@ -43,6 +43,17 @@ type IdentityManagerState struct {
 	Mappings        []IdentityMapping `json:"mappings"`
 }
 
+// truncateForLog safely truncates a string for logging (max 8 chars)
+func truncateForLog(s string) string {
+	if len(s) > 8 {
+		return s[:8]
+	}
+	if s == "" {
+		return "(empty)"
+	}
+	return s
+}
+
 // NewIdentityManager creates a new identity manager
 func NewIdentityManager(ourHardwareUUID, ourDeviceID, dataDir string) *IdentityManager {
 	im := &IdentityManager{
@@ -81,13 +92,13 @@ func (im *IdentityManager) RegisterDevice(hardwareUUID, deviceID string) {
 	// Clean up old mappings if hardware UUID or device ID changed
 	if hadHardware && existingDeviceID != deviceID {
 		delete(im.deviceToHardware, existingDeviceID)
-		logger.Debug(im.ourHardwareUUID[:8], "Identity mapping updated: hardware %s now maps to device %s (was %s)",
-			hardwareUUID[:8], deviceID[:8], existingDeviceID[:8])
+		logger.Debug(truncateForLog(im.ourHardwareUUID), "Identity mapping updated: hardware %s now maps to device %s (was %s)",
+			truncateForLog(hardwareUUID), truncateForLog(deviceID), truncateForLog(existingDeviceID))
 	}
 	if hadDevice && existingHardwareUUID != hardwareUUID {
 		delete(im.hardwareToDevice, existingHardwareUUID)
-		logger.Debug(im.ourHardwareUUID[:8], "Identity mapping updated: device %s now maps to hardware %s (was %s)",
-			deviceID[:8], hardwareUUID[:8], existingHardwareUUID[:8])
+		logger.Debug(truncateForLog(im.ourHardwareUUID), "Identity mapping updated: device %s now maps to hardware %s (was %s)",
+			truncateForLog(deviceID), truncateForLog(hardwareUUID), truncateForLog(existingHardwareUUID))
 	}
 }
 
@@ -123,15 +134,11 @@ func (im *IdentityManager) MarkConnected(hardwareUUID string) {
 
 	if !wasConnected {
 		deviceID := im.hardwareToDevice[hardwareUUID]
-		deviceIDDisplay := deviceID
-		if len(deviceIDDisplay) > 8 {
-			deviceIDDisplay = deviceIDDisplay[:8]
+		if deviceID == "" {
+			deviceID = "(unknown)"
 		}
-		if deviceIDDisplay == "" {
-			deviceIDDisplay = "(unknown)"
-		}
-		logger.Debug(im.ourHardwareUUID[:8], "Device marked as connected: hardware=%s device=%s",
-			hardwareUUID[:8], deviceIDDisplay)
+		logger.Debug(truncateForLog(im.ourHardwareUUID), "Device marked as connected: hardware=%s device=%s",
+			truncateForLog(hardwareUUID), truncateForLog(deviceID))
 	}
 }
 
@@ -149,15 +156,11 @@ func (im *IdentityManager) MarkDisconnected(hardwareUUID string) {
 
 	if wasConnected {
 		deviceID := im.hardwareToDevice[hardwareUUID]
-		deviceIDDisplay := deviceID
-		if len(deviceIDDisplay) > 8 {
-			deviceIDDisplay = deviceIDDisplay[:8]
+		if deviceID == "" {
+			deviceID = "(unknown)"
 		}
-		if deviceIDDisplay == "" {
-			deviceIDDisplay = "(unknown)"
-		}
-		logger.Debug(im.ourHardwareUUID[:8], "Device marked as disconnected: hardware=%s device=%s",
-			hardwareUUID[:8], deviceIDDisplay)
+		logger.Debug(truncateForLog(im.ourHardwareUUID), "Device marked as disconnected: hardware=%s device=%s",
+			truncateForLog(hardwareUUID), truncateForLog(deviceID))
 	}
 }
 
@@ -277,7 +280,7 @@ func (im *IdentityManager) SaveToDisk() error {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
-	logger.Debug(im.ourHardwareUUID[:8], "Identity mappings saved: %d devices", len(mappings))
+	logger.Debug(truncateForLog(im.ourHardwareUUID), "Identity mappings saved: %d devices", len(mappings))
 	return nil
 }
 
@@ -288,7 +291,7 @@ func (im *IdentityManager) LoadFromDisk() error {
 
 	// Check if file exists
 	if _, err := os.Stat(im.statePath); os.IsNotExist(err) {
-		logger.Debug(im.ourHardwareUUID[:8], "No identity mappings file found, starting fresh")
+		logger.Debug(truncateForLog(im.ourHardwareUUID), "No identity mappings file found, starting fresh")
 		return nil
 	}
 
@@ -306,15 +309,15 @@ func (im *IdentityManager) LoadFromDisk() error {
 
 	// Verify our identity matches
 	if state.OurHardwareUUID != im.ourHardwareUUID {
-		logger.Warn(im.ourHardwareUUID[:8], "Hardware UUID mismatch in saved state: expected=%s got=%s",
-			im.ourHardwareUUID[:8], state.OurHardwareUUID[:8])
+		logger.Warn(truncateForLog(im.ourHardwareUUID), "Hardware UUID mismatch in saved state: expected=%s got=%s",
+			truncateForLog(im.ourHardwareUUID), truncateForLog(state.OurHardwareUUID))
 		// Don't load mappings if our identity changed
 		return nil
 	}
 
 	if state.OurDeviceID != im.ourDeviceID {
-		logger.Warn(im.ourHardwareUUID[:8], "Device ID mismatch in saved state: expected=%s got=%s",
-			im.ourDeviceID[:8], state.OurDeviceID[:8])
+		logger.Warn(truncateForLog(im.ourHardwareUUID), "Device ID mismatch in saved state: expected=%s got=%s",
+			truncateForLog(im.ourDeviceID), truncateForLog(state.OurDeviceID))
 		// Don't load mappings if our identity changed
 		return nil
 	}
@@ -336,7 +339,7 @@ func (im *IdentityManager) LoadFromDisk() error {
 		loaded++
 	}
 
-	logger.Debug(im.ourHardwareUUID[:8], "Identity mappings loaded: %d devices", loaded)
+	logger.Debug(truncateForLog(im.ourHardwareUUID), "Identity mappings loaded: %d devices", loaded)
 	return nil
 }
 

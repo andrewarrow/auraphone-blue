@@ -24,7 +24,7 @@ func TestMeshViewUpdateDevice(t *testing.T) {
 	profileVersion := int32(1)
 	profileSummaryHash := "profile123"
 
-	meshView.UpdateDevice(deviceID, "uuid-2", photoHash, firstName, profileVersion, profileSummaryHash)
+	meshView.UpdateDevice(deviceID, photoHash, firstName, profileVersion, profileSummaryHash)
 
 	// Verify device was added
 	meshView.mu.RLock()
@@ -49,7 +49,7 @@ func TestMeshViewUpdateDevice(t *testing.T) {
 
 	// Update the device with new photo
 	newPhotoHash := "newphoto567"
-	meshView.UpdateDevice(deviceID, "uuid-2", newPhotoHash, firstName, profileVersion, profileSummaryHash)
+	meshView.UpdateDevice(deviceID, newPhotoHash, firstName, profileVersion, profileSummaryHash)
 
 	meshView.mu.RLock()
 	updatedDevice := meshView.devices[deviceID]
@@ -78,8 +78,8 @@ func TestMeshViewBuildGossipMessage(t *testing.T) {
 	meshView := NewMeshView(ourDeviceID, ourUUID, tempDir, nil)
 
 	// Add some devices to mesh
-	meshView.UpdateDevice("DEVICE2", "uuid-2", "photo2", "Alice", 1, "profile2")
-	meshView.UpdateDevice("DEVICE3", "uuid-3", "photo3", "Charlie", 1, "profile3")
+	meshView.UpdateDevice("DEVICE2", "photo2", "Alice", 1, "profile2")
+	meshView.UpdateDevice("DEVICE3", "photo3", "Charlie", 1, "profile3")
 
 	// Build gossip message
 	gossip := meshView.BuildGossipMessage(ourPhotoHash, ourFirstName, ourProfileVersion, ourProfileSummaryHash)
@@ -204,8 +204,7 @@ func TestMeshViewNeighborSelection(t *testing.T) {
 	// Add 10 devices
 	for i := 2; i <= 11; i++ {
 		deviceID := "DEVICE" + string(rune('0'+i))
-		hardwareUUID := "uuid-" + string(rune('0'+i))
-		meshView.UpdateDevice(deviceID, hardwareUUID, "photohash", "Name", 1, "profilehash")
+		meshView.UpdateDevice(deviceID, "photohash", "Name", 1, "profilehash")
 	}
 
 	// Select neighbors (should select max 3)
@@ -239,12 +238,22 @@ func TestMeshViewGetMissingPhotos(t *testing.T) {
 
 	meshView := NewMeshView(ourDeviceID, ourUUID, tempDir, nil)
 
+	// Create identity manager and register devices
+	identityManager := NewIdentityManager(ourUUID, ourDeviceID, tempDir)
+	identityManager.RegisterDevice("uuid-2", "DEVICE2")
+	identityManager.RegisterDevice("uuid-3", "DEVICE3")
+	identityManager.MarkConnected("uuid-2") // Mark DEVICE2 as connected
+	identityManager.MarkConnected("uuid-3") // Mark DEVICE3 as connected
+
+	// Set identity manager on mesh view
+	meshView.SetIdentityManager(identityManager)
+
 	// Add devices with different photo states
 	// Device 2 has a photo we don't have
-	meshView.UpdateDevice("DEVICE2", "uuid-2", "photohash456", "Bob", 1, "profile2")
+	meshView.UpdateDevice("DEVICE2", "photohash456", "Bob", 1, "profile2")
 
 	// Device 3 has no photo hash (shouldn't appear in missing)
-	meshView.UpdateDevice("DEVICE3", "uuid-3", "", "Charlie", 1, "profile3")
+	meshView.UpdateDevice("DEVICE3", "", "Charlie", 1, "profile3")
 
 	// Get missing photos
 	missing := meshView.GetMissingPhotos()
@@ -289,8 +298,8 @@ func TestMeshViewPersistence(t *testing.T) {
 	meshView := NewMeshView(ourDeviceID, ourUUID, tempDir, nil)
 
 	// Add some devices
-	meshView.UpdateDevice("DEVICE2", "uuid-2", "photo2", "Alice", 1, "profile2")
-	meshView.UpdateDevice("DEVICE3", "uuid-3", "photo3", "Bob", 2, "profile3")
+	meshView.UpdateDevice("DEVICE2", "photo2", "Alice", 1, "profile2")
+	meshView.UpdateDevice("DEVICE3", "photo3", "Bob", 2, "profile3")
 
 	// Save to disk
 	if err := meshView.SaveToDisk(); err != nil {
@@ -330,8 +339,7 @@ func TestGetCurrentNeighbors(t *testing.T) {
 	// Add some devices
 	for i := 2; i <= 5; i++ {
 		deviceID := "DEVICE" + string(rune('0'+i))
-		hardwareUUID := "uuid-" + string(rune('0'+i))
-		meshView.UpdateDevice(deviceID, hardwareUUID, "photo", "Name", 1, "profile")
+		meshView.UpdateDevice(deviceID, "photo", "Name", 1, "profile")
 	}
 
 	// Select neighbors
@@ -361,7 +369,7 @@ func TestMarkPhotoReceived(t *testing.T) {
 	photoHash := "photohash123"
 
 	// Add device
-	meshView.UpdateDevice(deviceID, "uuid-2", photoHash, "Alice", 1, "profile")
+	meshView.UpdateDevice(deviceID, photoHash, "Alice", 1, "profile")
 
 	// Initially should not have photo
 	meshView.mu.RLock()
