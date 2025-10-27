@@ -1,425 +1,186 @@
 package iphone
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"os"
-	"path/filepath"
+	"sync"
 	"time"
 
-	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
-	"github.com/user/auraphone-blue/proto"
-	"github.com/user/auraphone-blue/swift"
 	"github.com/user/auraphone-blue/wire"
 )
 
-// NewIPhone creates a new iPhone instance with gossip protocol integration
-func NewIPhone(hardwareUUID string) *iPhone {
-	deviceName := "iOS Device"
+// IPhone implements the Phone interface for iOS devices
+type IPhone struct {
+	hardwareUUID string
+	deviceName   string
+	wire         *wire.Wire
+	discovered   map[string]phone.DiscoveredDevice // UUID -> device
+	mu           sync.RWMutex
+	callback     phone.DeviceDiscoveryCallback
+	stopScanning chan struct{}
+	profilePhoto string                 // Path to current profile photo
+	profile      map[string]string      // Local profile data
+}
 
-	// Load or generate device ID (8-char base36, persists across app restarts)
-	deviceID, err := phone.LoadOrGenerateDeviceID(hardwareUUID)
+// NewIPhone creates a new iPhone instance
+func NewIPhone(hardwareUUID string) *IPhone {
+	// Generate device name from UUID
+	deviceName := fmt.Sprintf("iPhone (%s)", hardwareUUID[:8])
+
+	return &IPhone{
+		hardwareUUID: hardwareUUID,
+		deviceName:   deviceName,
+		discovered:   make(map[string]phone.DiscoveredDevice),
+		profile:      make(map[string]string),
+	}
+}
+
+// Start initializes the iPhone and begins advertising/scanning
+func (ip *IPhone) Start() {
+	// Create wire
+	ip.wire = wire.NewWire(ip.hardwareUUID)
+
+	// Start listening on socket
+	err := ip.wire.Start()
 	if err != nil {
-		fmt.Printf("Failed to load/generate device ID: %v\n", err)
-		return nil
+		panic(err) // In minimal version, just panic on errors
 	}
 
-	ip := &iPhone{
-		hardwareUUID:           hardwareUUID,
-		deviceID:               deviceID,
-		deviceName:             deviceName,
-		connectedPeripherals:   make(map[string]*swift.CBPeripheral),
-		deviceIDToPhotoHash:    make(map[string]string),
-		receivedPhotoHashes:    make(map[string]string),
-		receivedProfileVersion: make(map[string]int32),
-		staleCheckDone:         make(chan struct{}),
-		gossipInterval:         5 * time.Second,
-	}
-
-	// Initialize wire
-	ip.wire = wire.NewWireWithPlatform(hardwareUUID, wire.PlatformIOS, deviceName, nil)
-	if err := ip.wire.InitializeDevice(); err != nil {
-		fmt.Printf("Failed to initialize iOS device: %v\n", err)
-		return nil
-	}
-
-	// Initialize cache manager
-	ip.cacheManager = phone.NewDeviceCacheManager(hardwareUUID)
-	if err := ip.cacheManager.InitializeCache(); err != nil {
-		fmt.Printf("Failed to initialize cache: %v\n", err)
-		return nil
-	}
-
-	// Initialize photo coordinator
-	ip.photoCoordinator = phone.NewPhotoTransferCoordinator(hardwareUUID)
-
-	// Initialize identity manager (must come before mesh view)
-	dataDir := phone.GetDeviceDir(hardwareUUID)
-	ip.identityManager = phone.NewIdentityManager(hardwareUUID, deviceID, dataDir)
-	if err := ip.identityManager.LoadFromDisk(); err != nil {
-		fmt.Printf("Failed to load identity mappings: %v\n", err)
-	}
-
-	// Initialize mesh view for gossip protocol
-	ip.meshView = phone.NewMeshView(deviceID, hardwareUUID, dataDir, ip.cacheManager)
-	ip.meshView.SetIdentityManager(ip.identityManager)
-
-	// Initialize connection manager for dual-role support
-	ip.connManager = phone.NewConnectionManager(hardwareUUID)
-	ip.connManager.SetSendFunctions(ip.sendViaCentralMode, ip.sendViaPeripheralMode)
-	ip.connManager.SetIdentityManager(ip.identityManager)
-
-	// Initialize shared handlers (platform-agnostic code in phone/ package)
-	ip.gossipHandler = phone.NewGossipHandler(ip, ip.gossipInterval, ip.staleCheckDone)
-	ip.photoHandler = phone.NewPhotoHandler(ip)
-	ip.profileHandler = phone.NewProfileHandler(ip)
-
-	// Initialize message router
-	ip.messageRouter = phone.NewMessageRouter(
-		ip.meshView,
-		ip.cacheManager,
-		ip.photoCoordinator,
-		hardwareUUID,
-		dataDir,
-	)
-	ip.messageRouter.SetDeviceContext(hardwareUUID, "iOS")
-	ip.messageRouter.SetIdentityManager(ip.identityManager)
-	ip.messageRouter.SetCallbacks(
-		func(deviceID, photoHash string) error { return ip.gossipHandler.RequestPhoto(deviceID, photoHash) },
-		func(deviceID string, version int32) error { return ip.gossipHandler.RequestProfile(deviceID, version) },
-		func(senderUUID string, req *proto.PhotoRequestMessage) { ip.photoHandler.HandlePhotoRequest(senderUUID, req) },
-		func(senderUUID string, req *proto.ProfileRequestMessage) { ip.profileHandler.HandleProfileRequest(senderUUID, req) },
-		func(targetUUID, targetDeviceID string, chunkIndices []int32) error {
-			return ip.photoHandler.RetryMissingChunks(targetUUID, targetDeviceID, chunkIndices)
-		},
-	)
-
-	// Set callback to store hardware UUID → device ID mapping when discovered via gossip
-	ip.messageRouter.SetDeviceIDDiscoveredCallback(func(hardwareUUID, deviceID string) {
-		prefix := fmt.Sprintf("%s iOS", hardwareUUID[:8])
-		logger.Debug(prefix, "🔑 Storing deviceID mapping: %s → %s", hardwareUUID[:8], deviceID[:8])
-
-		// Register device in identity manager
-		ip.identityManager.RegisterDevice(hardwareUUID, deviceID)
-		ip.identityManager.SaveToDisk()
-
-		logger.Debug(prefix, "✅ Mapping stored. Total mappings: %d", ip.identityManager.GetMappingCount())
-
-		// If we received a message from this device, they must be connected to us
-		// Register them as a peripheral connection so we can send messages back
-		ip.connManager.RegisterPeripheralConnection(hardwareUUID)
-
-		// NEW: Try to connect to this device if we're not already connected
-		// This enables iOS-to-iOS connections via gossip (retrievePeripherals without discovery)
-		ip.tryConnectToGossipDevice(hardwareUUID, deviceID)
-	})
-
-	// Set callback to check if a device is connected
-	ip.messageRouter.SetIsConnectedCallback(func(hardwareUUID string) bool {
-		return ip.connManager.IsConnected(hardwareUUID)
-	})
-
-	// Load photo mappings and profile
-	ip.loadReceivedPhotoMappings()
-	ip.localProfile = phone.LoadLocalProfile(hardwareUUID)
-
-	// Setup BLE
-	ip.setupBLE()
-	ip.manager = swift.NewCBCentralManager(ip, hardwareUUID, ip.wire)
-	ip.initializePeripheralMode()
-
-	return ip
+	// Start scanning for other devices
+	ip.startScanning()
 }
 
-func (ip *iPhone) initializePeripheralMode() {
-	delegate := &iPhonePeripheralDelegate{iphone: ip}
-	ip.peripheralManager = swift.NewCBPeripheralManager(delegate, ip.hardwareUUID, wire.PlatformIOS, ip.deviceName, ip.wire)
-
-	service := &swift.CBMutableService{
-		UUID:      phone.AuraServiceUUID,
-		IsPrimary: true,
+// Stop shuts down the iPhone
+func (ip *IPhone) Stop() {
+	// Stop scanning
+	if ip.stopScanning != nil {
+		close(ip.stopScanning)
+		ip.stopScanning = nil
 	}
 
-	ip.protocolChar = &swift.CBMutableCharacteristic{
-		UUID:        phone.AuraProtocolCharUUID,
-		Properties:  swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
-		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
-		Service:     service,
-	}
-	ip.photoChar = &swift.CBMutableCharacteristic{
-		UUID:        phone.AuraPhotoCharUUID,
-		Properties:  swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
-		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
-		Service:     service,
-	}
-	ip.profileChar = &swift.CBMutableCharacteristic{
-		UUID:        phone.AuraProfileCharUUID,
-		Properties:  swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
-		Permissions: swift.CBAttributePermissionsReadable | swift.CBAttributePermissionsWriteable,
-		Service:     service,
-	}
-
-	service.Characteristics = []*swift.CBMutableCharacteristic{ip.protocolChar, ip.photoChar, ip.profileChar}
-	ip.peripheralManager.AddService(service)
-}
-
-func (ip *iPhone) setupBLE() {
-	gattTable := &wire.GATTTable{
-		Services: []wire.GATTService{
-			{
-				UUID: phone.AuraServiceUUID,
-				Type: "primary",
-				Characteristics: []wire.GATTCharacteristic{
-					{
-						UUID:       phone.AuraProtocolCharUUID,
-						Properties: []string{"read", "write", "notify"},
-						Descriptors: []wire.GATTDescriptor{
-							{UUID: "00002902-0000-1000-8000-00805f9b34fb", Type: "CCCD"},
-						},
-					},
-					{
-						UUID:       phone.AuraPhotoCharUUID,
-						Properties: []string{"read", "write", "notify"},
-						Descriptors: []wire.GATTDescriptor{
-							{UUID: "00002902-0000-1000-8000-00805f9b34fb", Type: "CCCD"},
-						},
-					},
-					{
-						UUID:       phone.AuraProfileCharUUID,
-						Properties: []string{"read", "write", "notify"},
-						Descriptors: []wire.GATTDescriptor{
-							{UUID: "00002902-0000-1000-8000-00805f9b34fb", Type: "CCCD"},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	if err := ip.wire.WriteGATTTable(gattTable); err != nil {
-		fmt.Printf("Failed to write GATT table: %v\n", err)
-		return
-	}
-
-	txPowerLevel := 0
-	advertisingData := &wire.AdvertisingData{
-		DeviceName:    ip.deviceName,
-		ServiceUUIDs:  []string{phone.AuraServiceUUID},
-		TxPowerLevel:  &txPowerLevel,
-		IsConnectable: true,
-	}
-
-	if err := ip.wire.WriteAdvertisingData(advertisingData); err != nil {
-		fmt.Printf("Failed to write advertising data: %v\n", err)
-		return
-	}
-
-	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Setup complete - deviceID: %s", ip.deviceID)
-}
-
-func (ip *iPhone) loadReceivedPhotoMappings() {
-	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
-	photosDir := filepath.Join(phone.GetDeviceCacheDir(ip.hardwareUUID), "photos")
-	entries, err := os.ReadDir(photosDir)
-	if err != nil {
-		return
-	}
-
-	loadedCount := 0
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jpg" {
-			continue
-		}
-
-		photoHash := entry.Name()[:len(entry.Name())-4]
-		metadataFiles, _ := filepath.Glob(filepath.Join(phone.GetDeviceCacheDir(ip.hardwareUUID), "*_metadata.json"))
-
-		for _, metadataFile := range metadataFiles {
-			deviceID := filepath.Base(metadataFile)[:len(filepath.Base(metadataFile))-len("_metadata.json")]
-			hash, _ := ip.cacheManager.GetDevicePhotoHash(deviceID)
-			if hash == photoHash {
-				ip.receivedPhotoHashes[deviceID] = photoHash
-				loadedCount++
-				break
-			}
-		}
-	}
-
-	if loadedCount > 0 {
-		logger.Info(prefix, "Loaded %d cached photo mappings", loadedCount)
+	// Stop wire
+	if ip.wire != nil {
+		ip.wire.Stop()
 	}
 }
 
-func (ip *iPhone) Start() {
-	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+// SetDiscoveryCallback sets the callback for device discovery
+func (ip *IPhone) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
+	ip.mu.Lock()
+	ip.callback = callback
+	ip.mu.Unlock()
+}
+
+// GetDeviceUUID returns this device's hardware UUID
+func (ip *IPhone) GetDeviceUUID() string {
+	return ip.hardwareUUID
+}
+
+// GetDeviceName returns this device's name
+func (ip *IPhone) GetDeviceName() string {
+	return ip.deviceName
+}
+
+// startScanning periodically scans for available devices
+func (ip *IPhone) startScanning() {
+	ip.stopScanning = make(chan struct{})
 
 	go func() {
-		time.Sleep(500 * time.Millisecond)
-		// Filter by AuraServiceUUID - required for iOS-to-iOS discovery on real devices
-		ip.manager.ScanForPeripherals([]string{phone.AuraServiceUUID}, nil)
-		logger.Info(prefix, "Started scanning (Central mode)")
-	}()
+		// Initial scan immediately
+		ip.scanOnce()
 
-	advertisingData := map[string]interface{}{
-		"kCBAdvDataLocalName":    ip.deviceName,
-		"kCBAdvDataServiceUUIDs": []string{phone.AuraServiceUUID},
-	}
+		// Then scan every 1 second (realistic BLE advertising interval)
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
 
-	ip.peripheralManager.StartAdvertising(advertisingData)
-	logger.Info(prefix, "✅ Started advertising (Peripheral mode)")
-
-	go ip.gossipHandler.GossipLoop()
-	logger.Info(prefix, "✅ Started gossip protocol (5s interval)")
-}
-
-func (ip *iPhone) Stop() {
-	fmt.Printf("[%s iOS] Stopping\n", ip.hardwareUUID[:8])
-	close(ip.staleCheckDone)
-}
-
-// Getters and setters
-
-func (ip *iPhone) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
-	ip.discoveryCallback = callback
-}
-
-// TriggerDiscoveryUpdate triggers the discovery callback to update the GUI
-func (ip *iPhone) TriggerDiscoveryUpdate(hardwareUUID, deviceID, photoHash string, photoData []byte) {
-	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
-	logger.Debug(prefix, "🔔 TriggerDiscoveryUpdate ENTER: hardwareUUID=%s, deviceID=%s, photoHash=%s, photoDataLen=%d",
-		hardwareUUID[:8], deviceID[:8], photoHash[:8], len(photoData))
-
-	if ip.discoveryCallback == nil {
-		logger.Warn(prefix, "⚠️  discoveryCallback is NIL - cannot update GUI!")
-		return
-	}
-
-	logger.Debug(prefix, "🔔 discoveryCallback is NOT nil, proceeding...")
-
-	// Look up device name from connected peripherals
-	ip.mu.RLock()
-	// Default name
-	name := "Unknown Device"
-	// Try to get a better name from discovered peripherals or connected devices
-	// First, try to find the peripheral by hardware UUID
-	if peripheral, exists := ip.connectedPeripherals[hardwareUUID]; exists {
-		name = peripheral.Name
-	} else {
-		// If not found by hardware UUID, try looking up from device ID
-		if lookupHardwareUUID, ok := ip.identityManager.GetHardwareUUID(deviceID); ok {
-			if peripheral, exists := ip.connectedPeripherals[lookupHardwareUUID]; exists {
-				name = peripheral.Name
+		for {
+			select {
+			case <-ip.stopScanning:
+				return
+			case <-ticker.C:
+				ip.scanOnce()
 			}
 		}
-	}
-	ip.mu.RUnlock()
-
-	logger.Debug(prefix, "🔔 BEFORE calling discoveryCallback with name=%s", name)
-
-	ip.discoveryCallback(phone.DiscoveredDevice{
-		DeviceID:     deviceID,
-		HardwareUUID: hardwareUUID,
-		Name:         name,
-		RSSI:         0, // RSSI not relevant for cached photo updates
-		Platform:     "unknown",
-		PhotoHash:    photoHash,
-		PhotoData:    photoData,
-	})
-
-	logger.Debug(prefix, "🔔 AFTER calling discoveryCallback - GUI update complete")
+	}()
 }
 
-func (ip *iPhone) GetDeviceUUID() string { return ip.hardwareUUID }
+// scanOnce performs a single scan for available devices
+func (ip *IPhone) scanOnce() {
+	// List available devices via socket scanning
+	devices := ip.wire.ListAvailableDevices()
 
-func (ip *iPhone) SetProfilePhoto(photoPath string) error {
-	data, err := os.ReadFile(photoPath)
-	if err != nil {
-		return fmt.Errorf("failed to read photo: %w", err)
+	if len(devices) > 0 {
+		fmt.Printf("[%s] Scan found %d devices\n", ip.hardwareUUID[:8], len(devices))
 	}
 
-	hash := sha256.Sum256(data)
-	photoHash := hex.EncodeToString(hash[:])
+	for _, deviceUUID := range devices {
+		// Check if we've already discovered this device
+		ip.mu.RLock()
+		_, exists := ip.discovered[deviceUUID]
+		ip.mu.RUnlock()
 
-	cachePath := filepath.Join(phone.GetDeviceCacheDir(ip.hardwareUUID), "my_photo.jpg")
-	cacheDir := filepath.Dir(cachePath)
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(cachePath, data, 0644); err != nil {
-		return err
-	}
+		if exists {
+			continue // Already discovered
+		}
 
+		// Create discovered device
+		// For now, we don't know the device name until we connect/handshake
+		// So just use a placeholder
+		device := phone.DiscoveredDevice{
+			HardwareUUID: deviceUUID,
+			Name:         "Unknown Device",
+			RSSI:         -45.0, // Simulated good signal strength
+		}
+
+		// Store in discovered map
+		ip.mu.Lock()
+		ip.discovered[deviceUUID] = device
+		callback := ip.callback
+		ip.mu.Unlock()
+
+		// Call callback
+		if callback != nil {
+			callback(device)
+		}
+	}
+}
+
+// GetPlatform returns the platform type
+func (ip *IPhone) GetPlatform() string {
+	return "iOS"
+}
+
+// SetProfilePhoto sets the profile photo for this device
+func (ip *IPhone) SetProfilePhoto(photoPath string) error {
 	ip.mu.Lock()
-	ip.photoPath, ip.photoHash, ip.photoData = photoPath, photoHash, data
-	ip.mu.Unlock()
-
-	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📸 Set photo: %s", phone.TruncateHash(photoHash, 8))
-	go ip.gossipHandler.SendGossipToNeighbors()
+	defer ip.mu.Unlock()
+	ip.profilePhoto = photoPath
+	// TODO: In future, broadcast photo hash to other devices
 	return nil
 }
 
-func (ip *iPhone) GetProfilePhotoHash() string {
+// GetLocalProfileMap returns the local profile data
+func (ip *IPhone) GetLocalProfileMap() map[string]string {
 	ip.mu.RLock()
 	defer ip.mu.RUnlock()
-	return ip.photoHash
+
+	// Return a copy to avoid race conditions
+	result := make(map[string]string)
+	for k, v := range ip.profile {
+		result[k] = v
+	}
+	return result
 }
 
-// GetLocalProfileMap returns the local profile as a map (for external API)
-func (ip *iPhone) GetLocalProfileMap() map[string]string {
-	ip.mu.RLock()
-	defer ip.mu.RUnlock()
-	return phone.ConvertProfileToMap(ip.localProfile)
-}
-
-func (ip *iPhone) UpdateLocalProfile(profile map[string]string) error {
+// UpdateLocalProfile updates the local profile data
+func (ip *IPhone) UpdateLocalProfile(profile map[string]string) error {
 	ip.mu.Lock()
-	phone.UpdateProfileFromMap(ip.localProfile, profile)
-	ip.mu.Unlock()
+	defer ip.mu.Unlock()
 
-	if err := phone.IncrementProfileVersion(ip.hardwareUUID, ip.localProfile); err != nil {
-		return err
+	// Update profile fields
+	for k, v := range profile {
+		ip.profile[k] = v
 	}
-
-	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📝 Updated profile to v%d", ip.localProfile.ProfileVersion)
-	go ip.gossipHandler.SendGossipToNeighbors()
+	// TODO: In future, broadcast profile changes to connected devices
 	return nil
-}
-
-func (ip *iPhone) shouldActAsCentral(remoteUUID, remoteName string) bool {
-	return ip.hardwareUUID > remoteUUID
-}
-
-// tryConnectToGossipDevice attempts to connect to a device learned via gossip
-// This is critical for iOS-to-iOS connections, where discovery may not work
-// Uses retrievePeripherals(withIdentifiers:) instead of relying on scanning
-func (ip *iPhone) tryConnectToGossipDevice(hardwareUUID, deviceID string) {
-	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
-
-	// Check if we're already connected
-	if ip.connManager.IsConnected(hardwareUUID) {
-		logger.Debug(prefix, "⏭️  Already connected to %s (gossip)", hardwareUUID[:8])
-		return
-	}
-
-	// Check if we should act as Central (role negotiation)
-	if !ip.shouldActAsCentral(hardwareUUID, "") {
-		logger.Debug(prefix, "⏸️  Not connecting to %s via gossip (will act as Peripheral)", hardwareUUID[:8])
-		return
-	}
-
-	// Use retrievePeripherals to get peripheral by UUID (works without discovery)
-	// This is how real iOS apps connect to devices learned via gossip/server/QR code
-	peripherals := ip.manager.RetrievePeripheralsByIdentifiers([]string{hardwareUUID})
-	if len(peripherals) == 0 {
-		logger.Debug(prefix, "⚠️  Device %s learned via gossip but not reachable (sockets don't exist)", hardwareUUID[:8])
-		return
-	}
-
-	peripheral := peripherals[0]
-	logger.Info(prefix, "🔗 Connecting to %s via gossip (no discovery needed)", hardwareUUID[:8])
-
-	// Connect using standard flow (will trigger DidConnectPeripheral callback)
-	ip.manager.Connect(peripheral, nil)
 }

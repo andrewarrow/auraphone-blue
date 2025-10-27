@@ -22,7 +22,6 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
-	"github.com/user/auraphone-blue/android"
 	"github.com/user/auraphone-blue/iphone"
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
@@ -86,11 +85,12 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 		deviceFirstNames:  make(map[string]string),
 	}
 
-	// Create platform-specific phone with hardware UUID
+	// Create platform-specific phone with hardware UUID (only iOS for now)
 	if platformType == "iOS" {
 		pw.phone = iphone.NewIPhone(hardwareUUID)
 	} else {
-		pw.phone = android.NewAndroid(hardwareUUID)
+		fmt.Printf("Android not yet implemented in this refactor\n")
+		return nil
 	}
 
 	if pw.phone == nil {
@@ -916,16 +916,11 @@ func (l *Launcher) buildUI(initialLogLevel string) fyne.CanvasObject {
 		}
 	})
 
-	// Start Android button
-	androidBtn := widget.NewButton("Start Android Device", func() {
-		// Small delay to ensure unique random seed if multiple devices started quickly
-		time.Sleep(10 * time.Millisecond)
-		phoneWindow := NewPhoneWindow(l.app, "Android")
-		if phoneWindow != nil {
-			phoneWindow.Show()
-			fmt.Printf("Started Android device (UUID: %s)\n", phoneWindow.phone.GetDeviceUUID()[:8])
-		}
+	// Start Android button (disabled during refactor)
+	androidBtn := widget.NewButton("Start Android Device (Not Yet Implemented)", func() {
+		fmt.Println("Android not yet implemented in this refactor")
 	})
+	androidBtn.Disable()
 
 	// Info text
 	infoText := widget.NewLabel("Click a button to launch a new phone.\nClose a phone window to stop that device.")
@@ -982,10 +977,10 @@ func cleanupOldDevices() error {
 	return nil
 }
 
-// runAutoStart starts N phones with GUI, launching one random platform (iOS or Android) every second
+// runAutoStart starts N phones with GUI, launching one iOS device every second
 func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
 	fmt.Println("=== Auraphone Blue - Auto Start Mode ===")
-	fmt.Printf("Will start %d devices (1 per second, random iOS or Android)...\n", numPhones)
+	fmt.Printf("Will start %d iOS devices (1 per second)...\n", numPhones)
 
 	myApp := app.New()
 
@@ -1001,7 +996,7 @@ func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
 	content := container.NewVBox(
 		widget.NewLabel(""),
 		widget.NewLabelWithStyle("Auraphone Blue", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("Auto Start Mode"),
+		widget.NewLabel("Auto Start Mode (iOS Only)"),
 		widget.NewSeparator(),
 		statusLabel,
 	)
@@ -1014,11 +1009,8 @@ func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
 	// Start phones one per second
 	go func() {
 		for i := 0; i < numPhones; i++ {
-			// Random platform selection (50/50 iOS vs Android)
+			// Only iOS for now
 			platformType := "iOS"
-			if time.Now().UnixNano()%2 == 1 {
-				platformType = "Android"
-			}
 
 			// Capture loop variable for closure
 			currentIndex := i
@@ -1062,18 +1054,17 @@ func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
 	myApp.Run()
 }
 
-// runStressTest runs N phones (mix of iOS and Android) in headless mode for specified duration
+// runStressTest runs N iOS phones in headless mode for specified duration
 func runStressTest(numPhones int, duration time.Duration) {
 	fmt.Println("=== Auraphone Blue - Stress Test Mode ===")
-	fmt.Printf("Starting %d devices in headless mode for %v...\n", numPhones, duration)
+	fmt.Printf("Starting %d iOS devices in headless mode for %v...\n", numPhones, duration)
 
 	// Note: Log level is already set from CLI flag in main(), don't override it here
 
 	// Create device manager for hardware UUIDs
 	manager := phone.GetHardwareUUIDManager()
 
-	// Create mix of iOS and Android devices
-	// Alternate between iOS and Android (e.g., iOS, Android, iOS, Android, iOS for 5 phones)
+	// Create iOS devices only
 	phones := make([]phone.Phone, numPhones)
 	for i := 0; i < numPhones; i++ {
 		hardwareUUID, err := manager.AllocateNextUUID()
@@ -1082,16 +1073,11 @@ func runStressTest(numPhones int, duration time.Duration) {
 			return
 		}
 
-		// Alternate between iOS and Android
+		// Only iOS for now
 		var p phone.Phone
 		var platform string
-		if i%2 == 0 {
-			p = iphone.NewIPhone(hardwareUUID)
-			platform = "iOS"
-		} else {
-			p = android.NewAndroid(hardwareUUID)
-			platform = "Android"
-		}
+		p = iphone.NewIPhone(hardwareUUID)
+		platform = "iOS"
 
 		if p == nil {
 			fmt.Printf("ERROR: Failed to create %s phone %d\n", platform, i+1)
