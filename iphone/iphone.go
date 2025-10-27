@@ -74,6 +74,8 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		ip.meshView,
 		ip.cacheManager,
 		ip.photoCoordinator,
+		hardwareUUID,
+		dataDir,
 	)
 	ip.messageRouter.SetDeviceContext(hardwareUUID, "iOS")
 	ip.messageRouter.SetCallbacks(
@@ -97,6 +99,11 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		// If we received a message from this device, they must be connected to us
 		// Register them as a peripheral connection so we can send messages back
 		ip.connManager.RegisterPeripheralConnection(hardwareUUID)
+	})
+
+	// Set callback to check if a device is connected
+	ip.messageRouter.SetIsConnectedCallback(func(hardwareUUID string) bool {
+		return ip.connManager.IsConnected(hardwareUUID)
 	})
 
 	// Load photo mappings and profile

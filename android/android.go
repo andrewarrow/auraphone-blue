@@ -78,6 +78,8 @@ func NewAndroid(hardwareUUID string) *Android {
 		a.meshView,
 		a.cacheManager,
 		a.photoCoordinator,
+		hardwareUUID,
+		dataDir,
 	)
 	a.messageRouter.SetDeviceContext(hardwareUUID, "Android")
 	a.messageRouter.SetCallbacks(
@@ -90,6 +92,11 @@ func NewAndroid(hardwareUUID string) *Android {
 		a.mu.Lock()
 		a.remoteUUIDToDeviceID[hardwareUUID] = deviceID
 		a.mu.Unlock()
+	})
+
+	// Set callback to check if a device is connected
+	a.messageRouter.SetIsConnectedCallback(func(hardwareUUID string) bool {
+		return a.connManager.IsConnected(hardwareUUID)
 	})
 
 	// Load photo mappings and profile

@@ -2,6 +2,7 @@ package phone
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/proto"
@@ -13,6 +14,7 @@ type MessageRouter struct {
 	meshView         *MeshView
 	cacheManager     *DeviceCacheManager
 	photoCoordinator *PhotoTransferCoordinator
+	requestQueue     *RequestQueue
 
 	// Device context for logging
 	deviceHardwareUUID string
@@ -26,6 +28,9 @@ type MessageRouter struct {
 
 	// Callback to store hardware UUID → device ID mapping
 	onDeviceIDDiscovered func(hardwareUUID, deviceID string)
+
+	// Callback to check if a device is currently connected
+	isConnectedFunc func(hardwareUUID string) bool
 }
 
 // NewMessageRouter creates a new message router
@@ -33,11 +38,17 @@ func NewMessageRouter(
 	meshView *MeshView,
 	cacheManager *DeviceCacheManager,
 	photoCoordinator *PhotoTransferCoordinator,
+	hardwareUUID string,
+	dataDir string,
 ) *MessageRouter {
+	rq := NewRequestQueue(hardwareUUID, dataDir)
+	rq.LoadFromDisk()
+
 	return &MessageRouter{
 		meshView:         meshView,
 		cacheManager:     cacheManager,
 		photoCoordinator: photoCoordinator,
+		requestQueue:     rq,
 	}
 }
 
@@ -57,6 +68,11 @@ func (mr *MessageRouter) SetCallbacks(
 // SetDeviceIDDiscoveredCallback sets the callback for when a device ID is discovered
 func (mr *MessageRouter) SetDeviceIDDiscoveredCallback(callback func(hardwareUUID, deviceID string)) {
 	mr.onDeviceIDDiscovered = callback
+}
+
+// SetIsConnectedCallback sets the callback to check if a device is connected
+func (mr *MessageRouter) SetIsConnectedCallback(callback func(hardwareUUID string) bool) {
+	mr.isConnectedFunc = callback
 }
 
 // SetDeviceContext sets device info for logging
@@ -121,10 +137,29 @@ func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.Go
 	if mr.onPhotoNeeded != nil {
 		missingPhotos := mr.meshView.GetMissingPhotos()
 		for _, device := range missingPhotos {
-			err := mr.onPhotoNeeded(device.DeviceID, device.PhotoHash)
-			if err == nil {
-				// Only mark as requested if send succeeded
-				mr.meshView.MarkPhotoRequested(device.DeviceID)
+			hardwareUUID := mr.meshView.GetHardwareUUID(device.DeviceID)
+
+			// Check if we're connected before sending
+			if hardwareUUID != "" && mr.isConnected(hardwareUUID) {
+				// Direct send
+				err := mr.onPhotoNeeded(device.DeviceID, device.PhotoHash)
+				if err == nil {
+					mr.meshView.MarkPhotoRequested(device.DeviceID)
+				} else {
+					logger.Warn(prefix, "Failed to send photo request for %s: %v", device.DeviceID[:8], err)
+				}
+			} else {
+				// Queue for later delivery
+				req := &PendingRequest{
+					DeviceID:     device.DeviceID,
+					HardwareUUID: hardwareUUID,
+					Type:         RequestTypePhoto,
+					PhotoHash:    device.PhotoHash,
+					CreatedAt:    time.Now(),
+				}
+				if err := mr.requestQueue.Enqueue(req); err == nil {
+					logger.Debug(prefix, "📥 Queued photo request for %s (not connected)", device.DeviceID[:8])
+				}
 			}
 		}
 	}
@@ -133,10 +168,29 @@ func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.Go
 	if mr.onProfileNeeded != nil {
 		missingProfiles := mr.meshView.GetMissingProfiles()
 		for _, device := range missingProfiles {
-			err := mr.onProfileNeeded(device.DeviceID, device.ProfileVersion)
-			if err == nil {
-				// Only mark as requested if send succeeded
-				mr.meshView.MarkProfileRequested(device.DeviceID)
+			hardwareUUID := mr.meshView.GetHardwareUUID(device.DeviceID)
+
+			// Check if we're connected before sending
+			if hardwareUUID != "" && mr.isConnected(hardwareUUID) {
+				// Direct send
+				err := mr.onProfileNeeded(device.DeviceID, device.ProfileVersion)
+				if err == nil {
+					mr.meshView.MarkProfileRequested(device.DeviceID)
+				} else {
+					logger.Warn(prefix, "Failed to send profile request for %s: %v", device.DeviceID[:8], err)
+				}
+			} else {
+				// Queue for later delivery
+				req := &PendingRequest{
+					DeviceID:       device.DeviceID,
+					HardwareUUID:   hardwareUUID,
+					Type:           RequestTypeProfile,
+					ProfileVersion: device.ProfileVersion,
+					CreatedAt:      time.Now(),
+				}
+				if err := mr.requestQueue.Enqueue(req); err == nil {
+					logger.Debug(prefix, "📥 Queued profile request for %s (not connected)", device.DeviceID[:8])
+				}
 			}
 		}
 	}
@@ -160,45 +214,72 @@ func (mr *MessageRouter) handleProfileRequest(senderUUID string, req *proto.Prof
 	return nil
 }
 
-// RetryMissingRequestsForConnection checks if there are pending photo/profile requests
-// for devices reachable via this hardware UUID and retries them
-// This handles race conditions where gossip arrives before connection completes
-func (mr *MessageRouter) RetryMissingRequestsForConnection(hardwareUUID string) {
+// isConnected checks if a device is currently connected
+func (mr *MessageRouter) isConnected(hardwareUUID string) bool {
+	if mr.isConnectedFunc != nil {
+		return mr.isConnectedFunc(hardwareUUID)
+	}
+	return false
+}
+
+// FlushQueueForConnection processes all pending requests for a newly connected device
+// This replaces RetryMissingRequestsForConnection with a cleaner approach
+func (mr *MessageRouter) FlushQueueForConnection(hardwareUUID string) {
 	prefix := fmt.Sprintf("%s %s", mr.deviceHardwareUUID[:8], mr.devicePlatform)
 
-	// Check for missing photos that can be reached via this connection
-	if mr.onPhotoNeeded != nil {
-		missingPhotos := mr.meshView.GetMissingPhotos()
-		for _, device := range missingPhotos {
-			// Check if this device is reachable via the connected hardware UUID
-			deviceHardwareUUID := mr.meshView.GetHardwareUUID(device.DeviceID)
-			if deviceHardwareUUID == hardwareUUID {
-				logger.Debug(prefix, "🔄 Retrying photo request for %s (now connected to %s)",
-					device.DeviceID[:8], hardwareUUID[:8])
-				err := mr.onPhotoNeeded(device.DeviceID, device.PhotoHash)
-				if err == nil {
-					// Only mark as requested if send succeeded
-					mr.meshView.MarkPhotoRequested(device.DeviceID)
+	pendingRequests := mr.requestQueue.DequeueForConnection(hardwareUUID)
+
+	if len(pendingRequests) > 0 {
+		logger.Debug(prefix, "📤 Flushing %d pending requests for newly connected %s",
+			len(pendingRequests), hardwareUUID[:8])
+	}
+
+	for _, req := range pendingRequests {
+		switch req.Type {
+		case RequestTypePhoto:
+			err := mr.onPhotoNeeded(req.DeviceID, req.PhotoHash)
+			if err == nil {
+				mr.meshView.MarkPhotoRequested(req.DeviceID)
+				logger.Debug(prefix, "✅ Sent queued photo request for %s", req.DeviceID[:8])
+			} else {
+				// Re-queue with incremented attempt count
+				req.Attempts++
+				if req.Attempts < 5 {
+					mr.requestQueue.Enqueue(req)
+					logger.Debug(prefix, "🔄 Re-queued photo request for %s (attempt %d)", req.DeviceID[:8], req.Attempts)
+				} else {
+					logger.Warn(prefix, "❌ Giving up on photo request for %s after %d attempts",
+						req.DeviceID[:8], req.Attempts)
+				}
+			}
+
+		case RequestTypeProfile:
+			err := mr.onProfileNeeded(req.DeviceID, req.ProfileVersion)
+			if err == nil {
+				mr.meshView.MarkProfileRequested(req.DeviceID)
+				logger.Debug(prefix, "✅ Sent queued profile request for %s", req.DeviceID[:8])
+			} else {
+				// Re-queue with incremented attempt count
+				req.Attempts++
+				if req.Attempts < 5 {
+					mr.requestQueue.Enqueue(req)
+					logger.Debug(prefix, "🔄 Re-queued profile request for %s (attempt %d)", req.DeviceID[:8], req.Attempts)
+				} else {
+					logger.Warn(prefix, "❌ Giving up on profile request for %s after %d attempts",
+						req.DeviceID[:8], req.Attempts)
 				}
 			}
 		}
 	}
 
-	// Check for missing profiles that can be reached via this connection
-	if mr.onProfileNeeded != nil {
-		missingProfiles := mr.meshView.GetMissingProfiles()
-		for _, device := range missingProfiles {
-			// Check if this device is reachable via the connected hardware UUID
-			deviceHardwareUUID := mr.meshView.GetHardwareUUID(device.DeviceID)
-			if deviceHardwareUUID == hardwareUUID {
-				logger.Debug(prefix, "🔄 Retrying profile request for %s (now connected to %s)",
-					device.DeviceID[:8], hardwareUUID[:8])
-				err := mr.onProfileNeeded(device.DeviceID, device.ProfileVersion)
-				if err == nil {
-					// Only mark as requested if send succeeded
-					mr.meshView.MarkProfileRequested(device.DeviceID)
-				}
-			}
-		}
+	// Save queue state after flushing
+	if err := mr.requestQueue.SaveToDisk(); err != nil {
+		logger.Warn(prefix, "Failed to save request queue: %v", err)
 	}
+}
+
+// RetryMissingRequestsForConnection is deprecated - use FlushQueueForConnection instead
+// Kept for backward compatibility during migration
+func (mr *MessageRouter) RetryMissingRequestsForConnection(hardwareUUID string) {
+	mr.FlushQueueForConnection(hardwareUUID)
 }
