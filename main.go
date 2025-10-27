@@ -982,6 +982,78 @@ func cleanupOldDevices() error {
 	return nil
 }
 
+// runAutoStart starts N phones with GUI, launching one random platform (iOS or Android) every second
+func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
+	fmt.Println("=== Auraphone Blue - Auto Start Mode ===")
+	fmt.Printf("Will start %d devices (1 per second, random iOS or Android)...\n", numPhones)
+
+	myApp := app.New()
+
+	// Create launcher window (optional, just to show status)
+	launcher := &Launcher{
+		app:    myApp,
+		window: myApp.NewWindow("Auraphone Blue - Auto Start"),
+	}
+
+	statusLabel := widget.NewLabel("Starting devices...")
+	statusLabel.Alignment = fyne.TextAlignCenter
+
+	content := container.NewVBox(
+		widget.NewLabel(""),
+		widget.NewLabelWithStyle("Auraphone Blue", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("Auto Start Mode"),
+		widget.NewSeparator(),
+		statusLabel,
+	)
+
+	launcher.window.SetContent(container.NewCenter(content))
+	launcher.window.Resize(fyne.NewSize(400, 200))
+	launcher.window.CenterOnScreen()
+	launcher.window.Show()
+
+	// Start phones one per second
+	go func() {
+		for i := 0; i < numPhones; i++ {
+			// Random platform selection (50/50 iOS vs Android)
+			platformType := "iOS"
+			if time.Now().UnixNano()%2 == 1 {
+				platformType = "Android"
+			}
+
+			phoneWindow := NewPhoneWindow(myApp, platformType)
+			if phoneWindow != nil {
+				phoneWindow.Show()
+				statusMsg := fmt.Sprintf("Started %d/%d devices (%s)", i+1, numPhones, platformType)
+				fmt.Println(statusMsg)
+
+				// Update status label
+				statusLabel.SetText(statusMsg)
+			}
+
+			// Wait 1 second before starting next phone (except after last phone)
+			if i < numPhones-1 {
+				time.Sleep(1 * time.Second)
+			}
+		}
+
+		finalMsg := fmt.Sprintf("All %d devices started!", numPhones)
+		statusLabel.SetText(finalMsg)
+		fmt.Println(finalMsg)
+
+		// If duration is specified, set up auto-shutdown
+		if duration > 0 {
+			go func() {
+				fmt.Printf("Will run for %v...\n", duration)
+				time.Sleep(duration)
+				fmt.Println("Duration elapsed, shutting down...")
+				myApp.Quit()
+			}()
+		}
+	}()
+
+	myApp.Run()
+}
+
 // runStressTest runs N phones (mix of iOS and Android) in headless mode for specified duration
 func runStressTest(numPhones int, duration time.Duration) {
 	fmt.Println("=== Auraphone Blue - Stress Test Mode ===")
@@ -1087,6 +1159,12 @@ func main() {
 	// Run in headless mode if flag is provided
 	if *headless {
 		runStressTest(*numPhones, *duration)
+		return
+	}
+
+	// If --phones flag is provided with value > 0, start phones automatically
+	if *numPhones > 0 {
+		runAutoStart(*numPhones, *duration, *logLevel)
 		return
 	}
 
