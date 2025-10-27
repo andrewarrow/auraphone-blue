@@ -196,6 +196,11 @@ func (ip *iPhone) DidWriteValueForCharacteristic(peripheral *swift.CBPeripheral,
 
 func (ip *iPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral, characteristic *swift.CBCharacteristic, err error) {
 	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+
+	logger.Debug(prefix,
+		"📥 RECEIVED DATA: char=%s bytes=%d from_peripheral=%s",
+		characteristic.UUID[len(characteristic.UUID)-4:], len(characteristic.Value), peripheral.UUID[:8])
+
 	if err != nil {
 		logger.Error(prefix, "❌ Characteristic update error from %s: %v", peripheral.UUID[:8], err)
 		return
@@ -205,16 +210,19 @@ func (ip *iPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral
 	switch characteristic.UUID {
 	case phone.AuraProtocolCharUUID:
 		// Gossip, photo request, or profile request
+		logger.Debug(prefix, "📥 RX Protocol message from %s (%d bytes)", peripheral.UUID[:8], len(characteristic.Value))
 		if err := ip.messageRouter.HandleProtocolMessage(peripheral.UUID, characteristic.Value); err != nil {
 			logger.Error(prefix, "❌ Failed to handle protocol message from %s: %v", peripheral.UUID[:8], err)
 		}
 
 	case phone.AuraPhotoCharUUID:
 		// Photo chunk data
+		logger.Debug(prefix, "📥 RX Photo chunk from %s (%d bytes)", peripheral.UUID[:8], len(characteristic.Value))
 		ip.photoHandler.HandlePhotoChunk(peripheral.UUID, characteristic.Value)
 
 	case phone.AuraProfileCharUUID:
 		// Profile message
+		logger.Debug(prefix, "📥 RX Profile message from %s (%d bytes)", peripheral.UUID[:8], len(characteristic.Value))
 		ip.profileHandler.HandleProfileMessage(peripheral.UUID, characteristic.Value)
 	}
 }

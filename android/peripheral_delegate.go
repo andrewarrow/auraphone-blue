@@ -90,7 +90,9 @@ func (d *androidGattServerDelegate) OnCharacteristicReadRequest(device *kotlin.B
 func (d *androidGattServerDelegate) OnCharacteristicWriteRequest(device *kotlin.BluetoothDevice, requestId int, characteristic *kotlin.BluetoothGattCharacteristic, preparedWrite bool, responseNeeded bool, offset int, value []byte) {
 	prefix := fmt.Sprintf("%s Android", d.android.hardwareUUID[:8])
 
-	logger.Debug(prefix, "📥 GATT server: Write request from %s to char %s (%d bytes)", device.Address[:8], characteristic.UUID[:8], len(value))
+	logger.Debug(prefix,
+		"📥 RECEIVED DATA (Peripheral): char=%s bytes=%d from_central=%s",
+		characteristic.UUID[len(characteristic.UUID)-4:], len(value), device.Address[:8])
 
 	// Process based on characteristic
 	senderUUID := device.Address
@@ -98,6 +100,7 @@ func (d *androidGattServerDelegate) OnCharacteristicWriteRequest(device *kotlin.
 	switch characteristic.UUID {
 	case phone.AuraProtocolCharUUID:
 		// Protocol characteristic handles gossip (and legacy handshakes)
+		logger.Debug(prefix, "📥 RX Protocol message from %s (%d bytes)", senderUUID[:8], len(value))
 		if d.android.messageRouter != nil {
 			if err := d.android.messageRouter.HandleProtocolMessage(senderUUID, value); err != nil {
 				logger.Error(prefix, "❌ Failed to handle protocol message: %v", err)
@@ -106,12 +109,14 @@ func (d *androidGattServerDelegate) OnCharacteristicWriteRequest(device *kotlin.
 
 	case phone.AuraPhotoCharUUID:
 		// Photo chunk - copy data before passing to avoid race condition
+		logger.Debug(prefix, "📥 RX Photo chunk from %s (%d bytes)", senderUUID[:8], len(value))
 		dataCopy := make([]byte, len(value))
 		copy(dataCopy, value)
 		go d.android.photoHandler.HandlePhotoChunk(senderUUID, dataCopy)
 
 	case phone.AuraProfileCharUUID:
 		// Profile message - copy data before passing
+		logger.Debug(prefix, "📥 RX Profile message from %s (%d bytes)", senderUUID[:8], len(value))
 		dataCopy := make([]byte, len(value))
 		copy(dataCopy, value)
 		go d.android.profileHandler.HandleProfileMessage(senderUUID, dataCopy)

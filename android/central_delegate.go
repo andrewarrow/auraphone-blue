@@ -253,21 +253,28 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 // OnCharacteristicChanged is called when a notification/indication is received
 func (a *Android) OnCharacteristicChanged(gatt *kotlin.BluetoothGatt, characteristic *kotlin.BluetoothGattCharacteristic) {
 	remoteUUID := gatt.GetRemoteUUID()
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
+	logger.Debug(prefix,
+		"📥 RECEIVED DATA (Central): char=%s bytes=%d from_peripheral=%s",
+		characteristic.UUID[len(characteristic.UUID)-4:], len(characteristic.Value), remoteUUID[:8])
 
 	// Handle based on characteristic type
 	if characteristic.UUID == phone.AuraProtocolCharUUID {
 		// Protocol characteristic handles gossip (and legacy handshakes)
+		logger.Debug(prefix, "📥 RX Protocol message from %s (%d bytes)", remoteUUID[:8], len(characteristic.Value))
 		if a.messageRouter != nil {
 			if err := a.messageRouter.HandleProtocolMessage(remoteUUID, characteristic.Value); err != nil {
-				prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 				logger.Error(prefix, "❌ Failed to handle protocol message: %v", err)
 			}
 		}
 	} else if characteristic.UUID == phone.AuraPhotoCharUUID {
 		// Photo characteristic is for photo chunks
+		logger.Debug(prefix, "📥 RX Photo chunk from %s (%d bytes)", remoteUUID[:8], len(characteristic.Value))
 		a.photoHandler.HandlePhotoChunk(remoteUUID, characteristic.Value)
 	} else if characteristic.UUID == phone.AuraProfileCharUUID {
 		// Profile characteristic is for ProfileMessage
+		logger.Debug(prefix, "📥 RX Profile message from %s (%d bytes)", remoteUUID[:8], len(characteristic.Value))
 		a.profileHandler.HandleProfileMessage(remoteUUID, characteristic.Value)
 	}
 }

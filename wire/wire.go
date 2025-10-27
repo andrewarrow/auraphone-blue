@@ -950,12 +950,20 @@ func (sw *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, da
 	sw.connMutex.RUnlock()
 
 	if !exists {
+		logger.Error(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"❌ WIRE WRITE BLOCKED: not connected to %s", targetUUID[:8])
 		return fmt.Errorf("not connected to %s", targetUUID[:8])
 	}
 
 	if dualConn.asCentral == nil {
+		logger.Error(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"❌ WIRE WRITE BLOCKED: no Central connection to %s", targetUUID[:8])
 		return fmt.Errorf("no Central connection to %s (cannot write)", targetUUID[:8])
 	}
+
+	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+		"📤 WIRE WRITE START: target=%s char=%s bytes=%d",
+		targetUUID[:8], charUUID[len(charUUID)-4:], len(data))
 
 	msg := CharacteristicMessage{
 		Operation:   "write",
@@ -970,7 +978,18 @@ func (sw *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, da
 		fmt.Sprintf("📤 TX Write [central→peripheral] (to %s, svc=%s, char=%s, %d bytes)",
 			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
 
-	return sw.sendCharacteristicMessageViaRole(dualConn.asCentral, targetUUID, &msg)
+	err := sw.sendCharacteristicMessageViaRole(dualConn.asCentral, targetUUID, &msg)
+
+	if err != nil {
+		logger.Error(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"❌ WIRE WRITE FAILED: target=%s error=%v", targetUUID[:8], err)
+	} else {
+		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
+			"✅ WIRE WRITE SUCCESS: target=%s char=%s bytes=%d",
+			targetUUID[:8], charUUID[len(charUUID)-4:], len(data))
+	}
+
+	return err
 }
 
 // WriteCharacteristicNoResponse sends a write without waiting for response (uses Central connection)
