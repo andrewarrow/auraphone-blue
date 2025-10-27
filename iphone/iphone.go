@@ -48,22 +48,22 @@ type IPhone struct {
 	photoCache      *phone.PhotoCache      // Photo caching and storage
 	photoChunker    *phone.PhotoChunker    // Photo chunking for BLE transfer
 
-	discovered      map[string]phone.DiscoveredDevice // hardwareUUID -> device
-	handshaked      map[string]*HandshakeMessage      // hardwareUUID -> handshake data
-	connectedPeers  map[string]*swift.CBPeripheral    // hardwareUUID -> peripheral object
-	photoTransfers  map[string]*phone.PhotoTransferState // hardwareUUID -> in-progress transfer
+	discovered     map[string]phone.DiscoveredDevice    // hardwareUUID -> device
+	handshaked     map[string]*HandshakeMessage         // hardwareUUID -> handshake data
+	connectedPeers map[string]*swift.CBPeripheral       // hardwareUUID -> peripheral object
+	photoTransfers map[string]*phone.PhotoTransferState // hardwareUUID -> in-progress transfer
 
 	// Gossip protocol (shared logic in phone/mesh_view.go)
-	meshView        *phone.MeshView
-	gossipTicker    *time.Ticker
-	stopGossip      chan struct{}
+	meshView     *phone.MeshView
+	gossipTicker *time.Ticker
+	stopGossip   chan struct{}
 
-	mu              sync.RWMutex
-	callback        phone.DeviceDiscoveryCallback
-	profilePhoto    string
-	photoHash       string // SHA-256 hash of our current profile photo
-	photoData       []byte // Our current profile photo data
-	profile         map[string]string
+	mu           sync.RWMutex
+	callback     phone.DeviceDiscoveryCallback
+	profilePhoto string
+	photoHash    string // SHA-256 hash of our current profile photo
+	photoData    []byte // Our current profile photo data
+	profile      map[string]string
 }
 
 // NewIPhone creates a new iPhone instance
@@ -201,22 +201,22 @@ func (ip *IPhone) setupGATTServices() {
 		IsPrimary: true,
 		Characteristics: []*swift.CBMutableCharacteristic{
 			{
-				UUID:       phone.AuraProtocolCharUUID,
-				Properties: swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
+				UUID:        phone.AuraProtocolCharUUID,
+				Properties:  swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
 				Permissions: swift.CBAttributePermissionsWriteable | swift.CBAttributePermissionsReadable,
-				Value:      nil,
+				Value:       nil,
 			},
 			{
-				UUID:       phone.AuraPhotoCharUUID,
-				Properties: swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
+				UUID:        phone.AuraPhotoCharUUID,
+				Properties:  swift.CBCharacteristicPropertyWrite | swift.CBCharacteristicPropertyNotify,
 				Permissions: swift.CBAttributePermissionsWriteable,
-				Value:      nil,
+				Value:       nil,
 			},
 			{
-				UUID:       phone.AuraProfileCharUUID,
-				Properties: swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyNotify,
+				UUID:        phone.AuraProfileCharUUID,
+				Properties:  swift.CBCharacteristicPropertyRead | swift.CBCharacteristicPropertyNotify,
 				Permissions: swift.CBAttributePermissionsReadable,
-				Value:      nil,
+				Value:       nil,
 			},
 		},
 	}
@@ -281,10 +281,23 @@ func (ip *IPhone) handleIncomingCentralConnection(peerUUID string) {
 		return
 	}
 
-	// Get device name from discovered devices
+	// Get device name from discovered devices, or create a minimal entry
 	deviceName := "Unknown"
 	if device, exists := ip.discovered[peerUUID]; exists {
 		deviceName = device.Name
+	} else {
+		// Central connected to us but we haven't discovered them yet
+		// Add them to discovered map so photo callback will work later
+		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📝 Adding Central %s to discovered map (connected before discovery)", shortHash(peerUUID))
+		ip.discovered[peerUUID] = phone.DiscoveredDevice{
+			HardwareUUID: peerUUID,
+			Name:         deviceName,
+			RSSI:         -45, // Default RSSI
+		}
+		// Trigger GUI callback so device appears in list
+		if ip.callback != nil {
+			ip.callback(ip.discovered[peerUUID])
+		}
 	}
 
 	// Create CBPeripheral object for the Central that connected to us
