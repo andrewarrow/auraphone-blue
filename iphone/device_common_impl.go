@@ -60,8 +60,21 @@ func (ip *iPhone) GetPhotoCoordinator() *phone.PhotoTransferCoordinator {
 	return ip.photoCoordinator
 }
 
+func (ip *iPhone) GetIdentityManager() *phone.IdentityManager {
+	return ip.identityManager
+}
+
 func (ip *iPhone) GetUUIDToDeviceIDMap() map[string]string {
-	return ip.peripheralToDeviceID
+	// Build map from identity manager
+	result := make(map[string]string)
+	for _, deviceID := range ip.identityManager.GetAllKnownDevices() {
+		if hardwareUUID, ok := ip.identityManager.GetHardwareUUID(deviceID); ok {
+			result[hardwareUUID] = deviceID
+		}
+	}
+	// Include our own mapping
+	result[ip.identityManager.GetOurHardwareUUID()] = ip.identityManager.GetOurDeviceID()
+	return result
 }
 
 func (ip *iPhone) GetMutex() *sync.RWMutex {

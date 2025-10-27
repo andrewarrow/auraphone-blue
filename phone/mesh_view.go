@@ -15,17 +15,16 @@ import (
 
 // MeshDeviceState represents what we know about a single device in the mesh
 type MeshDeviceState struct {
-	DeviceID            string    `json:"device_id"`
-	HardwareUUID        string    `json:"hardware_uuid"`         // BLE hardware UUID for connection
-	PhotoHash           string    `json:"photo_hash"`            // hex-encoded SHA256
-	LastSeenTime        time.Time `json:"last_seen_time"`        // when we last saw this state
-	FirstName           string    `json:"first_name"`            // cached name
-	HavePhoto           bool      `json:"have_photo"`            // do we have their photo cached locally?
-	PhotoRequestSent    bool      `json:"photo_request_sent"`    // have we requested this photo?
-	ProfileVersion      int32     `json:"profile_version"`       // profile version number
-	ProfileSummaryHash  string    `json:"profile_summary_hash"`  // hex-encoded SHA256 of all profile fields
-	HaveProfile         bool      `json:"have_profile"`          // do we have their profile cached locally?
-	ProfileRequestSent  bool      `json:"profile_request_sent"`  // have we requested this profile?
+	DeviceID           string    `json:"device_id"`
+	PhotoHash          string    `json:"photo_hash"`           // hex-encoded SHA256
+	LastSeenTime       time.Time `json:"last_seen_time"`       // when we last saw this state
+	FirstName          string    `json:"first_name"`           // cached name
+	HavePhoto          bool      `json:"have_photo"`           // do we have their photo cached locally?
+	PhotoRequestSent   bool      `json:"photo_request_sent"`   // have we requested this photo?
+	ProfileVersion     int32     `json:"profile_version"`      // profile version number
+	ProfileSummaryHash string    `json:"profile_summary_hash"` // hex-encoded SHA256 of all profile fields
+	HaveProfile        bool      `json:"have_profile"`         // do we have their profile cached locally?
+	ProfileRequestSent bool      `json:"profile_request_sent"` // have we requested this profile?
 }
 
 // MeshView manages the gossip protocol mesh view
@@ -51,6 +50,9 @@ type MeshView struct {
 
 	// Photo cache reference (to check if we have photos)
 	cacheManager *DeviceCacheManager
+
+	// Identity manager reference (to look up hardware UUIDs)
+	identityManager *IdentityManager
 
 	// Persistence
 	dataDir string
@@ -78,8 +80,15 @@ func NewMeshView(ourDeviceID, ourHardwareUUID, dataDir string, cacheManager *Dev
 	return mv
 }
 
+// SetIdentityManager sets the identity manager reference for looking up hardware UUIDs
+func (mv *MeshView) SetIdentityManager(im *IdentityManager) {
+	mv.mu.Lock()
+	defer mv.mu.Unlock()
+	mv.identityManager = im
+}
+
 // UpdateDevice updates or adds a device to the mesh view
-func (mv *MeshView) UpdateDevice(deviceID, hardwareUUID, photoHashHex, firstName string, profileVersion int32, profileSummaryHashHex string) {
+func (mv *MeshView) UpdateDevice(deviceID, photoHashHex, firstName string, profileVersion int32, profileSummaryHashHex string) {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
 
@@ -106,10 +115,6 @@ func (mv *MeshView) UpdateDevice(deviceID, hardwareUUID, photoHashHex, firstName
 	existing, exists := mv.devices[deviceID]
 	if exists {
 		// Update existing device
-		if hardwareUUID != "" && hardwareUUID != existing.HardwareUUID {
-			// Hardware UUID updated
-			existing.HardwareUUID = hardwareUUID
-		}
 		if photoHashHex != "" && photoHashHex != existing.PhotoHash {
 			// Photo changed - reset request state
 			existing.PhotoHash = photoHashHex
@@ -129,7 +134,6 @@ func (mv *MeshView) UpdateDevice(deviceID, hardwareUUID, photoHashHex, firstName
 		// New device discovered
 		mv.devices[deviceID] = &MeshDeviceState{
 			DeviceID:           deviceID,
-			HardwareUUID:       hardwareUUID,
 			PhotoHash:          photoHashHex,
 			LastSeenTime:       now,
 			FirstName:          firstName,
@@ -153,7 +157,6 @@ func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
 
 	for _, deviceState := range gossipMsg.MeshView {
 		deviceID := deviceState.DeviceId
-		hardwareUUID := deviceState.HardwareUuid
 		photoHashBytes := deviceState.PhotoHash
 		photoHashHex := hex.EncodeToString(photoHashBytes)
 		firstName := deviceState.FirstName
@@ -188,7 +191,6 @@ func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
 
 			mv.devices[deviceID] = &MeshDeviceState{
 				DeviceID:           deviceID,
-				HardwareUUID:       hardwareUUID,
 				PhotoHash:          photoHashHex,
 				LastSeenTime:       lastSeenTime,
 				FirstName:          firstName,
@@ -204,11 +206,7 @@ func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
 			// Update if gossip has newer information
 			updated := false
 			if lastSeenTime.After(existing.LastSeenTime) {
-				// Always update hardware UUID if provided (in case it changed or wasn't known before)
-				if hardwareUUID != "" && hardwareUUID != existing.HardwareUUID {
-					existing.HardwareUUID = hardwareUUID
-					updated = true
-				}
+				// Hardware UUID is no longer stored here - it's managed by IdentityManager
 				if photoHashHex != "" && photoHashHex != existing.PhotoHash {
 					// Photo changed
 					existing.PhotoHash = photoHashHex
@@ -312,18 +310,6 @@ func (mv *MeshView) MarkProfileReceived(deviceID string, version int32) {
 			device.HaveProfile = true
 		}
 	}
-}
-
-// GetHardwareUUID returns the hardware UUID for a given device ID
-// Returns empty string if device is not in mesh view
-func (mv *MeshView) GetHardwareUUID(deviceID string) string {
-	mv.mu.RLock()
-	defer mv.mu.RUnlock()
-
-	if device, exists := mv.devices[deviceID]; exists {
-		return device.HardwareUUID
-	}
-	return ""
 }
 
 // SelectRandomNeighbors picks N random devices to be our gossip neighbors
@@ -435,9 +421,16 @@ func (mv *MeshView) BuildGossipMessage(ourPhotoHashHex, ourFirstName string, our
 	for _, device := range mv.devices {
 		hashBytes, _ := hex.DecodeString(device.PhotoHash)
 		profileSummaryBytes, _ := hex.DecodeString(device.ProfileSummaryHash)
+
+		// Look up hardware UUID from identity manager
+		hardwareUUID := ""
+		if mv.identityManager != nil {
+			hardwareUUID, _ = mv.identityManager.GetHardwareUUID(device.DeviceID)
+		}
+
 		meshView = append(meshView, &proto.DeviceState{
 			DeviceId:           device.DeviceID,
-			HardwareUuid:       device.HardwareUUID,
+			HardwareUuid:       hardwareUUID,
 			PhotoHash:          hashBytes,
 			LastSeenTimestamp:  device.LastSeenTime.Unix(),
 			FirstName:          device.FirstName,

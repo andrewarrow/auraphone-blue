@@ -10,7 +10,8 @@ import (
 // ConnectionManager tracks dual-role connections and provides unified send interface
 // Manages both Central mode (we connect to others) and Peripheral mode (others connect to us)
 type ConnectionManager struct {
-	hardwareUUID string
+	hardwareUUID    string
+	identityManager *IdentityManager
 
 	// Connection tracking
 	// Key: remoteUUID (hardware UUID of remote device)
@@ -47,12 +48,25 @@ func (cm *ConnectionManager) SetSendFunctions(
 	cm.sendViaPeripheral = sendViaPeripheral
 }
 
+// SetIdentityManager sets the identity manager for connection state tracking
+func (cm *ConnectionManager) SetIdentityManager(im *IdentityManager) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	cm.identityManager = im
+}
+
 // RegisterCentralConnection registers a connection where we acted as Central
 func (cm *ConnectionManager) RegisterCentralConnection(remoteUUID string, conn interface{}) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
 	cm.centralConnections[remoteUUID] = conn
+
+	// Mark device as connected in identity manager
+	if cm.identityManager != nil {
+		cm.identityManager.MarkConnected(remoteUUID)
+	}
 }
 
 // UnregisterCentralConnection removes a Central mode connection
@@ -61,6 +75,11 @@ func (cm *ConnectionManager) UnregisterCentralConnection(remoteUUID string) {
 	defer cm.mu.Unlock()
 
 	delete(cm.centralConnections, remoteUUID)
+
+	// Mark device as disconnected in identity manager if not connected via peripheral mode
+	if cm.identityManager != nil && !cm.peripheralConnections[remoteUUID] {
+		cm.identityManager.MarkDisconnected(remoteUUID)
+	}
 }
 
 // RegisterPeripheralConnection registers a connection where we acted as Peripheral
@@ -69,6 +88,11 @@ func (cm *ConnectionManager) RegisterPeripheralConnection(remoteUUID string) {
 	defer cm.mu.Unlock()
 
 	cm.peripheralConnections[remoteUUID] = true
+
+	// Mark device as connected in identity manager
+	if cm.identityManager != nil {
+		cm.identityManager.MarkConnected(remoteUUID)
+	}
 }
 
 // UnregisterPeripheralConnection removes a Peripheral mode connection
@@ -77,6 +101,13 @@ func (cm *ConnectionManager) UnregisterPeripheralConnection(remoteUUID string) {
 	defer cm.mu.Unlock()
 
 	delete(cm.peripheralConnections, remoteUUID)
+
+	// Mark device as disconnected in identity manager if not connected via central mode
+	if cm.identityManager != nil {
+		if _, inCentral := cm.centralConnections[remoteUUID]; !inCentral {
+			cm.identityManager.MarkDisconnected(remoteUUID)
+		}
+	}
 }
 
 // SendToDevice sends data to a device via the appropriate role (Central or Peripheral)

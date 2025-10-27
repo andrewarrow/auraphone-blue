@@ -61,6 +61,9 @@ func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, periphera
 
 	ip.connManager.RegisterCentralConnection(peripheral.UUID, &peripheral)
 
+	// Mark device as connected in identity manager (connection manager will do this too, but this is explicit)
+	ip.identityManager.MarkConnected(peripheral.UUID)
+
 	// Set delegate and discover services
 	peripheral.Delegate = ip
 	peripheral.DiscoverServices([]string{phone.AuraServiceUUID})
@@ -87,9 +90,10 @@ func (ip *iPhone) DidDisconnectPeripheral(central swift.CBCentralManager, periph
 	}
 
 	// Get device ID before cleanup
-	ip.mu.Lock()
-	deviceID := ip.peripheralToDeviceID[peripheral.UUID]
-	ip.mu.Unlock()
+	deviceID, _ := ip.identityManager.GetDeviceID(peripheral.UUID)
+
+	// Mark device as disconnected in identity manager
+	ip.identityManager.MarkDisconnected(peripheral.UUID)
 
 	// Clean up photo transfer state for disconnected device
 	if deviceID != "" {

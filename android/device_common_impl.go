@@ -60,8 +60,21 @@ func (a *Android) GetPhotoCoordinator() *phone.PhotoTransferCoordinator {
 	return a.photoCoordinator
 }
 
+func (a *Android) GetIdentityManager() *phone.IdentityManager {
+	return a.identityManager
+}
+
 func (a *Android) GetUUIDToDeviceIDMap() map[string]string {
-	return a.remoteUUIDToDeviceID
+	// Build map from identity manager
+	result := make(map[string]string)
+	for _, deviceID := range a.identityManager.GetAllKnownDevices() {
+		if hardwareUUID, ok := a.identityManager.GetHardwareUUID(deviceID); ok {
+			result[hardwareUUID] = deviceID
+		}
+	}
+	// Include our own mapping
+	result[a.identityManager.GetOurHardwareUUID()] = a.identityManager.GetOurDeviceID()
+	return result
 }
 
 func (a *Android) GetMutex() *sync.RWMutex {

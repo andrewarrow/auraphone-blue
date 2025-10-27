@@ -34,7 +34,6 @@ func NewAndroid(hardwareUUID string) *Android {
 		connectedCentrals:      make(map[string]bool),
 		centralSubscriptions:   make(map[string]int),
 		discoveredDevices:      make(map[string]*kotlin.BluetoothDevice),
-		remoteUUIDToDeviceID:   make(map[string]string),
 		deviceIDToPhotoHash:    make(map[string]string),
 		receivedPhotoHashes:    make(map[string]string),
 		receivedProfileVersion: make(map[string]int32),
@@ -60,13 +59,21 @@ func NewAndroid(hardwareUUID string) *Android {
 	// Initialize photo coordinator
 	a.photoCoordinator = phone.NewPhotoTransferCoordinator(hardwareUUID)
 
-	// Initialize mesh view for gossip protocol
+	// Initialize identity manager (must come before mesh view)
 	dataDir := phone.GetDeviceDir(hardwareUUID)
+	a.identityManager = phone.NewIdentityManager(hardwareUUID, deviceID, dataDir)
+	if err := a.identityManager.LoadFromDisk(); err != nil {
+		fmt.Printf("Failed to load identity mappings: %v\n", err)
+	}
+
+	// Initialize mesh view for gossip protocol
 	a.meshView = phone.NewMeshView(deviceID, hardwareUUID, dataDir, a.cacheManager)
+	a.meshView.SetIdentityManager(a.identityManager)
 
 	// Initialize connection manager for dual-role support
 	a.connManager = phone.NewConnectionManager(hardwareUUID)
 	a.connManager.SetSendFunctions(a.sendViaCentralMode, a.sendViaPeripheralMode)
+	a.connManager.SetIdentityManager(a.identityManager)
 
 	// Initialize shared handlers (platform-agnostic code in phone/ package)
 	a.gossipHandler = phone.NewGossipHandler(a, a.gossipInterval, a.staleCheckDone)
@@ -82,6 +89,7 @@ func NewAndroid(hardwareUUID string) *Android {
 		dataDir,
 	)
 	a.messageRouter.SetDeviceContext(hardwareUUID, "Android")
+	a.messageRouter.SetIdentityManager(a.identityManager)
 	a.messageRouter.SetCallbacks(
 		func(deviceID, photoHash string) error { return a.gossipHandler.RequestPhoto(deviceID, photoHash) },
 		func(deviceID string, version int32) error { return a.gossipHandler.RequestProfile(deviceID, version) },
@@ -89,9 +97,14 @@ func NewAndroid(hardwareUUID string) *Android {
 		func(senderUUID string, req *proto.ProfileRequestMessage) { a.profileHandler.HandleProfileRequest(senderUUID, req) },
 	)
 	a.messageRouter.SetDeviceIDDiscoveredCallback(func(hardwareUUID, deviceID string) {
-		a.mu.Lock()
-		a.remoteUUIDToDeviceID[hardwareUUID] = deviceID
-		a.mu.Unlock()
+		prefix := fmt.Sprintf("%s Android", hardwareUUID[:8])
+		logger.Debug(prefix, "🔑 Storing deviceID mapping: %s → %s", hardwareUUID[:8], deviceID[:8])
+
+		// Register device in identity manager
+		a.identityManager.RegisterDevice(hardwareUUID, deviceID)
+		a.identityManager.SaveToDisk()
+
+		logger.Debug(prefix, "✅ Mapping stored. Total mappings: %d", a.identityManager.GetMappingCount())
 	})
 
 	// Set callback to check if a device is connected
@@ -288,16 +301,18 @@ func (a *Android) TriggerDiscoveryUpdate(hardwareUUID, deviceID, photoHash strin
 
 	logger.Debug(prefix, "🔔 discoveryCallback is NOT nil, proceeding...")
 
-	// Look up device name from remoteUUIDToDeviceID map
+	// Look up device name from discovered devices
 	a.mu.RLock()
 	// Default name
 	name := "Unknown Device"
-	// Try to get a better name from discovered devices
-	for rUUID, dID := range a.remoteUUIDToDeviceID {
-		if rUUID == hardwareUUID || dID == deviceID {
-			if device, exists := a.discoveredDevices[rUUID]; exists {
+	// Try to find the device by hardware UUID
+	if device, exists := a.discoveredDevices[hardwareUUID]; exists {
+		name = device.Name
+	} else {
+		// If not found by hardware UUID, try looking up from device ID
+		if lookupHardwareUUID, ok := a.identityManager.GetHardwareUUID(deviceID); ok {
+			if device, exists := a.discoveredDevices[lookupHardwareUUID]; exists {
 				name = device.Name
-				break
 			}
 		}
 	}

@@ -1018,3 +1018,63 @@ The `RetryMissingRequestsForConnection` commit exposed fundamental timing issues
 After completion, the simulator will accurately model real BLE behavior and be ready for hardware testing. The architecture will be clean, testable, and maintainable.
 
 **Next Step**: Review this plan with the team, get approval, create feature branch, start Week 1 implementation.
+
+
+
+
+
+
+----- progress
+
+Week 1 Complete! 🎉
+
+  I've successfully completed Week 1: Request Queue System from the PLAN.md. Here's what was
+  implemented:
+
+  ✅ Completed:
+
+  1. Created phone/request_queue.go - Full request queue infrastructure with:
+    - Dual-index structure (by deviceID and hardwareUUID for fast lookups)
+    - Enqueue with duplicate detection
+    - Dequeue by connection or deviceID
+    - Persistent storage with atomic writes
+    - Hardware UUID updates when mappings are learned
+  2. Created phone/request_queue_test.go - Comprehensive test suite covering:
+    - Basic enqueue/dequeue operations
+    - Duplicate request handling
+    - Persistence across restarts
+    - Hardware UUID updates
+    - Multiple requests per device
+    - Concurrent access (race detection)
+    - Atomic file writes
+    - 18 test cases total
+  3. Integrated RequestQueue into MessageRouter:
+    - Added requestQueue field and isConnectedFunc callback
+    - Updated NewMessageRouter() to accept hardwareUUID and dataDir
+    - Modified handleGossipMessage() to check connection state before sending
+    - Queue requests for devices that aren't currently connected
+    - Replaced RetryMissingRequestsForConnection() with FlushQueueForConnection()
+    - New method processes queued requests when connections are established
+    - Automatic retry with backoff (max 5 attempts)
+    - Persistent queue state saves after flushing
+  4. Updated iOS (iphone/iphone.go):
+    - Pass hardwareUUID and dataDir to NewMessageRouter
+    - Set isConnected callback using connManager.IsConnected()
+    - Queue automatically flushes when connections are established
+  5. Updated Android (android/android.go):
+    - Pass hardwareUUID and dataDir to NewMessageRouter
+    - Set isConnected callback using connManager.IsConnected()
+    - Same queue behavior as iOS
+
+  Key Improvements:
+
+  ✅ No more sending to unreachable devices - Requests are queued if device isn't connected✅
+  Automatic retry - Queued requests sent when connection becomes available✅ Persistence - Queue
+  survives app restarts✅ Backoff logic - Failed requests retry up to 5 times before giving up✅
+  Clean architecture - Backward compatible with RetryMissingRequestsForConnection() wrapper
+
+  The code is ready to test! When you run go build or go run, the simulator will now:
+  - Queue photo/profile requests for devices learned via gossip but not yet connected
+  - Automatically flush the queue when those connections are established
+  - Persist pending requests across restarts
+

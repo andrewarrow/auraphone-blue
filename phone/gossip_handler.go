@@ -170,11 +170,11 @@ func (gh *GossipHandler) RequestPhoto(deviceID, photoHash string) error {
 		return fmt.Errorf("failed to marshal photo request: %w", err)
 	}
 
-	// Get hardware UUID from mesh view (learned via gossip)
-	meshView := device.GetMeshView()
-	targetUUID := meshView.GetHardwareUUID(deviceID)
+	// Get hardware UUID from identity manager
+	identityManager := device.GetIdentityManager()
+	targetUUID, ok := identityManager.GetHardwareUUID(deviceID)
 
-	if targetUUID == "" {
+	if !ok || targetUUID == "" {
 		logger.Warn(prefix, "⚠️  Cannot request photo: don't know hardware UUID for device %s", deviceID[:8])
 		return fmt.Errorf("hardware UUID not known for device %s", deviceID)
 	}
@@ -209,11 +209,11 @@ func (gh *GossipHandler) RequestProfile(deviceID string, version int32) error {
 		return fmt.Errorf("failed to marshal profile request: %w", err)
 	}
 
-	// Get hardware UUID from mesh view (learned via gossip)
-	meshView := device.GetMeshView()
-	targetUUID := meshView.GetHardwareUUID(deviceID)
+	// Get hardware UUID from identity manager
+	identityManager := device.GetIdentityManager()
+	targetUUID, ok := identityManager.GetHardwareUUID(deviceID)
 
-	if targetUUID == "" {
+	if !ok || targetUUID == "" {
 		logger.Warn(prefix, "⚠️  Cannot request profile: don't know hardware UUID for device %s", deviceID[:8])
 		return fmt.Errorf("hardware UUID not known for device %s", deviceID)
 	}

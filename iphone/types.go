@@ -29,7 +29,6 @@ type iPhone struct {
 	localProfile           *phone.LocalProfile                 // Our local profile data
 	mu                     sync.RWMutex                        // Protects all maps below
 	connectedPeripherals   map[string]*swift.CBPeripheral      // peripheral UUID -> peripheral
-	peripheralToDeviceID   map[string]string                   // hardware UUID -> logical device ID
 	deviceIDToPhotoHash    map[string]string                   // deviceID -> their TX photo hash
 	receivedPhotoHashes    map[string]string                   // deviceID -> RX hash (photos we got from them)
 	receivedProfileVersion map[string]int32                    // deviceID -> their profile version
@@ -39,6 +38,7 @@ type iPhone struct {
 	meshView         *phone.MeshView
 	messageRouter    *phone.MessageRouter
 	connManager      *phone.ConnectionManager
+	identityManager  *phone.IdentityManager                  // Centralized identity mapping (hardware UUID <-> device ID)
 	gossipInterval   time.Duration
 	lastGossipTime   time.Time
 

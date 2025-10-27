@@ -29,7 +29,6 @@ type Android struct {
 	connectedCentrals      map[string]bool                     // remote UUID -> true (devices that connected to us as Peripheral)
 	centralSubscriptions   map[string]int                      // remote UUID -> count of subscribed characteristics (max 3)
 	discoveredDevices      map[string]*kotlin.BluetoothDevice  // remote UUID -> discovered device (for reconnect)
-	remoteUUIDToDeviceID map[string]string                   // hardware UUID -> logical device ID
 	deviceIDToPhotoHash    map[string]string                   // deviceID -> their TX photo hash
 	receivedPhotoHashes    map[string]string                   // deviceID -> RX hash (photos we got from them)
 	receivedProfileVersion map[string]int32                    // deviceID -> their profile version
@@ -40,6 +39,7 @@ type Android struct {
 	meshView         *phone.MeshView
 	messageRouter    *phone.MessageRouter
 	connManager      *phone.ConnectionManager
+	identityManager  *phone.IdentityManager                  // Centralized identity mapping (hardware UUID <-> device ID)
 	gossipInterval   time.Duration
 	lastGossipTime   time.Time
 

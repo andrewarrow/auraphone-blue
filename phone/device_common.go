@@ -28,6 +28,7 @@ type DeviceCommon interface {
 	GetMeshView() *MeshView
 	GetCacheManager() *DeviceCacheManager
 	GetPhotoCoordinator() *PhotoTransferCoordinator
+	GetIdentityManager() *IdentityManager
 
 	// UUID mapping (platform-specific map name: peripheralToDeviceID vs remoteUUIDToDeviceID)
 	GetUUIDToDeviceIDMap() map[string]string

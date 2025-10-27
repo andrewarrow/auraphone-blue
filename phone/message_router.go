@@ -15,6 +15,7 @@ type MessageRouter struct {
 	cacheManager     *DeviceCacheManager
 	photoCoordinator *PhotoTransferCoordinator
 	requestQueue     *RequestQueue
+	identityManager  *IdentityManager
 
 	// Device context for logging
 	deviceHardwareUUID string
@@ -73,6 +74,11 @@ func (mr *MessageRouter) SetDeviceIDDiscoveredCallback(callback func(hardwareUUI
 // SetIsConnectedCallback sets the callback to check if a device is connected
 func (mr *MessageRouter) SetIsConnectedCallback(callback func(hardwareUUID string) bool) {
 	mr.isConnectedFunc = callback
+}
+
+// SetIdentityManager sets the identity manager for connection state tracking
+func (mr *MessageRouter) SetIdentityManager(im *IdentityManager) {
+	mr.identityManager = im
 }
 
 // SetDeviceContext sets device info for logging
@@ -137,7 +143,11 @@ func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.Go
 	if mr.onPhotoNeeded != nil {
 		missingPhotos := mr.meshView.GetMissingPhotos()
 		for _, device := range missingPhotos {
-			hardwareUUID := mr.meshView.GetHardwareUUID(device.DeviceID)
+			// Look up hardware UUID from identity manager
+			hardwareUUID := ""
+			if mr.identityManager != nil {
+				hardwareUUID, _ = mr.identityManager.GetHardwareUUID(device.DeviceID)
+			}
 
 			// Check if we're connected before sending
 			if hardwareUUID != "" && mr.isConnected(hardwareUUID) {
@@ -168,7 +178,11 @@ func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.Go
 	if mr.onProfileNeeded != nil {
 		missingProfiles := mr.meshView.GetMissingProfiles()
 		for _, device := range missingProfiles {
-			hardwareUUID := mr.meshView.GetHardwareUUID(device.DeviceID)
+			// Look up hardware UUID from identity manager
+			hardwareUUID := ""
+			if mr.identityManager != nil {
+				hardwareUUID, _ = mr.identityManager.GetHardwareUUID(device.DeviceID)
+			}
 
 			// Check if we're connected before sending
 			if hardwareUUID != "" && mr.isConnected(hardwareUUID) {

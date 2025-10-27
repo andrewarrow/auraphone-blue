@@ -90,6 +90,9 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 			a.connManager.RegisterCentralConnection(remoteUUID, gatt)
 		}
 
+		// Mark device as connected in identity manager
+		a.identityManager.MarkConnected(remoteUUID)
+
 		// Re-add to connected list (might have been removed on disconnect)
 		a.mu.Lock()
 		a.connectedGatts[remoteUUID] = gatt
@@ -106,9 +109,10 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 		}
 
 		// Get device ID before cleanup
-		a.mu.Lock()
-		deviceID := a.remoteUUIDToDeviceID[remoteUUID]
-		a.mu.Unlock()
+		deviceID, _ := a.identityManager.GetDeviceID(remoteUUID)
+
+		// Mark device as disconnected in identity manager
+		a.identityManager.MarkDisconnected(remoteUUID)
 
 		// Clean up photo transfer state for disconnected device
 		if deviceID != "" {

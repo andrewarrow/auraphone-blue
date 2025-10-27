@@ -31,7 +31,6 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		deviceID:               deviceID,
 		deviceName:             deviceName,
 		connectedPeripherals:   make(map[string]*swift.CBPeripheral),
-		peripheralToDeviceID:   make(map[string]string),
 		deviceIDToPhotoHash:    make(map[string]string),
 		receivedPhotoHashes:    make(map[string]string),
 		receivedProfileVersion: make(map[string]int32),
@@ -56,13 +55,21 @@ func NewIPhone(hardwareUUID string) *iPhone {
 	// Initialize photo coordinator
 	ip.photoCoordinator = phone.NewPhotoTransferCoordinator(hardwareUUID)
 
-	// Initialize mesh view for gossip protocol
+	// Initialize identity manager (must come before mesh view)
 	dataDir := phone.GetDeviceDir(hardwareUUID)
+	ip.identityManager = phone.NewIdentityManager(hardwareUUID, deviceID, dataDir)
+	if err := ip.identityManager.LoadFromDisk(); err != nil {
+		fmt.Printf("Failed to load identity mappings: %v\n", err)
+	}
+
+	// Initialize mesh view for gossip protocol
 	ip.meshView = phone.NewMeshView(deviceID, hardwareUUID, dataDir, ip.cacheManager)
+	ip.meshView.SetIdentityManager(ip.identityManager)
 
 	// Initialize connection manager for dual-role support
 	ip.connManager = phone.NewConnectionManager(hardwareUUID)
 	ip.connManager.SetSendFunctions(ip.sendViaCentralMode, ip.sendViaPeripheralMode)
+	ip.connManager.SetIdentityManager(ip.identityManager)
 
 	// Initialize shared handlers (platform-agnostic code in phone/ package)
 	ip.gossipHandler = phone.NewGossipHandler(ip, ip.gossipInterval, ip.staleCheckDone)
@@ -78,6 +85,7 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		dataDir,
 	)
 	ip.messageRouter.SetDeviceContext(hardwareUUID, "iOS")
+	ip.messageRouter.SetIdentityManager(ip.identityManager)
 	ip.messageRouter.SetCallbacks(
 		func(deviceID, photoHash string) error { return ip.gossipHandler.RequestPhoto(deviceID, photoHash) },
 		func(deviceID string, version int32) error { return ip.gossipHandler.RequestProfile(deviceID, version) },
@@ -90,11 +98,11 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		prefix := fmt.Sprintf("%s iOS", hardwareUUID[:8])
 		logger.Debug(prefix, "🔑 Storing deviceID mapping: %s → %s", hardwareUUID[:8], deviceID[:8])
 
-		ip.mu.Lock()
-		ip.peripheralToDeviceID[hardwareUUID] = deviceID
-		ip.mu.Unlock()
+		// Register device in identity manager
+		ip.identityManager.RegisterDevice(hardwareUUID, deviceID)
+		ip.identityManager.SaveToDisk()
 
-		logger.Debug(prefix, "✅ Mapping stored. Map size: %d", len(ip.peripheralToDeviceID))
+		logger.Debug(prefix, "✅ Mapping stored. Total mappings: %d", ip.identityManager.GetMappingCount())
 
 		// If we received a message from this device, they must be connected to us
 		// Register them as a peripheral connection so we can send messages back
@@ -282,16 +290,19 @@ func (ip *iPhone) TriggerDiscoveryUpdate(hardwareUUID, deviceID, photoHash strin
 
 	logger.Debug(prefix, "🔔 discoveryCallback is NOT nil, proceeding...")
 
-	// Look up device name from peripheralToDeviceID map
+	// Look up device name from connected peripherals
 	ip.mu.RLock()
 	// Default name
 	name := "Unknown Device"
 	// Try to get a better name from discovered peripherals or connected devices
-	for pUUID, dID := range ip.peripheralToDeviceID {
-		if pUUID == hardwareUUID || dID == deviceID {
-			if peripheral, exists := ip.connectedPeripherals[pUUID]; exists {
+	// First, try to find the peripheral by hardware UUID
+	if peripheral, exists := ip.connectedPeripherals[hardwareUUID]; exists {
+		name = peripheral.Name
+	} else {
+		// If not found by hardware UUID, try looking up from device ID
+		if lookupHardwareUUID, ok := ip.identityManager.GetHardwareUUID(deviceID); ok {
+			if peripheral, exists := ip.connectedPeripherals[lookupHardwareUUID]; exists {
 				name = peripheral.Name
-				break
 			}
 		}
 	}
