@@ -220,7 +220,7 @@ func (m *MockDevice) GetDeviceName() string              { return "TestDevice" }
 func (m *MockDevice) GetPhotoHash() string               { return m.photoHash }
 func (m *MockDevice) GetPhotoData() []byte               { return nil }
 func (m *MockDevice) GetPlatform() string                { return "test" }
-func (m *MockDevice) GetMutex() interface{}              { return nil }
+func (m *MockDevice) GetMutex() *sync.RWMutex           { return &sync.RWMutex{} }
 func (m *MockDevice) GetUUIDToDeviceIDMap() map[string]string { return m.uuidToDeviceIDMap }
 func (m *MockDevice) GetPhotoCoordinator() *PhotoTransferCoordinator { return m.photoCoordinator }
 func (m *MockDevice) GetCacheManager() *DeviceCacheManager { return m.cacheManager }
@@ -251,3 +251,132 @@ func (m *MockConnManager) RegisterPeripheralConnection(uuid string) {}
 func (m *MockConnManager) UnregisterPeripheralConnection(uuid string) {}
 func (m *MockConnManager) IsConnectedAsCentral(uuid string) bool { return true }
 func (m *MockConnManager) GetAllConnectedUUIDs() []string { return []string{} }
+func (m *MockDevice) TriggerDiscoveryUpdate(hardwareUUID, deviceID, photoHash string, photoData []byte) {}
+func (m *MockDevice) GetIdentityManager() *IdentityManager { return nil }
+
+// TestHandlePhotoChunkRaceCondition tests the race condition where the coordinator
+// cleans up the receive state between RecordReceivedChunk and GetReceiveState
+func TestHandlePhotoChunkRaceCondition(t *testing.T) {
+	// Create a test coordinator
+	coord := NewPhotoTransferCoordinator("test-uuid-12345678")
+
+	// Create a mock device
+	mockDevice := &MockDevice{
+		hardwareUUID:      "test-uuid-12345678",
+		deviceID:          "TESTDEV1",
+		photoHash:         "testhash",
+		uuidToDeviceIDMap: map[string]string{"sender-uuid": "SENDER01"},
+		photoCoordinator:  coord,
+		cacheManager:      nil,
+		connManager:       &MockConnManager{},
+	}
+
+	// Create a photo handler
+	handler := NewPhotoHandler(mockDevice)
+
+	// Create a test photo chunk
+	testPhoto := []byte("test photo data")
+	photoHash := sha256.Sum256(testPhoto)
+	senderUUID := "sender-uuid"
+	deviceID := "SENDER01"
+
+	// Create chunk message
+	chunk, err := CreatePhotoChunk(
+		deviceID,
+		mockDevice.deviceID,
+		photoHash[:],
+		0, // first chunk
+		1, // only one chunk
+		testPhoto,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create chunk: %v", err)
+	}
+
+	encodedChunk, err := EncodePhotoChunk(chunk)
+	if err != nil {
+		t.Fatalf("Failed to encode chunk: %v", err)
+	}
+
+	// Start the receive
+	coord.StartReceive(deviceID, "testhash", 1)
+
+	// Simulate the race condition by cleaning up the state in a goroutine
+	// right after HandlePhotoChunk records the chunk
+	go func() {
+		time.Sleep(1 * time.Millisecond)
+		// Force cleanup to simulate the race condition
+		coord.FailReceive(deviceID, "simulated cleanup")
+	}()
+
+	// Call HandlePhotoChunk - this should NOT crash even if state is cleaned up
+	// The bug would cause a nil pointer dereference at line 183
+	handler.HandlePhotoChunk(senderUUID, encodedChunk)
+
+	// If we get here without crashing, the bug is fixed
+	// The function should gracefully handle the nil state and return early
+}
+
+// TestHandlePhotoChunkNormalFlow tests the normal case where no race occurs
+func TestHandlePhotoChunkNormalFlow(t *testing.T) {
+	// Create a test coordinator
+	coord := NewPhotoTransferCoordinator("test-uuid-87654321")
+
+	// Create a mock device with a cache manager
+	cacheDir := t.TempDir()
+	cacheMgr := &DeviceCacheManager{
+		baseDir: cacheDir,
+	}
+
+	mockDevice := &MockDevice{
+		hardwareUUID:      "test-uuid-87654321",
+		deviceID:          "TESTDEV2",
+		photoHash:         "testhash2",
+		uuidToDeviceIDMap: map[string]string{"sender-uuid-2": "SENDER02"},
+		photoCoordinator:  coord,
+		cacheManager:      cacheMgr,
+		connManager:       &MockConnManager{},
+	}
+
+	// Create a photo handler
+	handler := NewPhotoHandler(mockDevice)
+
+	// Create a test photo chunk
+	testPhoto := []byte("another test photo")
+	photoHash := sha256.Sum256(testPhoto)
+	senderUUID := "sender-uuid-2"
+	deviceID := "SENDER02"
+
+	// Create single-chunk message
+	chunk, err := CreatePhotoChunk(
+		deviceID,
+		mockDevice.deviceID,
+		photoHash[:],
+		0, // first and only chunk
+		1, // total chunks
+		testPhoto,
+	)
+	if err != nil {
+		t.Fatalf("Failed to create chunk: %v", err)
+	}
+
+	encodedChunk, err := EncodePhotoChunk(chunk)
+	if err != nil {
+		t.Fatalf("Failed to encode chunk: %v", err)
+	}
+
+	// Handle the chunk - should complete successfully
+	handler.HandlePhotoChunk(senderUUID, encodedChunk)
+
+	// Verify the receive was completed (state should be cleaned up)
+	recvState := coord.GetReceiveState(deviceID)
+	if recvState != nil {
+		t.Errorf("Expected receive state to be cleaned up after successful completion, but it still exists")
+	}
+
+	// Verify it was marked as completed
+	_, _, _, inProgressReceives := coord.GetStats()
+	if inProgressReceives != 0 {
+		t.Errorf("Expected 0 in-progress receives, got %d", inProgressReceives)
+	}
+}
