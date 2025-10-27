@@ -873,15 +873,32 @@ func TestCBCentralManager_AutoReconnect(t *testing.T) {
 		t.Fatal("Timeout waiting for initial connection")
 	}
 
-	// Simulate disconnect
-	peripheralWire.Disconnect("central-uuid")
+	// Small delay to ensure both sides have fully established the connection
+	time.Sleep(200 * time.Millisecond)
 
-	// Wait for disconnect notification
+	// Verify connection is active before disconnect
+	if !centralWire.IsConnected("peripheral-uuid") {
+		t.Fatal("Central should be connected to peripheral before disconnect test")
+	}
+	if !peripheralWire.IsConnected("central-uuid") {
+		t.Fatal("Peripheral should be connected to central before disconnect test")
+	}
+
+	// Simulate disconnect by calling disconnect on peripheral (simulates device going out of range)
+	err := peripheralWire.Disconnect("central-uuid")
+	if err != nil {
+		t.Logf("Disconnect returned error: %v", err)
+	}
+
+	// Wait for disconnect notification (should be immediate when socket closes)
 	select {
 	case <-delegate.didDisconnect:
 		disconnectCount++
 		t.Logf("✅ Disconnect detected")
 	case <-time.After(2 * time.Second):
+		// Debug: Check connection state
+		t.Logf("Central still connected: %v", centralWire.IsConnected("peripheral-uuid"))
+		t.Logf("Peripheral still connected: %v", peripheralWire.IsConnected("central-uuid"))
 		t.Fatal("Timeout waiting for disconnect notification")
 	}
 

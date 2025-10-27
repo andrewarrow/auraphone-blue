@@ -623,6 +623,16 @@ func (w *Wire) Disconnect(peerUUID string) error {
 	connection.conn.Close()
 	delete(w.connections, peerUUID)
 
+	// Trigger disconnect callback after cleanup
+	w.callbackMu.RLock()
+	callback := w.disconnectCallback
+	w.callbackMu.RUnlock()
+
+	if callback != nil {
+		// Call callback asynchronously to avoid blocking and potential deadlocks
+		go callback(peerUUID)
+	}
+
 	return nil
 }
 
