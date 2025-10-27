@@ -1,7 +1,9 @@
 package phone
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
+	"os"
 )
 
 // TruncateHash safely truncates a hash string to the first n characters
@@ -31,4 +33,14 @@ func HashBytesToString(hashBytes []byte) string {
 		return ""
 	}
 	return hex.EncodeToString(hashBytes)
+}
+
+// HashFile computes SHA-256 hash of a file
+func HashFile(filePath string) (string, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:]), nil
 }

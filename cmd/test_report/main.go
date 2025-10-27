@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -14,10 +13,11 @@ import (
 
 // DeviceInfo holds information about a test device
 type DeviceInfo struct {
-	HardwareUUID string
-	DeviceID     string
-	Platform     string
-	PhotoHash    string
+	HardwareUUID   string
+	DeviceID       string
+	Platform       string
+	PhotoHash      string // Full 64-char hash
+	PhotoHashShort string // First 8 chars for display
 }
 
 // PhotoMatrix tracks which devices have which photos
@@ -139,7 +139,12 @@ func discoverDevices(dataDir string) ([]DeviceInfo, error) {
 		myPhotoPath := filepath.Join(dataDir, hardwareUUID, "cache", "my_photo.jpg")
 		if _, err := os.Stat(myPhotoPath); err == nil {
 			hash, _ := phone.HashFile(myPhotoPath)
-			deviceInfo.PhotoHash = hash[:8]
+			deviceInfo.PhotoHash = hash
+			if len(hash) >= 8 {
+				deviceInfo.PhotoHashShort = hash[:8]
+			} else {
+				deviceInfo.PhotoHashShort = hash
+			}
 		}
 
 		devices = append(devices, deviceInfo)
@@ -196,7 +201,7 @@ func detectIssues(devices []DeviceInfo, matrix PhotoMatrix, dataDir string) []Te
 					Severity:    "ERROR",
 					FromDevice:  fromDevice.DeviceID,
 					ToDevice:    toDevice.DeviceID,
-					PhotoHash:   fromDevice.PhotoHash,
+					PhotoHash:   fromDevice.PhotoHashShort,
 					Description: fmt.Sprintf("%s missing photo from %s", toDevice.DeviceID, fromDevice.DeviceID),
 					Timeline:    investigateFailure(fromDevice, toDevice, dataDir),
 				}
@@ -227,7 +232,7 @@ func investigateFailure(fromDevice, toDevice DeviceInfo, dataDir string) []strin
 				Error     string `json:"error,omitempty"`
 			}
 			if json.Unmarshal([]byte(line), &event) == nil {
-				if event.PhotoHash == fromDevice.PhotoHash || event.DeviceID == fromDevice.DeviceID {
+				if event.PhotoHash == fromDevice.PhotoHashShort || event.DeviceID == fromDevice.DeviceID {
 					ts := time.Unix(0, event.Timestamp).Format("15:04:05")
 					desc := fmt.Sprintf("%s - %s", ts, event.Event)
 					if event.Error != "" {
@@ -283,7 +288,7 @@ func generateReport(timestamp string, devices []DeviceInfo, matrix PhotoMatrix, 
 	sb.WriteString("## Devices\n\n")
 	for _, device := range devices {
 		sb.WriteString(fmt.Sprintf("- **%s** (%s, %s) - Photo: %s\n",
-			device.DeviceID, device.HardwareUUID[:8], device.Platform, device.PhotoHash))
+			device.DeviceID, device.HardwareUUID[:8], device.Platform, device.PhotoHashShort))
 	}
 	sb.WriteString("\n")
 
