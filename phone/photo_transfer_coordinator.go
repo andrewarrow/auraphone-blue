@@ -174,8 +174,8 @@ func (c *PhotoTransferCoordinator) ShouldSendPhoto(deviceID string, ourPhotoHash
 		return false
 	}
 
-	// Already sending to this device
-	if _, inProgress := c.inProgressSends[deviceID]; inProgress {
+	// Already sending to this device (but allow if paused - will resume)
+	if sendState, inProgress := c.inProgressSends[deviceID]; inProgress && !sendState.Paused {
 		return false
 	}
 
@@ -199,8 +199,8 @@ func (c *PhotoTransferCoordinator) ShouldReceivePhoto(deviceID string, theirPhot
 		return false
 	}
 
-	// Already receiving from this device
-	if _, inProgress := c.inProgressReceives[deviceID]; inProgress {
+	// Already receiving from this device (but allow if paused - will resume)
+	if recvState, inProgress := c.inProgressReceives[deviceID]; inProgress && !recvState.Paused {
 		return false
 	}
 
