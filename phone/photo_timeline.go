@@ -65,6 +65,13 @@ func (ptl *PhotoTimelineLogger) Log(event PhotoTimelineEvent) {
 	ptl.mutex.Lock()
 	defer ptl.mutex.Unlock()
 
+	// Ensure directory exists before opening file
+	if err := os.MkdirAll(filepath.Dir(ptl.logPath), 0755); err != nil {
+		logger.Warn(fmt.Sprintf("%s photo_timeline", ptl.hardwareUUID[:8]),
+			"Failed to create directory for photo timeline log: %v", err)
+		return
+	}
+
 	// Open file in append mode
 	f, err := os.OpenFile(ptl.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {

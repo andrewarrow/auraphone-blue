@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/user/auraphone-blue/phone"
 )
 
 // DeviceInfo holds information about a test device

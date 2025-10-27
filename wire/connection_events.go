@@ -63,6 +63,13 @@ func (cel *ConnectionEventLogger) Log(event ConnectionEvent) {
 	cel.mutex.Lock()
 	defer cel.mutex.Unlock()
 
+	// Ensure directory exists before opening file
+	if err := os.MkdirAll(filepath.Dir(cel.logPath), 0755); err != nil {
+		logger.Warn(fmt.Sprintf("%s connection_events", cel.localUUID[:8]),
+			"Failed to create directory for connection event log: %v", err)
+		return
+	}
+
 	// Open file in append mode
 	f, err := os.OpenFile(cel.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
