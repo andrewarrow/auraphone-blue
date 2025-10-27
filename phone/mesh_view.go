@@ -329,6 +329,40 @@ func (mv *MeshView) MarkPhotoReceived(deviceID, photoHashHex string) {
 	}
 }
 
+// CheckStalledTransfers checks for stalled photo transfers and clears request flags
+// This should be called periodically (e.g., every 30 seconds) to allow retries
+func (mv *MeshView) CheckStalledTransfers(coordinator *PhotoTransferCoordinator) int {
+	mv.mu.Lock()
+	defer mv.mu.Unlock()
+
+	clearedCount := 0
+
+	for deviceID, device := range mv.devices {
+		// Skip if we already have the photo or never requested it
+		if device.HavePhoto || !device.PhotoRequestSent {
+			continue
+		}
+
+		// Check if there's an active receive transfer
+		recvState := coordinator.GetReceiveState(deviceID)
+		if recvState != nil {
+			// Check if transfer is stalled (no activity for TransferStallTimeout)
+			if time.Since(recvState.LastActivity) > TransferStallTimeout {
+				// Transfer is stalled - clear flag to allow retry
+				device.PhotoRequestSent = false
+				clearedCount++
+			}
+		} else {
+			// No active transfer but flag is set - this is stale, clear it
+			// This can happen if transfer failed or coordinator state was reset
+			device.PhotoRequestSent = false
+			clearedCount++
+		}
+	}
+
+	return clearedCount
+}
+
 // GetMissingProfiles returns list of devices whose profiles we need to fetch
 // NOW ONLY RETURNS DEVICES WE'RE CURRENTLY CONNECTED TO
 func (mv *MeshView) GetMissingProfiles() []*MeshDeviceState {

@@ -25,6 +25,7 @@ type MessageRouter struct {
 	onProfileNeeded  func(deviceID string, version int32) error
 	onPhotoRequest   func(senderUUID string, req *proto.PhotoRequestMessage)
 	onProfileRequest func(senderUUID string, req *proto.ProfileRequestMessage)
+	onChunkRetry     func(targetUUID, targetDeviceID string, chunkIndices []int32) error
 
 	// Callback to store hardware UUID → device ID mapping
 	onDeviceIDDiscovered func(hardwareUUID, deviceID string)
@@ -58,11 +59,13 @@ func (mr *MessageRouter) SetCallbacks(
 	onProfileNeeded func(deviceID string, version int32) error,
 	onPhotoRequest func(senderUUID string, req *proto.PhotoRequestMessage),
 	onProfileRequest func(senderUUID string, req *proto.ProfileRequestMessage),
+	onChunkRetry func(targetUUID, targetDeviceID string, chunkIndices []int32) error,
 ) {
 	mr.onPhotoNeeded = onPhotoNeeded
 	mr.onProfileNeeded = onProfileNeeded
 	mr.onPhotoRequest = onPhotoRequest
 	mr.onProfileRequest = onProfileRequest
+	mr.onChunkRetry = onChunkRetry
 }
 
 // SetDeviceIDDiscoveredCallback sets the callback for when a device ID is discovered
@@ -104,6 +107,12 @@ func (mr *MessageRouter) HandleProtocolMessage(senderUUID string, data []byte) e
 	profileReq := &proto.ProfileRequestMessage{}
 	if err := protobuf.Unmarshal(data, profileReq); err == nil && profileReq.RequesterDeviceId != "" {
 		return mr.handleProfileRequest(senderUUID, profileReq)
+	}
+
+	// Try PhotoChunkAck
+	ack := &proto.PhotoChunkAck{}
+	if err := protobuf.Unmarshal(data, ack); err == nil && ack.ReceiverDeviceId != "" {
+		return mr.handlePhotoChunkAck(senderUUID, ack)
 	}
 
 	return fmt.Errorf("unknown protocol message type")
@@ -184,6 +193,42 @@ func (mr *MessageRouter) handleProfileRequest(senderUUID string, req *proto.Prof
 	if mr.onProfileRequest != nil {
 		mr.onProfileRequest(senderUUID, req)
 	}
+	return nil
+}
+
+// handlePhotoChunkAck processes incoming photo chunk acknowledgments
+func (mr *MessageRouter) handlePhotoChunkAck(senderUUID string, ack *proto.PhotoChunkAck) error {
+	prefix := fmt.Sprintf("%s %s", mr.deviceHardwareUUID[:8], mr.devicePlatform)
+
+	deviceID := ack.ReceiverDeviceId
+
+	// Mark this chunk as ACK'd
+	mr.photoCoordinator.MarkChunkAcked(deviceID, int(ack.LastChunkReceived))
+
+	if ack.TransferComplete {
+		// They received everything - mark send as complete
+		logger.Debug(prefix, "✅ Received completion ACK from %s", deviceID[:8])
+		// Get photo hash from send state
+		sendState := mr.photoCoordinator.GetSendState(deviceID)
+		if sendState != nil {
+			mr.photoCoordinator.CompleteSend(deviceID, sendState.PhotoHash)
+		}
+	} else if len(ack.MissingChunks) > 0 {
+		// They're missing chunks - trigger retries
+		logger.Debug(prefix, "📥 Received ACK from %s: %d chunks missing (will retry)",
+			deviceID[:8], len(ack.MissingChunks))
+
+		if mr.onChunkRetry != nil {
+			if err := mr.onChunkRetry(senderUUID, deviceID, ack.MissingChunks); err != nil {
+				logger.Warn(prefix, "❌ Failed to retry chunks for %s: %v", deviceID[:8], err)
+			}
+		}
+	} else {
+		// Normal ACK for a chunk
+		logger.Debug(prefix, "✅ Received ACK from %s for chunk %d",
+			deviceID[:8], ack.LastChunkReceived)
+	}
+
 	return nil
 }
 

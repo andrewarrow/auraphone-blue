@@ -23,6 +23,11 @@ const (
 	MaxRetryDelay     = 60 * time.Second // Cap at 60s
 	MaxRetryAttempts  = 10               // Give up after 10 retries
 	TransferTimeout   = 30 * time.Second // Mark transfer as stale after 30s inactivity
+
+	// ACK/Retry protocol parameters
+	ChunkAckTimeout      = 5 * time.Second  // How long to wait for ACK before retry
+	MaxChunkRetries      = 5                // Maximum retry attempts per chunk
+	TransferStallTimeout = 60 * time.Second // When to consider transfer stalled
 )
 
 // SendState tracks an in-progress photo send operation
@@ -36,6 +41,11 @@ type SendState struct {
 	SentChunks     map[int]bool  // Track which chunks have been sent
 	RetryAttempts  int           // Number of times we've retried this transfer
 	NextRetryTime  time.Time     // When we can retry again (for exponential backoff)
+
+	// Per-chunk ACK tracking
+	ChunkAckReceived map[int]bool      // Which chunks have been ACK'd
+	ChunkRetryCount  map[int]int       // How many times each chunk was sent
+	ChunkLastSent    map[int]time.Time // When each chunk was last sent
 }
 
 // ReceiveState tracks an in-progress photo receive operation
@@ -215,6 +225,11 @@ func (c *PhotoTransferCoordinator) StartSend(deviceID string, photoHash string, 
 		SentChunks:    make(map[int]bool),
 		RetryAttempts: 0,
 		NextRetryTime: now,
+
+		// Initialize per-chunk tracking
+		ChunkAckReceived: make(map[int]bool),
+		ChunkRetryCount:  make(map[int]int),
+		ChunkLastSent:    make(map[int]time.Time),
 	}
 
 	logger.Debug(c.hardwareUUID[:8], "📤 Started photo send to %s (hash: %s, chunks: %d)",
@@ -260,6 +275,74 @@ func (c *PhotoTransferCoordinator) FailSend(deviceID string, reason string) {
 	delete(c.inProgressSends, deviceID)
 
 	logger.Warn(c.hardwareUUID[:8], "❌ Photo send to %s failed: %s", deviceID, reason)
+}
+
+// RecordChunkSent marks a chunk as sent and records the timestamp
+func (c *PhotoTransferCoordinator) RecordChunkSent(deviceID string, chunkIndex int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if state, exists := c.inProgressSends[deviceID]; exists {
+		state.ChunkLastSent[chunkIndex] = time.Now()
+		state.ChunkRetryCount[chunkIndex]++
+		state.LastActivity = time.Now()
+	}
+}
+
+// MarkChunkAcked marks a chunk as acknowledged
+func (c *PhotoTransferCoordinator) MarkChunkAcked(deviceID string, chunkIndex int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if state, exists := c.inProgressSends[deviceID]; exists {
+		state.ChunkAckReceived[chunkIndex] = true
+		state.LastActivity = time.Now()
+	}
+}
+
+// GetMissingAcks returns chunks that need to be retried (not ACKed and past timeout)
+func (c *PhotoTransferCoordinator) GetMissingAcks(deviceID string) []int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	state, exists := c.inProgressSends[deviceID]
+	if !exists {
+		return nil
+	}
+
+	now := time.Now()
+	missingAcks := []int{}
+
+	for i := 0; i < state.TotalChunks; i++ {
+		// Skip if already ACKed
+		if state.ChunkAckReceived[i] {
+			continue
+		}
+
+		// Check if chunk was sent
+		lastSent, wasSent := state.ChunkLastSent[i]
+		if !wasSent {
+			// Chunk was never sent (shouldn't happen, but handle it)
+			continue
+		}
+
+		// Check if timeout has passed
+		if now.Sub(lastSent) > ChunkAckTimeout {
+			// Check retry count
+			if state.ChunkRetryCount[i] < MaxChunkRetries {
+				missingAcks = append(missingAcks, i)
+			}
+		}
+	}
+
+	return missingAcks
+}
+
+// GetSendState returns the current send state for a device (for external inspection)
+func (c *PhotoTransferCoordinator) GetSendState(deviceID string) *SendState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.inProgressSends[deviceID]
 }
 
 // StartReceive marks a photo receive as in-progress
@@ -384,14 +467,6 @@ func (c *PhotoTransferCoordinator) GetReceiveState(deviceID string) *ReceiveStat
 	defer c.mu.Unlock()
 
 	return c.inProgressReceives[deviceID]
-}
-
-// GetSendState returns the current send state for a device (or nil if not sending)
-func (c *PhotoTransferCoordinator) GetSendState(deviceID string) *SendState {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.inProgressSends[deviceID]
 }
 
 // GetStats returns statistics about photo transfers

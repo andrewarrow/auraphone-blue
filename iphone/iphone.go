@@ -91,6 +91,9 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		func(deviceID string, version int32) error { return ip.gossipHandler.RequestProfile(deviceID, version) },
 		func(senderUUID string, req *proto.PhotoRequestMessage) { ip.photoHandler.HandlePhotoRequest(senderUUID, req) },
 		func(senderUUID string, req *proto.ProfileRequestMessage) { ip.profileHandler.HandleProfileRequest(senderUUID, req) },
+		func(targetUUID, targetDeviceID string, chunkIndices []int32) error {
+			return ip.photoHandler.RetryMissingChunks(targetUUID, targetDeviceID, chunkIndices)
+		},
 	)
 
 	// Set callback to store hardware UUID → device ID mapping when discovered via gossip

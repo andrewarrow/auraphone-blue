@@ -11,6 +11,54 @@ import (
 	auraphone "github.com/user/auraphone-blue/proto"
 )
 
+// sendPhotoChunk sends a single chunk to a device
+func (ph *PhotoHandler) sendPhotoChunk(targetUUID, targetDeviceID string, chunkIndex int, photoData []byte, photoHash [32]byte, totalChunks int) error {
+	device := ph.device
+	prefix := fmt.Sprintf("%s %s", device.GetHardwareUUID()[:8], device.GetPlatform())
+	coordinator := device.GetPhotoCoordinator()
+
+	// Calculate chunk boundaries
+	chunkStart := chunkIndex * DefaultChunkSize
+	chunkEnd := chunkStart + DefaultChunkSize
+	if chunkEnd > len(photoData) {
+		chunkEnd = len(photoData)
+	}
+	chunkData := photoData[chunkStart:chunkEnd]
+
+	// Create chunk message
+	chunk, err := CreatePhotoChunk(
+		device.GetDeviceID(),
+		targetDeviceID,
+		photoHash[:],
+		int32(chunkIndex),
+		int32(totalChunks),
+		chunkData,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create chunk: %w", err)
+	}
+
+	// Encode chunk
+	encodedChunk, err := EncodePhotoChunk(chunk)
+	if err != nil {
+		return fmt.Errorf("failed to encode chunk: %w", err)
+	}
+
+	// Send via photo characteristic
+	connManager := device.GetConnManager()
+	if err := connManager.SendToDevice(targetUUID, AuraPhotoCharUUID, encodedChunk); err != nil {
+		return fmt.Errorf("failed to send chunk: %w", err)
+	}
+
+	// Record chunk as sent in coordinator
+	coordinator.RecordChunkSent(targetDeviceID, chunkIndex)
+
+	logger.Debug(prefix, "📤 Sent chunk %d/%d to %s (%d bytes)",
+		chunkIndex+1, totalChunks, targetDeviceID[:8], len(encodedChunk))
+
+	return nil
+}
+
 // HandlePhotoRequest handles a request for a photo
 func (ph *PhotoHandler) HandlePhotoRequest(senderUUID string, req *auraphone.PhotoRequestMessage) {
 	device := ph.device
@@ -25,7 +73,6 @@ func (ph *PhotoHandler) HandlePhotoRequest(senderUUID string, req *auraphone.Pho
 	logger.Info(prefix, "📸 Sending our photo to %s in response to request", req.RequesterDeviceId[:8])
 
 	// Load our photo from cache (stored as my_photo.jpg by SetProfilePhoto)
-	cacheManager := device.GetCacheManager()
 	photoPath := filepath.Join(GetDeviceCacheDir(device.GetHardwareUUID()), "my_photo.jpg")
 	photoData, err := os.ReadFile(photoPath)
 	if err != nil {
@@ -36,56 +83,30 @@ func (ph *PhotoHandler) HandlePhotoRequest(senderUUID string, req *auraphone.Pho
 	// Calculate photo hash
 	hash := sha256.Sum256(photoData)
 
-	// Split into chunks
-	chunks := SplitIntoChunks(photoData, DefaultChunkSize)
-	totalChunks := int32(len(chunks))
+	// Calculate total chunks
+	totalChunks := (len(photoData) + DefaultChunkSize - 1) / DefaultChunkSize
 
 	logger.Debug(prefix, "📤 Sending photo to %s (%d bytes, %d chunks)",
 		req.RequesterDeviceId[:8], len(photoData), totalChunks)
 
 	// Get photo coordinator
 	coordinator := device.GetPhotoCoordinator()
-	coordinator.StartSend(req.RequesterDeviceId, string(hash[:]), int(totalChunks))
+	coordinator.StartSend(req.RequesterDeviceId, string(hash[:]), totalChunks)
 
-	// Send chunks via connection manager
-	connManager := device.GetConnManager()
-	for i, chunkData := range chunks {
-		chunk, err := CreatePhotoChunk(
-			device.GetDeviceID(),
-			req.RequesterDeviceId,
-			hash[:],
-			int32(i),
-			totalChunks,
-			chunkData,
-		)
-		if err != nil {
-			logger.Warn(prefix, "❌ Failed to create chunk %d: %v", i, err)
-			coordinator.FailSend(req.RequesterDeviceId, fmt.Sprintf("failed to create chunk: %v", err))
-			return
-		}
-
-		encodedChunk, err := EncodePhotoChunk(chunk)
-		if err != nil {
-			logger.Warn(prefix, "❌ Failed to encode chunk %d: %v", i, err)
-			coordinator.FailSend(req.RequesterDeviceId, fmt.Sprintf("failed to encode chunk: %v", err))
-			return
-		}
-
-		// Send via photo characteristic
-		logger.Debug(prefix, "📤 Sending chunk %d/%d to %s (%d bytes)", i+1, totalChunks, req.RequesterDeviceId[:8], len(encodedChunk))
-		if err := connManager.SendToDevice(senderUUID, AuraPhotoCharUUID, encodedChunk); err != nil {
-			logger.Warn(prefix, "❌ Failed to send chunk %d/%d to %s: %v", i+1, totalChunks, req.RequesterDeviceId[:8], err)
+	// Send all chunks
+	for i := 0; i < totalChunks; i++ {
+		if err := ph.sendPhotoChunk(senderUUID, req.RequesterDeviceId, i, photoData, hash, totalChunks); err != nil {
+			logger.Warn(prefix, "❌ Failed to send chunk %d: %v", i, err)
 			coordinator.FailSend(req.RequesterDeviceId, fmt.Sprintf("failed to send chunk: %v", err))
 			return
 		}
-		logger.Debug(prefix, "✅ Chunk %d/%d sent successfully to %s", i+1, totalChunks, req.RequesterDeviceId[:8])
-
 		coordinator.UpdateSendProgress(req.RequesterDeviceId, i+1)
 	}
 
-	// Mark send as complete
-	coordinator.CompleteSend(req.RequesterDeviceId, string(hash[:]))
-	cacheManager.MarkPhotoSentToDevice(req.RequesterDeviceId, string(hash[:]))
+	logger.Info(prefix, "✅ All %d chunks sent to %s, waiting for ACKs", totalChunks, req.RequesterDeviceId[:8])
+
+	// Don't mark as complete yet - wait for ACKs
+	// The message_router will call CompleteSend when it receives the completion ACK
 }
 
 // HandlePhotoChunk receives photo chunk data from either Central or Peripheral mode
@@ -137,6 +158,9 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 	// Record this chunk
 	coordinator.RecordReceivedChunk(deviceID, int(chunk.ChunkIndex), chunk.ChunkData)
 
+	// Send ACK for this chunk
+	ph.sendChunkAck(senderUUID, deviceID, chunk)
+
 	// Check if transfer is complete
 	recvState = coordinator.GetReceiveState(deviceID)
 	logger.Debug(prefix, "📊 Progress: %d/%d chunks received from %s",
@@ -187,4 +211,93 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 		device.TriggerDiscoveryUpdate(senderUUID, deviceID, recvState.PhotoHash, photoData)
 		logger.Debug(prefix, "✅ AFTER TriggerDiscoveryUpdate called for %s with photo %s", deviceID[:8], recvState.PhotoHash[:8])
 	}
+}
+
+// sendChunkAck sends an acknowledgment for a received chunk
+// This includes information about missing chunks to trigger retries
+func (ph *PhotoHandler) sendChunkAck(senderUUID, senderDeviceID string, chunk *auraphone.PhotoChunkMessage) {
+	device := ph.device
+	prefix := fmt.Sprintf("%s %s", device.GetHardwareUUID()[:8], device.GetPlatform())
+	coordinator := device.GetPhotoCoordinator()
+	recvState := coordinator.GetReceiveState(senderDeviceID)
+
+	if recvState == nil {
+		logger.Warn(prefix, "⚠️  Cannot send ACK: no receive state for %s", senderDeviceID[:8])
+		return
+	}
+
+	// Build list of missing chunks
+	missingChunks := []int32{}
+	for i := 0; i < int(chunk.TotalChunks); i++ {
+		if _, exists := recvState.ReceivedChunks[i]; !exists {
+			missingChunks = append(missingChunks, int32(i))
+		}
+	}
+
+	transferComplete := recvState.ChunksReceived == recvState.TotalChunks
+
+	// Create ACK message
+	ack, err := CreatePhotoChunkAck(
+		device.GetDeviceID(),
+		senderDeviceID,
+		chunk.PhotoHash,
+		int32(chunk.ChunkIndex), // Last chunk we just received
+		missingChunks,
+		transferComplete,
+	)
+	if err != nil {
+		logger.Warn(prefix, "❌ Failed to create chunk ACK: %v", err)
+		return
+	}
+
+	// Encode ACK
+	ackData, err := EncodePhotoChunkAck(ack)
+	if err != nil {
+		logger.Warn(prefix, "❌ Failed to encode chunk ACK: %v", err)
+		return
+	}
+
+	// Send via protocol characteristic (not photo characteristic)
+	connManager := device.GetConnManager()
+	if err := connManager.SendToDevice(senderUUID, AuraProtocolCharUUID, ackData); err != nil {
+		logger.Warn(prefix, "❌ Failed to send chunk ACK to %s: %v", senderDeviceID[:8], err)
+		return
+	}
+
+	if transferComplete {
+		logger.Debug(prefix, "✅ Sent completion ACK to %s for chunk %d/%d",
+			senderDeviceID[:8], chunk.ChunkIndex+1, chunk.TotalChunks)
+	} else {
+		logger.Debug(prefix, "📤 Sent ACK to %s for chunk %d/%d (%d missing)",
+			senderDeviceID[:8], chunk.ChunkIndex+1, chunk.TotalChunks, len(missingChunks))
+	}
+}
+
+// RetryMissingChunks retries sending chunks that haven't been ACK'd
+func (ph *PhotoHandler) RetryMissingChunks(targetUUID, targetDeviceID string, chunkIndices []int32) error {
+	device := ph.device
+	prefix := fmt.Sprintf("%s %s", device.GetHardwareUUID()[:8], device.GetPlatform())
+
+	// Load our photo from cache
+	photoPath := filepath.Join(GetDeviceCacheDir(device.GetHardwareUUID()), "my_photo.jpg")
+	photoData, err := os.ReadFile(photoPath)
+	if err != nil {
+		return fmt.Errorf("failed to read photo: %w", err)
+	}
+
+	hash := sha256.Sum256(photoData)
+	totalChunks := (len(photoData) + DefaultChunkSize - 1) / DefaultChunkSize
+
+	logger.Info(prefix, "🔄 Retrying %d missing chunks to %s", len(chunkIndices), targetDeviceID[:8])
+
+	// Retry each missing chunk
+	for _, chunkIndex := range chunkIndices {
+		if err := ph.sendPhotoChunk(targetUUID, targetDeviceID, int(chunkIndex), photoData, hash, totalChunks); err != nil {
+			logger.Warn(prefix, "❌ Failed to retry chunk %d: %v", chunkIndex, err)
+			return err
+		}
+		logger.Debug(prefix, "✅ Retried chunk %d to %s", chunkIndex+1, targetDeviceID[:8])
+	}
+
+	return nil
 }

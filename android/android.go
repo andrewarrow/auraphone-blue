@@ -95,6 +95,9 @@ func NewAndroid(hardwareUUID string) *Android {
 		func(deviceID string, version int32) error { return a.gossipHandler.RequestProfile(deviceID, version) },
 		func(senderUUID string, req *proto.PhotoRequestMessage) { a.photoHandler.HandlePhotoRequest(senderUUID, req) },
 		func(senderUUID string, req *proto.ProfileRequestMessage) { a.profileHandler.HandleProfileRequest(senderUUID, req) },
+		func(targetUUID, targetDeviceID string, chunkIndices []int32) error {
+			return a.photoHandler.RetryMissingChunks(targetUUID, targetDeviceID, chunkIndices)
+		},
 	)
 	a.messageRouter.SetDeviceIDDiscoveredCallback(func(hardwareUUID, deviceID string) {
 		prefix := fmt.Sprintf("%s Android", hardwareUUID[:8])
