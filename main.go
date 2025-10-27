@@ -1020,17 +1020,20 @@ func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
 				platformType = "Android"
 			}
 
-			phoneWindow := NewPhoneWindow(myApp, platformType)
-			if phoneWindow != nil {
-				phoneWindow.Show()
-				statusMsg := fmt.Sprintf("Started %d/%d devices (%s)", i+1, numPhones, platformType)
-				fmt.Println(statusMsg)
+			// Capture loop variable for closure
+			currentIndex := i
+			currentPlatform := platformType
 
-				// Update status label (must be on UI thread)
-				fyne.Do(func() {
+			// All UI operations must happen on the main thread
+			fyne.Do(func() {
+				phoneWindow := NewPhoneWindow(myApp, currentPlatform)
+				if phoneWindow != nil {
+					phoneWindow.Show()
+					statusMsg := fmt.Sprintf("Started %d/%d devices (%s)", currentIndex+1, numPhones, currentPlatform)
+					fmt.Println(statusMsg)
 					statusLabel.SetText(statusMsg)
-				})
-			}
+				}
+			})
 
 			// Wait 1 second before starting next phone (except after last phone)
 			if i < numPhones-1 {
