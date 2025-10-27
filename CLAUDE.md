@@ -2,6 +2,15 @@
 
 read ~/Documents/1.txt look at `ls -lR ~/.auraphone-blue-data/` gossip_audit.jsonl, socket_health.json, photo_timeline.jsonl, connection_events.jsonl, and test_report_* files. 
 
+example:
+
+/Users/aa/.auraphone-blue-data/09727F14-58C6-4A76-A7E8-A43E5C161F1E/gossip_audit.jsonl
+~/.auraphone-blue-data/09727F14-58C6-4A76-A7E8-A43E5C161F1E/gossip_audit.jsonl
+~/.auraphone-blue-data/88716210-2F9F-483B-ACA4-808CF56923BB/socket_health.json
+~/.auraphone-blue-data/09727F14-58C6-4A76-A7E8-A43E5C161F1E/photo_timeline.jsonl
+~/.auraphone-blue-data/09727F14-58C6-4A76-A7E8-A43E5C161F1E/connection_events.jsonl
+
+
 # notes
 
 you can edit the code just please do not run go build or go run yourself. Just edit the code and tell me when you are done and I'll run go run or go build.

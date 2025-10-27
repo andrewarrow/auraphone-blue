@@ -177,8 +177,14 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 	// Send ACK for this chunk
 	ph.sendChunkAck(senderUUID, deviceID, chunk)
 
-	// Check if transfer is complete
+	// Check if transfer is complete (safely handle if state was cleaned up)
 	recvState = coordinator.GetReceiveState(deviceID)
+	if recvState == nil {
+		logger.Warn(prefix, "⚠️  Receive state disappeared for %s after recording chunk %d (possibly cleaned up)",
+			deviceID[:8], chunk.ChunkIndex)
+		return
+	}
+
 	logger.Debug(prefix, "📊 Progress: %d/%d chunks received from %s",
 		recvState.ChunksReceived, recvState.TotalChunks, deviceID[:8])
 
