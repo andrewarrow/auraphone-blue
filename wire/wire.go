@@ -75,6 +75,16 @@ type GATTMessage struct {
 	SenderUUID         string `json:"sender_uuid,omitempty"`        // Who sent this message
 }
 
+// Global registry for advertising data (simulates BLE broadcast)
+// In real BLE, advertising data is broadcast over the air
+// In our simulator, devices write here and others read from here
+var (
+	globalAdvertisingData   = make(map[string]*AdvertisingData)
+	globalAdvertisingDataMu sync.RWMutex
+	globalGATTTables        = make(map[string]*GATTTable)
+	globalGATTTablesMu      sync.RWMutex
+)
+
 // Wire handles Unix domain socket communication with BLE realism
 // Single socket per device at /tmp/auraphone-{hardwareUUID}.sock
 type Wire struct {
@@ -173,6 +183,15 @@ func (w *Wire) Stop() {
 
 	// Clean up socket file
 	os.Remove(w.socketPath)
+
+	// Clean up from global registries
+	globalAdvertisingDataMu.Lock()
+	delete(globalAdvertisingData, w.hardwareUUID)
+	globalAdvertisingDataMu.Unlock()
+
+	globalGATTTablesMu.Lock()
+	delete(globalGATTTables, w.hardwareUUID)
+	globalGATTTablesMu.Unlock()
 }
 
 // acceptConnections handles incoming connections
@@ -536,14 +555,28 @@ func (w *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
 	return stopChan
 }
 
-// ReadAdvertisingData reads advertising data for a device (stub for old API)
-// TODO Step 4: Implement actual advertising data exchange
+// ReadAdvertisingData reads advertising data for a device
 func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) {
-	// Return dummy advertising data
+	globalAdvertisingDataMu.RLock()
+	defer globalAdvertisingDataMu.RUnlock()
+
+	advData, exists := globalAdvertisingData[deviceUUID]
+	if !exists {
+		// Return default advertising data if not found
+		return &AdvertisingData{
+			DeviceName:    fmt.Sprintf("Device-%s", deviceUUID[:8]),
+			ServiceUUIDs:  []string{},
+			IsConnectable: true,
+		}, nil
+	}
+
+	// Return a copy to prevent race conditions
 	return &AdvertisingData{
-		DeviceName:    fmt.Sprintf("Device-%s", deviceUUID[:8]),
-		ServiceUUIDs:  []string{},
-		IsConnectable: true,
+		DeviceName:       advData.DeviceName,
+		ServiceUUIDs:     append([]string{}, advData.ServiceUUIDs...),
+		ManufacturerData: append([]byte{}, advData.ManufacturerData...),
+		TxPowerLevel:     advData.TxPowerLevel,
+		IsConnectable:    advData.IsConnectable,
 	}, nil
 }
 
@@ -606,13 +639,26 @@ func (w *Wire) GetSimulator() *SimulatorStub {
 	}
 }
 
-// ReadGATTTable reads GATT table from peer (stub for old API)
-// TODO Step 4: Implement GATT service discovery
+// ReadGATTTable reads GATT table from peer
 func (w *Wire) ReadGATTTable(peerUUID string) (*GATTTable, error) {
-	// Return empty GATT table
-	return &GATTTable{
-		Services: []GATTService{},
-	}, nil
+	globalGATTTablesMu.RLock()
+	defer globalGATTTablesMu.RUnlock()
+
+	table, exists := globalGATTTables[peerUUID]
+	if !exists {
+		// Return empty GATT table if not found
+		return &GATTTable{
+			Services: []GATTService{},
+		}, nil
+	}
+
+	// Return a copy to prevent race conditions
+	tableCopy := &GATTTable{
+		Services: make([]GATTService, len(table.Services)),
+	}
+	copy(tableCopy.Services, table.Services)
+
+	return tableCopy, nil
 }
 
 // WriteCharacteristic writes to a characteristic (stub for old API)
@@ -666,17 +712,36 @@ func (w *Wire) UnsubscribeCharacteristic(peerUUID, serviceUUID, charUUID string)
 	return w.SendGATTMessage(peerUUID, msg)
 }
 
-// WriteGATTTable writes GATT table (stub for old API)
-// TODO Step 4: Implement GATT table storage
+// WriteGATTTable writes GATT table to global registry
 func (w *Wire) WriteGATTTable(table *GATTTable) error {
-	// No-op for now
+	globalGATTTablesMu.Lock()
+	defer globalGATTTablesMu.Unlock()
+
+	// Store a copy to prevent race conditions
+	tableCopy := &GATTTable{
+		Services: make([]GATTService, len(table.Services)),
+	}
+	copy(tableCopy.Services, table.Services)
+
+	globalGATTTables[w.hardwareUUID] = tableCopy
 	return nil
 }
 
-// WriteAdvertisingData writes advertising data (stub for old API)
-// TODO Step 4: Implement advertising data storage
+// WriteAdvertisingData writes advertising data to global registry
 func (w *Wire) WriteAdvertisingData(data *AdvertisingData) error {
-	// No-op for now
+	globalAdvertisingDataMu.Lock()
+	defer globalAdvertisingDataMu.Unlock()
+
+	// Store a copy to prevent race conditions
+	dataCopy := &AdvertisingData{
+		DeviceName:       data.DeviceName,
+		ServiceUUIDs:     append([]string{}, data.ServiceUUIDs...),
+		ManufacturerData: append([]byte{}, data.ManufacturerData...),
+		TxPowerLevel:     data.TxPowerLevel,
+		IsConnectable:    data.IsConnectable,
+	}
+
+	globalAdvertisingData[w.hardwareUUID] = dataCopy
 	return nil
 }
 

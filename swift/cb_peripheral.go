@@ -284,76 +284,52 @@ func (p *CBPeripheral) GetCharacteristic(serviceUUID, charUUID string) *CBCharac
 	return nil
 }
 
-func (p *CBPeripheral) StartListening() {
-	if p.wire == nil {
-		return
+// HandleGATTMessage processes incoming GATT notification/response messages (public API for CBCentralManager)
+// Should be called for gatt_notification and gatt_response messages only
+// Returns true if message was handled, false if it should be routed elsewhere
+func (p *CBPeripheral) HandleGATTMessage(peerUUID string, msg *wire.GATTMessage) bool {
+	// Only handle notifications from the peripheral we're connected to
+	if msg.Type != "gatt_notification" && msg.Type != "gatt_response" {
+		return false
 	}
 
-	p.stopChan = make(chan struct{})
+	if peerUUID != p.remoteUUID {
+		return false // Not from our connected peripheral
+	}
 
-	go func() {
-		// Polling interval (25ms) balances responsiveness with filesystem stability
-		// Real BLE uses hardware interrupts, but filesystem polling is an intentional
-		// simplification for portability. This interval reduces filesystem pressure.
-		ticker := time.NewTicker(25 * time.Millisecond)
-		defer ticker.Stop()
+	// Find the characteristic this message is for
+	char := p.GetCharacteristic(msg.ServiceUUID, msg.CharacteristicUUID)
+	if char == nil {
+		return false
+	}
 
-		for {
-			select {
-			case <-p.stopChan:
-				return
-			case <-ticker.C:
-				// Central mode: read from central_inbox (notifications from peripherals)
-				messages, err := p.wire.ReadAndConsumeCharacteristicMessagesFromInbox("central_inbox")
-				if err != nil {
-					continue
-				}
-
-				// Process each notification - messages are already consumed (deleted) by wire layer
-				for _, msg := range messages {
-					// Only process messages from the peripheral we're connected to
-					// Messages from other devices are already deleted but ignored
-					if msg.SenderUUID != p.remoteUUID {
-						continue // Skip messages not from our connected peripheral
-					}
-
-					// Find the characteristic this message is for
-					char := p.GetCharacteristic(msg.ServiceUUID, msg.CharUUID)
-					if char != nil {
-						// Deliver the message data
-						// In real BLE:
-						// - "notify/indicate" operations come from peripheral notifications
-						// - "write" operations would be from Central to Peripheral (not here)
-						//
-						// But in our simulator, server mode uses WriteCharacteristic() to send
-						// data from Peripheral back to Central. So we need to accept "write"
-						// operations from our connected peripheral as data delivery.
-						shouldDeliver := false
-						if msg.Operation == "notify" || msg.Operation == "indicate" {
-							// Only deliver notifications/indications if we subscribed
-							shouldDeliver = p.notifyingCharacteristics != nil && p.notifyingCharacteristics[char.UUID]
-						} else if msg.Operation == "write" || msg.Operation == "write_no_response" {
-							// Accept writes from our connected peripheral (server mode data delivery)
-							// This is the peripheral sending data back to us as the central
-							shouldDeliver = true
-						}
-
-						if shouldDeliver {
-							// Create a copy of data to prevent race conditions
-							dataCopy := make([]byte, len(msg.Data))
-							copy(dataCopy, msg.Data)
-							char.Value = dataCopy
-
-							if p.Delegate != nil {
-								// Deliver callback
-								p.Delegate.DidUpdateValueForCharacteristic(p, char, nil)
-							}
-						}
-					}
-				}
-			}
+	// Handle notification/indication
+	if msg.Type == "gatt_notification" {
+		// Only deliver if we subscribed
+		if p.notifyingCharacteristics == nil || !p.notifyingCharacteristics[char.UUID] {
+			return false
 		}
-	}()
+
+		// Update characteristic value
+		dataCopy := make([]byte, len(msg.Data))
+		copy(dataCopy, msg.Data)
+		char.Value = dataCopy
+
+		// Deliver callback
+		if p.Delegate != nil {
+			p.Delegate.DidUpdateValueForCharacteristic(p, char, nil)
+		}
+		return true
+	}
+
+	// TODO: Handle gatt_response for read operations
+	return false
+}
+
+// StartListening is now a no-op
+// GATT message handling is done via HandleGATTMessage() callback from iPhone/CBCentralManager layer
+func (p *CBPeripheral) StartListening() {
+	// No-op: New architecture uses callbacks, not polling
 }
 
 func (p *CBPeripheral) StopListening() {

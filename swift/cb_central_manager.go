@@ -7,7 +7,7 @@ import (
 )
 
 type CBCentralManagerDelegate interface {
-	DidUpdateState(central CBCentralManager)
+	DidUpdateCentralState(central CBCentralManager)
 	DidDiscoverPeripheral(central CBCentralManager, peripheral CBPeripheral, advertisementData map[string]interface{}, rssi float64)
 	DidConnectPeripheral(central CBCentralManager, peripheral CBPeripheral)
 	DidFailToConnectPeripheral(central CBCentralManager, peripheral CBPeripheral, err error)
@@ -20,7 +20,7 @@ type CBCentralManager struct {
 	uuid                string
 	wire                *wire.Wire
 	stopChan            chan struct{}
-	pendingPeripherals  map[string]*CBPeripheral // UUIDs of peripherals to auto-reconnect
+	pendingPeripherals  map[string]*CBPeripheral // UUID -> peripheral (for auto-reconnect and message routing)
 	autoReconnectActive bool                     // Whether auto-reconnect is enabled
 }
 
@@ -234,4 +234,23 @@ func (c *CBCentralManager) CancelPeripheralConnection(peripheral *CBPeripheral) 
 
 	// Disconnect if currently connected
 	c.wire.Disconnect(peripheral.UUID)
+}
+
+// HandleGATTMessage processes incoming GATT messages and routes them to the appropriate peripheral
+// Should be called from iPhone layer for gatt_notification and gatt_response messages
+// Returns true if message was handled, false otherwise
+func (c *CBCentralManager) HandleGATTMessage(peerUUID string, msg *wire.GATTMessage) bool {
+	// Only handle notification/response messages (these are for centrals)
+	if msg.Type != "gatt_notification" && msg.Type != "gatt_response" {
+		return false
+	}
+
+	// Find the peripheral for this UUID
+	peripheral, exists := c.pendingPeripherals[peerUUID]
+	if !exists {
+		return false // Not connected to this peripheral
+	}
+
+	// Route to peripheral's handler
+	return peripheral.HandleGATTMessage(peerUUID, msg)
 }

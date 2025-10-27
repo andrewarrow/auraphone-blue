@@ -10,7 +10,7 @@ import (
 
 // CBPeripheralManagerDelegate matches iOS CoreBluetooth peripheral manager delegate
 type CBPeripheralManagerDelegate interface {
-	DidUpdateState(peripheralManager *CBPeripheralManager)
+	DidUpdatePeripheralState(peripheralManager *CBPeripheralManager)
 	DidStartAdvertising(peripheralManager *CBPeripheralManager, err error)
 	DidReceiveReadRequest(peripheralManager *CBPeripheralManager, request *CBATTRequest)
 	DidReceiveWriteRequests(peripheralManager *CBPeripheralManager, requests []*CBATTRequest)
@@ -116,7 +116,7 @@ func NewCBPeripheralManager(delegate CBPeripheralManagerDelegate, uuid string, d
 		go func() {
 			// Small delay to match real iOS behavior
 			time.Sleep(10 * time.Millisecond)
-			delegate.DidUpdateState(pm)
+			delegate.DidUpdatePeripheralState(pm)
 		}()
 	}
 
@@ -369,48 +369,37 @@ func (pm *CBPeripheralManager) propertiesToStrings(props CBCharacteristicPropert
 	return result
 }
 
-// startListeningForRequests listens for incoming GATT requests
+// startListeningForRequests is now a no-op
+// GATT message handling is done via HandleGATTMessage() callback from iPhone layer
 func (pm *CBPeripheralManager) startListeningForRequests() {
-	if pm.stopListening != nil {
-		// Already listening
-		return
-	}
-
-	pm.stopListening = make(chan struct{})
-
-	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-pm.stopListening:
-				return
-			case <-ticker.C:
-				// Peripheral mode: read from peripheral_inbox (writes from centrals)
-				messages, err := pm.wire.ReadAndConsumeCharacteristicMessagesFromInbox("peripheral_inbox")
-				if err != nil {
-					continue
-				}
-
-				if len(messages) > 0 {
-					logger.Debug(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📬 Peripheral inbox: received %d messages", len(messages))
-				}
-
-				// Process peripheral-mode operations (read, write, subscribe, unsubscribe)
-				// All messages in peripheral_inbox are meant for us - no filtering needed
-				for _, msg := range messages {
-					logger.Debug(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📬 Processing message: op=%s, char=%s, from=%s", msg.Operation, msg.CharUUID[:8], msg.SenderUUID[:8])
-					pm.handleCharacteristicMessage(msg)
-				}
-			}
-		}
-	}()
+	// No-op: New architecture uses callbacks, not polling
+	// iPhone layer will call pm.HandleGATTMessage() for each incoming request
 }
 
-// handleCharacteristicMessage processes incoming GATT messages
-// NOTE: This should only be called for peripheral-mode operations (read, write, subscribe, unsubscribe)
-// Notify/indicate messages are filtered out in startListeningForRequests()
+// HandleGATTMessage processes incoming GATT request messages (public API for iPhone layer)
+// Should be called for gatt_request messages only (read, write, subscribe, unsubscribe)
+// Returns true if message was handled, false if it should be routed elsewhere
+func (pm *CBPeripheralManager) HandleGATTMessage(peerUUID string, msg *wire.GATTMessage) bool {
+	// Only handle gatt_request messages
+	if msg.Type != "gatt_request" {
+		return false
+	}
+
+	// Convert to old CharacteristicMessage format for compatibility
+	charMsg := &wire.CharacteristicMessage{
+		Type:               msg.Type,
+		Operation:          msg.Operation,
+		ServiceUUID:        msg.ServiceUUID,
+		CharUUID:           msg.CharacteristicUUID,
+		Data:               msg.Data,
+		SenderUUID:         peerUUID,
+	}
+
+	pm.handleCharacteristicMessage(charMsg)
+	return true
+}
+
+// handleCharacteristicMessage processes incoming GATT messages (internal)
 func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.CharacteristicMessage) {
 	// Find the characteristic
 	var targetChar *CBMutableCharacteristic
