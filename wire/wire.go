@@ -159,6 +159,7 @@ type Wire struct {
 
 	// Filesystem logging for debugging (optional)
 	enableDebugLog       bool
+	connectionEventLog   *ConnectionEventLogger
 
 	// Message queue for polling compatibility with old Wire API
 	messageQueue         []*CharacteristicMessage
@@ -222,6 +223,7 @@ func newWireInternal(deviceUUID string, platform Platform, deviceName string, co
 		messageHandlers:      make(map[string]func(*CharacteristicMessage)),
 		stopChan:             make(chan struct{}),
 		enableDebugLog:       true,
+		connectionEventLog:   NewConnectionEventLogger(deviceUUID, true),
 	}
 
 	return w, nil
@@ -239,6 +241,7 @@ func (sw *Wire) InitializeDevice() error {
 		return fmt.Errorf("failed to create peripheral socket listener: %w", err)
 	}
 	sw.peripheralListener = peripheralListener
+	sw.connectionEventLog.LogSocketCreated("peripheral", sw.peripheralSocketPath)
 
 	// Create Central socket listener (accepts connections from Peripherals)
 	centralListener, err := net.Listen("unix", sw.centralSocketPath)
@@ -247,6 +250,7 @@ func (sw *Wire) InitializeDevice() error {
 		return fmt.Errorf("failed to create central socket listener: %w", err)
 	}
 	sw.centralListener = centralListener
+	sw.connectionEventLog.LogSocketCreated("central", sw.centralSocketPath)
 
 	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 		"🔌 Dual socket listeners created:\n  Peripheral: %s\n  Central: %s",
@@ -379,6 +383,9 @@ func (sw *Wire) handleIncomingConnection(conn net.Conn, ourRole ConnectionRole) 
 	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 		"📞 Accepted %s connection from %s", ourRole, remoteUUID[:8])
 
+	// Log connection acceptance (deviceID not yet known)
+	sw.connectionEventLog.LogConnectionAccepted(string(ourRole), remoteUUID, "")
+
 	// Create RoleConnection for this directional connection
 	roleConn := &RoleConnection{
 		conn:          conn,
@@ -472,6 +479,9 @@ func (sw *Wire) readLoop(remoteUUID string, roleConn *RoleConnection) {
 	conn := roleConn.conn
 	ourRole := roleConn.role
 
+	// Log read loop started
+	sw.connectionEventLog.LogReadLoopStarted(string(ourRole), remoteUUID, "")
+
 	// Determine what operations are valid based on our role
 	// If we are Central: they can notify us (they are Peripheral)
 	// If we are Peripheral: they can write to us (they are Central)
@@ -484,6 +494,10 @@ func (sw *Wire) readLoop(remoteUUID string, roleConn *RoleConnection) {
 		validOps = map[string]bool{"write": true, "write_no_response": true, "read": true, "subscribe": true, "unsubscribe": true}
 	}
 
+	defer func() {
+		sw.connectionEventLog.LogReadLoopEnded(string(ourRole), remoteUUID, "", "read loop exited")
+	}()
+
 	for {
 		// Read total message length (sent by SendToDevice)
 		var totalLen uint32
@@ -491,6 +505,7 @@ func (sw *Wire) readLoop(remoteUUID string, roleConn *RoleConnection) {
 			if err != io.EOF {
 				logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 					"Read error from %s: %v", remoteUUID[:8], err)
+				sw.connectionEventLog.LogSocketError(string(ourRole), remoteUUID, "", err.Error(), "read length")
 			}
 			return
 		}
@@ -501,6 +516,7 @@ func (sw *Wire) readLoop(remoteUUID string, roleConn *RoleConnection) {
 			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 				"Failed to read complete message from %s (expected %d bytes): %v",
 				remoteUUID[:8], totalLen, err)
+			sw.connectionEventLog.LogSocketError(string(ourRole), remoteUUID, "", err.Error(), "read message")
 			return
 		}
 
@@ -648,6 +664,11 @@ func (sw *Wire) Connect(targetUUID string) error {
 		"✅ Dual connections established with %s:\n  As Central: %s\n  As Peripheral: %s",
 		targetUUID[:8], targetPeripheralSocket, targetCentralSocket)
 
+	// Log dual connection established
+	sw.connectionEventLog.LogConnectionEstablished("central", targetUUID, "", targetPeripheralSocket)
+	sw.connectionEventLog.LogConnectionEstablished("peripheral", targetUUID, "", targetCentralSocket)
+	sw.connectionEventLog.LogDualConnectionComplete(targetUUID, "")
+
 	// Start read loops for both connections
 	sw.wg.Add(2)
 	go func() {
@@ -660,6 +681,7 @@ func (sw *Wire) Connect(targetUUID string) error {
 			dualConn.asCentral = nil
 			logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 				"🔌 Central connection closed to %s", targetUUID[:8])
+			sw.connectionEventLog.LogSocketClosed("central", targetUUID, "", "read loop ended")
 		}
 		sw.checkAndCleanupDualConnection(dualConn)
 		sw.connMutex.Unlock()
@@ -675,6 +697,7 @@ func (sw *Wire) Connect(targetUUID string) error {
 			dualConn.asPeripheral = nil
 			logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 				"🔌 Peripheral connection closed to %s", targetUUID[:8])
+			sw.connectionEventLog.LogSocketClosed("peripheral", targetUUID, "", "read loop ended")
 		}
 		sw.checkAndCleanupDualConnection(dualConn)
 		sw.connMutex.Unlock()
@@ -738,6 +761,8 @@ func (sw *Wire) negotiateMTU(roleConn *RoleConnection, targetUUID string, roleNa
 	logger.Info(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 		"📏 MTU negotiated: %d bytes with %s [%s role] (delay: %dms)",
 		negotiatedMTU, targetUUID[:8], roleName, delay.Milliseconds())
+
+	sw.connectionEventLog.LogMTUNegotiated(roleName, targetUUID, "", negotiatedMTU)
 }
 
 // dialAndHandshake dials a socket and performs UUID handshake

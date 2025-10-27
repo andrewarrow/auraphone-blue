@@ -73,6 +73,7 @@ type PhotoTransferCoordinator struct {
 	mu                sync.Mutex
 	hardwareUUID      string
 	statePath         string
+	timelineLogger    *PhotoTimelineLogger
 
 	// Persistent state (saved to disk)
 	completedSends    map[string]string  // deviceID -> hash of photo we successfully sent to them
@@ -95,6 +96,7 @@ func NewPhotoTransferCoordinator(hardwareUUID string) *PhotoTransferCoordinator 
 	coordinator := &PhotoTransferCoordinator{
 		hardwareUUID:       hardwareUUID,
 		statePath:          statePath,
+		timelineLogger:     NewPhotoTimelineLogger(hardwareUUID, true),
 		completedSends:     make(map[string]string),
 		completedReceives:  make(map[string]string),
 		inProgressSends:    make(map[string]*SendState),
@@ -234,6 +236,8 @@ func (c *PhotoTransferCoordinator) StartSend(deviceID string, photoHash string, 
 
 	logger.Debug(c.hardwareUUID[:8], "📤 Started photo send to %s (hash: %s, chunks: %d)",
 		deviceID, photoHash[:8], totalChunks)
+
+	c.timelineLogger.LogSendStarted(deviceID, "", photoHash[:8], totalChunks)
 }
 
 // UpdateSendProgress updates the last activity time and chunk count for a send
@@ -250,13 +254,20 @@ func (c *PhotoTransferCoordinator) UpdateSendProgress(deviceID string, chunksSen
 // CompleteSend marks a photo send as successfully completed
 func (c *PhotoTransferCoordinator) CompleteSend(deviceID string, photoHash string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+
+	// Calculate duration before we remove from in-progress
+	var durationMs int64
+	if state, exists := c.inProgressSends[deviceID]; exists {
+		durationMs = time.Since(state.StartTime).Milliseconds()
+	}
 
 	// Remove from in-progress
 	delete(c.inProgressSends, deviceID)
 
 	// Mark as completed
 	c.completedSends[deviceID] = photoHash
+
+	c.mu.Unlock()
 
 	// Persist to disk
 	if err := c.saveState(); err != nil {
@@ -265,6 +276,8 @@ func (c *PhotoTransferCoordinator) CompleteSend(deviceID string, photoHash strin
 
 	logger.Info(c.hardwareUUID[:8], "✅ Photo send to %s completed successfully (hash: %s)",
 		deviceID, photoHash[:8])
+
+	c.timelineLogger.LogSendComplete(deviceID, "", photoHash[:8], 0, durationMs)
 }
 
 // FailSend marks a photo send as failed and cleans up state
@@ -286,6 +299,14 @@ func (c *PhotoTransferCoordinator) RecordChunkSent(deviceID string, chunkIndex i
 		state.ChunkLastSent[chunkIndex] = time.Now()
 		state.ChunkRetryCount[chunkIndex]++
 		state.LastActivity = time.Now()
+
+		// Log chunk sent
+		c.timelineLogger.LogChunkSent(deviceID, "", state.PhotoHash[:8], chunkIndex, state.TotalChunks, 0)
+
+		// Log retry if this is not the first attempt
+		if state.ChunkRetryCount[chunkIndex] > 1 {
+			c.timelineLogger.LogChunkRetry(deviceID, "", state.PhotoHash[:8], chunkIndex, state.ChunkRetryCount[chunkIndex])
+		}
 	}
 }
 
@@ -297,6 +318,8 @@ func (c *PhotoTransferCoordinator) MarkChunkAcked(deviceID string, chunkIndex in
 	if state, exists := c.inProgressSends[deviceID]; exists {
 		state.ChunkAckReceived[chunkIndex] = true
 		state.LastActivity = time.Now()
+
+		c.timelineLogger.LogChunkAckReceived(deviceID, "", state.PhotoHash[:8], chunkIndex)
 	}
 }
 
@@ -364,6 +387,8 @@ func (c *PhotoTransferCoordinator) StartReceive(deviceID string, photoHash strin
 
 	logger.Debug(c.hardwareUUID[:8], "📥 Started photo receive from %s (hash: %s, chunks: %d)",
 		deviceID, photoHash[:8], totalChunks)
+
+	c.timelineLogger.LogReceiveStarted(deviceID, "", photoHash[:8], totalChunks)
 }
 
 // UpdateReceiveProgress updates the last activity time and chunk count for a receive
@@ -394,19 +419,28 @@ func (c *PhotoTransferCoordinator) RecordReceivedChunk(deviceID string, chunkInd
 				state.MissingChunks = append(state.MissingChunks, i)
 			}
 		}
+
+		c.timelineLogger.LogChunkReceived(deviceID, "", state.PhotoHash[:8], chunkIndex, state.TotalChunks, len(chunkData))
 	}
 }
 
 // CompleteReceive marks a photo receive as successfully completed
 func (c *PhotoTransferCoordinator) CompleteReceive(deviceID string, photoHash string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+
+	// Calculate duration before we remove from in-progress
+	var durationMs int64
+	if state, exists := c.inProgressReceives[deviceID]; exists {
+		durationMs = time.Since(state.StartTime).Milliseconds()
+	}
 
 	// Remove from in-progress
 	delete(c.inProgressReceives, deviceID)
 
 	// Mark as completed
 	c.completedReceives[deviceID] = photoHash
+
+	c.mu.Unlock()
 
 	// Persist to disk
 	if err := c.saveState(); err != nil {
@@ -415,6 +449,8 @@ func (c *PhotoTransferCoordinator) CompleteReceive(deviceID string, photoHash st
 
 	logger.Info(c.hardwareUUID[:8], "✅ Photo receive from %s completed successfully (hash: %s)",
 		deviceID, photoHash[:8])
+
+	c.timelineLogger.LogReceiveComplete(deviceID, "", photoHash[:8], 0, durationMs)
 }
 
 // FailReceive marks a photo receive as failed and cleans up state
