@@ -115,7 +115,7 @@ func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map
 		}
 
 		// Get realistic RSSI from wire layer
-		rssi := float64(c.wire.GetRSSI())
+		rssi := float64(c.wire.GetRSSI(deviceUUID))
 
 		c.Delegate.DidDiscoverPeripheral(*c, CBPeripheral{
 			Name: deviceName,

@@ -67,7 +67,7 @@ func (p *CBPeripheral) DiscoverServices(serviceUUIDs []string) {
 	// Service discovery is async in real iOS - run in goroutine with realistic delay
 	go func() {
 		// Simulate realistic discovery delay (50-500ms)
-		delay := p.wire.GetSimulator().ServiceDiscoveryDelay()
+		delay := p.wire.GetSimulator().ServiceDiscoveryDelay
 		time.Sleep(delay)
 
 		// Read GATT table from remote device

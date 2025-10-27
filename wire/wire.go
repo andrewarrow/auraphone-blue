@@ -2,13 +2,86 @@ package wire
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
+
+// ConnectionRole represents the role in a specific connection
+type ConnectionRole string
+
+const (
+	RoleCentral    ConnectionRole = "central"    // We initiated connection
+	RolePeripheral ConnectionRole = "peripheral" // They initiated connection
+)
+
+// Platform represents the device platform (stub for old API compatibility)
+type Platform string
+
+const (
+	PlatformIOS     Platform = "ios"
+	PlatformAndroid Platform = "android"
+)
+
+// AdvertisingData represents BLE advertising packet data (stub for old API compatibility)
+// TODO Step 4: Implement full advertising protocol
+type AdvertisingData struct {
+	DeviceName       string
+	ServiceUUIDs     []string
+	ManufacturerData []byte
+	TxPowerLevel     *int
+	IsConnectable    bool
+}
+
+// GATTTable represents a device's complete GATT database (stub for old API compatibility)
+// TODO Step 4: Implement GATT service discovery
+type GATTTable struct {
+	Services []GATTService
+}
+
+// GATTService represents a BLE service (stub for old API compatibility)
+type GATTService struct {
+	UUID            string
+	Type            string
+	Characteristics []GATTCharacteristic
+}
+
+// GATTCharacteristic represents a BLE characteristic (stub for old API compatibility)
+type GATTCharacteristic struct {
+	UUID       string
+	Properties []string
+	Value      []byte
+}
+
+// CharacteristicMessage is deprecated, use GATTMessage instead
+// Kept for backward compatibility with old swift code
+type CharacteristicMessage = GATTMessage
+
+// Connection represents a single bidirectional BLE connection
+type Connection struct {
+	conn       net.Conn
+	remoteUUID string
+	role       ConnectionRole // Our role in this connection
+	sendMutex  sync.Mutex     // Protects writes to this connection
+}
+
+// GATTMessage represents a GATT operation over the wire
+type GATTMessage struct {
+	Type               string `json:"type"`                         // "gatt_request", "gatt_response", "gatt_notification"
+	RequestID          string `json:"request_id,omitempty"`         // For request/response matching
+	Operation          string `json:"operation,omitempty"`          // "read", "write", "subscribe", "unsubscribe"
+	ServiceUUID        string `json:"service_uuid"`
+	CharacteristicUUID string `json:"characteristic_uuid"`
+	CharUUID           string `json:"char_uuid,omitempty"`          // Alias for CharacteristicUUID (old API compat)
+	Data               []byte `json:"data,omitempty"`
+	Status             string `json:"status,omitempty"`             // "success", "error"
+	SenderUUID         string `json:"sender_uuid,omitempty"`        // Who sent this message
+}
 
 // Wire handles Unix domain socket communication with BLE realism
 // Single socket per device at /tmp/auraphone-{hardwareUUID}.sock
@@ -16,12 +89,17 @@ type Wire struct {
 	hardwareUUID string
 	socketPath   string
 	listener     net.Listener
-	connections  map[string]net.Conn // peer UUID -> connection
+	connections  map[string]*Connection // peer UUID -> single connection
 	mu           sync.RWMutex
 
-	// Message handler for incoming data
-	messageHandler func(peerUUID string, data []byte)
-	handlerMu      sync.RWMutex
+	// Message handler for incoming GATT messages
+	gattHandler func(peerUUID string, msg *GATTMessage)
+	handlerMu   sync.RWMutex
+
+	// Connection callbacks
+	connectCallback    func(peerUUID string, role ConnectionRole)
+	disconnectCallback func(peerUUID string)
+	callbackMu         sync.RWMutex
 
 	// Stop channels
 	stopListening chan struct{}
@@ -34,7 +112,7 @@ func NewWire(hardwareUUID string) *Wire {
 	return &Wire{
 		hardwareUUID: hardwareUUID,
 		socketPath:   fmt.Sprintf("/tmp/auraphone-%s.sock", hardwareUUID),
-		connections:  make(map[string]net.Conn),
+		connections:  make(map[string]*Connection),
 		stopReading:  make(map[string]chan struct{}),
 	}
 }
@@ -59,12 +137,21 @@ func (w *Wire) Start() error {
 	return nil
 }
 
-// Stop stops the wire and cleans up resources
+// Stop stops the wire and cleans up resources (idempotent - safe to call multiple times)
 func (w *Wire) Stop() {
-	// Stop accepting new connections
+	// Stop accepting new connections (check if already stopped)
+	w.mu.Lock()
 	if w.stopListening != nil {
-		close(w.stopListening)
+		select {
+		case <-w.stopListening:
+			// Already stopped
+			w.mu.Unlock()
+			return
+		default:
+			close(w.stopListening)
+		}
 	}
+	w.mu.Unlock()
 
 	// Close listener
 	if w.listener != nil {
@@ -73,18 +160,23 @@ func (w *Wire) Stop() {
 
 	// Close all connections
 	w.mu.Lock()
-	for uuid, conn := range w.connections {
+	for uuid, connection := range w.connections {
 		// Stop reading goroutine
 		w.stopMu.Lock()
 		if stopChan, exists := w.stopReading[uuid]; exists {
-			close(stopChan)
+			select {
+			case <-stopChan:
+				// Already closed
+			default:
+				close(stopChan)
+			}
 			delete(w.stopReading, uuid)
 		}
 		w.stopMu.Unlock()
 
-		conn.Close()
+		connection.conn.Close()
 	}
-	w.connections = make(map[string]net.Conn)
+	w.connections = make(map[string]*Connection)
 	w.mu.Unlock()
 
 	// Clean up socket file
@@ -116,7 +208,7 @@ func (w *Wire) acceptConnections() {
 	}
 }
 
-// handleIncomingConnection processes a new incoming connection
+// handleIncomingConnection processes a new incoming connection (we become Peripheral)
 func (w *Wire) handleIncomingConnection(conn net.Conn) {
 	// Read UUID length (4 bytes)
 	var uuidLen uint32
@@ -136,10 +228,30 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 
 	peerUUID := string(uuidBytes)
 
-	// Store connection
+	// Check if already connected
 	w.mu.Lock()
-	w.connections[peerUUID] = conn
+	if _, exists := w.connections[peerUUID]; exists {
+		w.mu.Unlock()
+		conn.Close()
+		return
+	}
+
+	// Store connection with Peripheral role (they initiated)
+	connection := &Connection{
+		conn:       conn,
+		remoteUUID: peerUUID,
+		role:       RolePeripheral,
+	}
+	w.connections[peerUUID] = connection
 	w.mu.Unlock()
+
+	// Notify callback
+	w.callbackMu.RLock()
+	connectCb := w.connectCallback
+	w.callbackMu.RUnlock()
+	if connectCb != nil {
+		connectCb(peerUUID, RolePeripheral)
+	}
 
 	// Start reading messages from this connection
 	stopChan := make(chan struct{})
@@ -147,10 +259,10 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 	w.stopReading[peerUUID] = stopChan
 	w.stopMu.Unlock()
 
-	w.readMessages(peerUUID, conn, stopChan)
+	w.readMessages(peerUUID, connection, stopChan)
 }
 
-// Connect establishes a connection to a peer
+// Connect establishes a connection to a peer (we become Central)
 func (w *Wire) Connect(peerUUID string) error {
 	// Check if already connected
 	w.mu.RLock()
@@ -184,10 +296,24 @@ func (w *Wire) Connect(peerUUID string) error {
 		return fmt.Errorf("failed to send handshake: %w", err)
 	}
 
-	// Store connection
+	// Store connection with Central role (we initiated)
+	connection := &Connection{
+		conn:       conn,
+		remoteUUID: peerUUID,
+		role:       RoleCentral,
+	}
+
 	w.mu.Lock()
-	w.connections[peerUUID] = conn
+	w.connections[peerUUID] = connection
 	w.mu.Unlock()
+
+	// Notify callback
+	w.callbackMu.RLock()
+	connectCb := w.connectCallback
+	w.callbackMu.RUnlock()
+	if connectCb != nil {
+		connectCb(peerUUID, RoleCentral)
+	}
 
 	// Start reading messages from this connection
 	stopChan := make(chan struct{})
@@ -195,13 +321,13 @@ func (w *Wire) Connect(peerUUID string) error {
 	w.stopReading[peerUUID] = stopChan
 	w.stopMu.Unlock()
 
-	go w.readMessages(peerUUID, conn, stopChan)
+	go w.readMessages(peerUUID, connection, stopChan)
 
 	return nil
 }
 
 // readMessages continuously reads messages from a connection
-func (w *Wire) readMessages(peerUUID string, conn net.Conn, stopChan chan struct{}) {
+func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan chan struct{}) {
 	defer func() {
 		// Clean up on exit
 		w.mu.Lock()
@@ -212,7 +338,15 @@ func (w *Wire) readMessages(peerUUID string, conn net.Conn, stopChan chan struct
 		delete(w.stopReading, peerUUID)
 		w.stopMu.Unlock()
 
-		conn.Close()
+		connection.conn.Close()
+
+		// Notify disconnect callback
+		w.callbackMu.RLock()
+		disconnectCb := w.disconnectCallback
+		w.callbackMu.RUnlock()
+		if disconnectCb != nil {
+			disconnectCb(peerUUID)
+		}
 	}()
 
 	for {
@@ -224,50 +358,68 @@ func (w *Wire) readMessages(peerUUID string, conn net.Conn, stopChan chan struct
 
 		// Read message length (4 bytes)
 		var msgLen uint32
-		err := binary.Read(conn, binary.BigEndian, &msgLen)
+		err := binary.Read(connection.conn, binary.BigEndian, &msgLen)
 		if err != nil {
 			return // Connection closed or error
 		}
 
-		// Read message data
+		// Read message data (JSON-encoded GATTMessage)
 		msgData := make([]byte, msgLen)
-		_, err = io.ReadFull(conn, msgData)
+		_, err = io.ReadFull(connection.conn, msgData)
 		if err != nil {
 			return // Connection closed or error
 		}
 
-		// Call message handler
+		// Parse GATT message
+		var msg GATTMessage
+		err = json.Unmarshal(msgData, &msg)
+		if err != nil {
+			// Invalid message, skip it
+			continue
+		}
+
+		// Call GATT handler
 		w.handlerMu.RLock()
-		handler := w.messageHandler
+		handler := w.gattHandler
 		w.handlerMu.RUnlock()
 
 		if handler != nil {
-			handler(peerUUID, msgData)
+			handler(peerUUID, &msg)
 		}
 	}
 }
 
-// SendMessage sends a message to a peer
-func (w *Wire) SendMessage(peerUUID string, data []byte) error {
+// SendGATTMessage sends a GATT message to a peer
+func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
+	// Marshal message to JSON
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal GATT message: %w", err)
+	}
+
 	w.mu.RLock()
-	conn, exists := w.connections[peerUUID]
+	connection, exists := w.connections[peerUUID]
 	w.mu.RUnlock()
 
 	if !exists {
 		return fmt.Errorf("not connected to %s", peerUUID)
 	}
 
+	// Lock for thread-safe writes
+	connection.sendMutex.Lock()
+	defer connection.sendMutex.Unlock()
+
 	// Send length-prefixed message
 	msgLen := uint32(len(data))
 
 	// Write length
-	err := binary.Write(conn, binary.BigEndian, msgLen)
+	err = binary.Write(connection.conn, binary.BigEndian, msgLen)
 	if err != nil {
 		return fmt.Errorf("failed to send message length: %w", err)
 	}
 
 	// Write data
-	_, err = conn.Write(data)
+	_, err = connection.conn.Write(data)
 	if err != nil {
 		return fmt.Errorf("failed to send message data: %w", err)
 	}
@@ -275,11 +427,25 @@ func (w *Wire) SendMessage(peerUUID string, data []byte) error {
 	return nil
 }
 
-// SetMessageHandler sets the callback for incoming messages
-func (w *Wire) SetMessageHandler(handler func(peerUUID string, data []byte)) {
+// SetGATTMessageHandler sets the callback for incoming GATT messages
+func (w *Wire) SetGATTMessageHandler(handler func(peerUUID string, msg *GATTMessage)) {
 	w.handlerMu.Lock()
-	w.messageHandler = handler
+	w.gattHandler = handler
 	w.handlerMu.Unlock()
+}
+
+// SetConnectCallback sets the callback for when a connection is established
+func (w *Wire) SetConnectCallback(callback func(peerUUID string, role ConnectionRole)) {
+	w.callbackMu.Lock()
+	w.connectCallback = callback
+	w.callbackMu.Unlock()
+}
+
+// SetDisconnectCallback sets the callback for when a connection is lost
+func (w *Wire) SetDisconnectCallback(callback func(peerUUID string)) {
+	w.callbackMu.Lock()
+	w.disconnectCallback = callback
+	w.callbackMu.Unlock()
 }
 
 // ListAvailableDevices scans /tmp for .sock files and returns hardware UUIDs
@@ -322,4 +488,221 @@ func (w *Wire) IsConnected(peerUUID string) bool {
 	defer w.mu.RUnlock()
 	_, exists := w.connections[peerUUID]
 	return exists
+}
+
+// GetConnectionRole returns our role in the connection with the peer
+func (w *Wire) GetConnectionRole(peerUUID string) (ConnectionRole, bool) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	connection, exists := w.connections[peerUUID]
+	if !exists {
+		return "", false
+	}
+	return connection.role, true
+}
+
+// GetConnectedPeers returns a list of all connected peer UUIDs
+func (w *Wire) GetConnectedPeers() []string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	peers := make([]string, 0, len(w.connections))
+	for uuid := range w.connections {
+		peers = append(peers, uuid)
+	}
+	return peers
+}
+
+// ============================================================================
+// STUB METHODS FOR OLD API COMPATIBILITY
+// These will be properly implemented in Steps 4-6
+// ============================================================================
+
+// StartDiscovery starts scanning for devices (stub for old API)
+// TODO Step 4: Implement proper discovery with callbacks
+func (w *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
+	stopChan := make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-ticker.C:
+				// Use our new ListAvailableDevices
+				devices := w.ListAvailableDevices()
+				for _, deviceUUID := range devices {
+					callback(deviceUUID)
+				}
+			}
+		}
+	}()
+
+	return stopChan
+}
+
+// ReadAdvertisingData reads advertising data for a device (stub for old API)
+// TODO Step 4: Implement actual advertising data exchange
+func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) {
+	// Return dummy advertising data
+	return &AdvertisingData{
+		DeviceName:    fmt.Sprintf("Device-%s", deviceUUID[:8]),
+		ServiceUUIDs:  []string{},
+		IsConnectable: true,
+	}, nil
+}
+
+// GetRSSI returns simulated RSSI for a device (stub for old API)
+// TODO Step 4: Implement realistic RSSI simulation
+func (w *Wire) GetRSSI(deviceUUID string) float64 {
+	return -45.0 // Good signal strength
+}
+
+// DeviceExists checks if a device exists (stub for old API)
+// TODO Step 4: Implement proper device discovery state tracking
+func (w *Wire) DeviceExists(deviceUUID string) bool {
+	// Check if device socket exists
+	socketPath := fmt.Sprintf("/tmp/auraphone-%s.sock", deviceUUID)
+	_, err := os.Stat(socketPath)
+	return err == nil
+}
+
+// Disconnect closes connection to a peer (stub for old API)
+// TODO Step 4: Implement graceful disconnect
+func (w *Wire) Disconnect(peerUUID string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	connection, exists := w.connections[peerUUID]
+	if !exists {
+		return fmt.Errorf("not connected to %s", peerUUID)
+	}
+
+	// Stop reading goroutine
+	w.stopMu.Lock()
+	if stopChan, exists := w.stopReading[peerUUID]; exists {
+		select {
+		case <-stopChan:
+			// Already closed
+		default:
+			close(stopChan)
+		}
+		delete(w.stopReading, peerUUID)
+	}
+	w.stopMu.Unlock()
+
+	// Close connection
+	connection.conn.Close()
+	delete(w.connections, peerUUID)
+
+	return nil
+}
+
+// SimulatorStub is a stub for the old Simulator type
+type SimulatorStub struct {
+	ServiceDiscoveryDelay time.Duration
+}
+
+// GetSimulator returns a stub simulator (stub for old API)
+// TODO Step 4: Remove simulator dependency from swift layer
+func (w *Wire) GetSimulator() *SimulatorStub {
+	return &SimulatorStub{
+		ServiceDiscoveryDelay: 100 * time.Millisecond,
+	}
+}
+
+// ReadGATTTable reads GATT table from peer (stub for old API)
+// TODO Step 4: Implement GATT service discovery
+func (w *Wire) ReadGATTTable(peerUUID string) (*GATTTable, error) {
+	// Return empty GATT table
+	return &GATTTable{
+		Services: []GATTService{},
+	}, nil
+}
+
+// WriteCharacteristic writes to a characteristic (stub for old API)
+// TODO Step 5: Implement via SendGATTMessage
+func (w *Wire) WriteCharacteristic(peerUUID, serviceUUID, charUUID string, data []byte) error {
+	msg := &GATTMessage{
+		Type:               "gatt_request",
+		Operation:          "write",
+		ServiceUUID:        serviceUUID,
+		CharacteristicUUID: charUUID,
+		Data:               data,
+	}
+	return w.SendGATTMessage(peerUUID, msg)
+}
+
+// WriteCharacteristicNoResponse writes without waiting for response (stub for old API)
+// TODO Step 5: Implement via SendGATTMessage
+func (w *Wire) WriteCharacteristicNoResponse(peerUUID, serviceUUID, charUUID string, data []byte) error {
+	// Same as WriteCharacteristic for now
+	return w.WriteCharacteristic(peerUUID, serviceUUID, charUUID, data)
+}
+
+// ReadCharacteristic reads from a characteristic (stub for old API)
+// TODO Step 5: Implement via SendGATTMessage request/response
+func (w *Wire) ReadCharacteristic(peerUUID, serviceUUID, charUUID string) error {
+	// Not implemented yet - return error for now
+	return fmt.Errorf("ReadCharacteristic not implemented in Step 3")
+}
+
+// SubscribeCharacteristic subscribes to notifications (stub for old API)
+// TODO Step 6: Implement via SendGATTMessage subscribe operation
+func (w *Wire) SubscribeCharacteristic(peerUUID, serviceUUID, charUUID string) error {
+	msg := &GATTMessage{
+		Type:               "gatt_request",
+		Operation:          "subscribe",
+		ServiceUUID:        serviceUUID,
+		CharacteristicUUID: charUUID,
+	}
+	return w.SendGATTMessage(peerUUID, msg)
+}
+
+// UnsubscribeCharacteristic unsubscribes from notifications (stub for old API)
+// TODO Step 6: Implement via SendGATTMessage unsubscribe operation
+func (w *Wire) UnsubscribeCharacteristic(peerUUID, serviceUUID, charUUID string) error {
+	msg := &GATTMessage{
+		Type:               "gatt_request",
+		Operation:          "unsubscribe",
+		ServiceUUID:        serviceUUID,
+		CharacteristicUUID: charUUID,
+	}
+	return w.SendGATTMessage(peerUUID, msg)
+}
+
+// WriteGATTTable writes GATT table (stub for old API)
+// TODO Step 4: Implement GATT table storage
+func (w *Wire) WriteGATTTable(table *GATTTable) error {
+	// No-op for now
+	return nil
+}
+
+// WriteAdvertisingData writes advertising data (stub for old API)
+// TODO Step 4: Implement advertising data storage
+func (w *Wire) WriteAdvertisingData(data *AdvertisingData) error {
+	// No-op for now
+	return nil
+}
+
+// NotifyCharacteristic sends a notification (stub for old API)
+// TODO Step 6: Implement via SendGATTMessage notification
+func (w *Wire) NotifyCharacteristic(peerUUID, serviceUUID, charUUID string, data []byte) error {
+	msg := &GATTMessage{
+		Type:               "gatt_notification",
+		ServiceUUID:        serviceUUID,
+		CharacteristicUUID: charUUID,
+		Data:               data,
+	}
+	return w.SendGATTMessage(peerUUID, msg)
+}
+
+// ReadAndConsumeCharacteristicMessagesFromInbox reads messages (stub for old API)
+// TODO Step 5: Remove inbox polling pattern, use SetGATTMessageHandler instead
+func (w *Wire) ReadAndConsumeCharacteristicMessagesFromInbox(deviceUUID string) ([]*CharacteristicMessage, error) {
+	// Return empty list - new architecture uses callbacks, not polling
+	return []*CharacteristicMessage{}, nil
 }

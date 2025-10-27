@@ -60,6 +60,122 @@ Real BLE has:
 
 ---
 
+## ✅ Callbacks Are GOOD When Used Correctly (iOS Delegate Pattern)
+
+### The Confusion: Not All Callbacks Are Bad
+
+The old architecture had **callback hell** (8 layers), but that doesn't mean we should avoid callbacks entirely. **Real iOS CoreBluetooth uses delegates/callbacks extensively**, and that's the **correct pattern**.
+
+### ✅ GOOD Callbacks: iOS CoreBluetooth Delegate Pattern
+
+**Real iOS API:**
+```swift
+class MyDevice: CBPeripheralManagerDelegate {
+    func peripheralManager(_ peripheral: CBPeripheralManager,
+                          didReceiveWrite requests: [CBATTRequest]) {
+        // Handle write request
+        peripheral.respond(to: requests[0], withResult: .success)
+    }
+
+    func peripheralManager(_ peripheral: CBPeripheralManager,
+                          central: CBCentral,
+                          didSubscribeTo characteristic: CBCharacteristic) {
+        // Handle subscription
+        peripheral.updateValue(data, for: characteristic, onSubscribedCentrals: nil)
+    }
+}
+```
+
+**Our Go simulation:**
+```go
+type CBPeripheralManagerDelegate interface {
+    DidReceiveWriteRequests(pm CBPeripheralManager, requests []CBATTRequest)
+    CentralDidSubscribe(pm CBPeripheralManager, central CBCentral, char CBCharacteristic)
+}
+
+// iPhone implements the delegate
+func (ip *IPhone) DidReceiveWriteRequests(pm swift.CBPeripheralManager, requests []CBATTRequest) {
+    for _, req := range requests {
+        if req.Characteristic.UUID == AuraProtocolCharUUID {
+            ip.handleHandshake(req.Central.UUID, req.Value)
+        }
+    }
+    pm.RespondToRequest(requests[0], "success")  // ✅ Direct response, no callback chain
+}
+```
+
+**Call stack (4 layers, linear):**
+```
+wire.readMessages()              // Wire layer: receives bytes
+  → pm.handleGATTRequest()       // Swift layer: parses GATT message
+    → ip.DidReceiveWriteRequests() // iPhone layer: delegate callback
+      → ip.handleHandshake()     // Business logic: process data
+```
+
+**Why this is GOOD:**
+- ✅ **Single layer of callbacks** - delegate methods call directly into your code
+- ✅ **Clear ownership** - CBPeripheralManager owns the delegate, simple lifecycle
+- ✅ **Matches real iOS API** - this is how Apple designed it
+- ✅ **Short call stack** - 4 levels total, linear flow
+- ✅ **No circular dependencies** - iPhone never calls back into wire
+
+### ❌ BAD Callbacks: Old Architecture from fix.txt
+
+**What the old codebase did wrong (8 layers, circular):**
+```
+wire.dispatchMessage()                    // Layer 1
+  → phone/photo_handler.go                // Layer 2
+    → phone/photo_transfer_coordinator.go // Layer 3
+      → message_router.go callbacks       // Layer 4 (callback 1)
+        → iphone.go callback closures     // Layer 5 (callback 2)
+          → gossip_handler.go             // Layer 6 (callback 3)
+            → connection_manager.go       // Layer 7 (callback 4)
+              → wire.WriteCharacteristic() // Layer 8 (BACK TO WIRE - circular!)
+```
+
+**Why this was BAD:**
+- ❌ **8 layers of indirection** - impossible to trace message flow
+- ❌ **Circular dependencies** - wire → phone → handlers → wire (loops back!)
+- ❌ **Callback chains** - callbacks calling callbacks calling callbacks
+- ❌ **Shared state bugs** - closures capturing variables from different scopes
+- ❌ **No clear ownership** - who owns what callback? Lifecycle unclear
+
+### The Rule for Callbacks
+
+**✅ Good callback usage:**
+```
+Framework/Library → Your Code (1 hop, then done)
+Example: CBPeripheralManager → IPhone.DidReceiveWriteRequests() → handle & done
+```
+
+**❌ Bad callback usage:**
+```
+Framework → Layer1 → Layer2 → Layer3 → ... → Layer8 → Framework (circular!)
+Example: wire → phone → handlers → callbacks → wire (mess)
+```
+
+### iOS Delegate Methods We Use
+
+**CBCentralManagerDelegate:**
+- `DidUpdateState()` - Bluetooth powered on/off
+- `DidDiscoverPeripheral()` - Found advertising device
+- `DidConnectPeripheral()` - Connection established
+- `DidDisconnectPeripheral()` - Connection lost
+
+**CBPeripheralManagerDelegate:**
+- `DidReceiveReadRequest()` - Central reading our characteristic
+- `DidReceiveWriteRequests()` - Central writing to our characteristic
+- `CentralDidSubscribe()` - Central subscribed to notifications
+- `CentralDidUnsubscribe()` - Central unsubscribed
+
+**CBPeripheralDelegate:**
+- `DidDiscoverServices()` - GATT services discovered
+- `DidUpdateValueForCharacteristic()` - Notification received
+
+**All of these are 1-hop callbacks matching the real iOS API - this is CORRECT.**
+
+---
+
 ## Real iOS BLE Architecture (How It Actually Works)
 
 ### Central vs Peripheral Roles (Logical, Not Physical)
