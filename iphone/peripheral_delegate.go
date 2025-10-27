@@ -33,23 +33,28 @@ func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *sw
 
 	for _, request := range requests {
 		senderUUID := request.Central.UUID
-		logger.Debug(prefix, "📥 Peripheral write from %s to char %s (%d bytes)",
-			senderUUID[:8], request.Characteristic.UUID[:8], len(request.Value))
+
+		logger.Debug(prefix,
+			"📥 RECEIVED DATA (Peripheral): char=%s bytes=%d from_central=%s",
+			request.Characteristic.UUID[len(request.Characteristic.UUID)-4:], len(request.Value), senderUUID[:8])
 
 		// Route message based on characteristic UUID
 		switch request.Characteristic.UUID {
 		case phone.AuraProtocolCharUUID:
 			// Gossip, photo request, or profile request
+			logger.Debug(prefix, "📥 RX Protocol message from %s (%d bytes)", senderUUID[:8], len(request.Value))
 			if err := d.iphone.messageRouter.HandleProtocolMessage(senderUUID, request.Value); err != nil {
 				logger.Error(prefix, "❌ Failed to handle protocol message: %v", err)
 			}
 
 		case phone.AuraPhotoCharUUID:
 			// Photo chunk data
+			logger.Debug(prefix, "📥 RX Photo chunk from %s (%d bytes)", senderUUID[:8], len(request.Value))
 			d.iphone.photoHandler.HandlePhotoChunk(senderUUID, request.Value)
 
 		case phone.AuraProfileCharUUID:
 			// Profile message
+			logger.Debug(prefix, "📥 RX Profile message from %s (%d bytes)", senderUUID[:8], len(request.Value))
 			d.iphone.profileHandler.HandleProfileMessage(senderUUID, request.Value)
 		}
 	}
