@@ -2,6 +2,7 @@ package iphone
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
@@ -184,7 +185,11 @@ func (ip *iPhone) DidDiscoverCharacteristics(peripheral *swift.CBPeripheral, ser
 	}
 
 	// Send initial gossip after characteristics are discovered
-	go ip.gossipHandler.SendGossipToDevice(peripheral.UUID)
+	// Add a small delay to ensure subscriptions are fully established
+	go func() {
+		time.Sleep(100 * time.Millisecond) // Wait for subscribe to complete
+		ip.gossipHandler.SendGossipToDevice(peripheral.UUID)
+	}()
 }
 
 func (ip *iPhone) DidWriteValueForCharacteristic(peripheral *swift.CBPeripheral, characteristic *swift.CBCharacteristic, err error) {

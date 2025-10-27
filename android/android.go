@@ -442,6 +442,11 @@ func (a *Android) onCharacteristicSubscribed(remoteUUID, serviceUUID, charUUID s
 	if count == 3 {
 		prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
 		logger.Debug(prefix, "📥 GATT server: Central %s connected", remoteUUID[:8])
-		go a.gossipHandler.SendGossipToDevice(remoteUUID)
+		// Add a small delay to ensure the Central has received the subscribe ACK
+		// and is ready to receive notifications (fixes race condition)
+		go func() {
+			time.Sleep(100 * time.Millisecond) // Wait for subscribe ACK to reach Central
+			a.gossipHandler.SendGossipToDevice(remoteUUID)
+		}()
 	}
 }

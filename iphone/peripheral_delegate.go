@@ -2,6 +2,7 @@ package iphone
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
@@ -79,8 +80,13 @@ func (d *iPhonePeripheralDelegate) CentralDidSubscribe(peripheralManager *swift.
 	}
 
 	// Send initial gossip when they subscribe to protocol characteristic
+	// Add a small delay to ensure the Central has received the subscribe ACK
+	// and is ready to receive notifications (fixes race condition)
 	if characteristic.UUID == phone.AuraProtocolCharUUID {
-		go d.iphone.gossipHandler.SendGossipToDevice(central.UUID)
+		go func() {
+			time.Sleep(100 * time.Millisecond) // Wait for subscribe ACK to reach Central
+			d.iphone.gossipHandler.SendGossipToDevice(central.UUID)
+		}()
 	}
 }
 

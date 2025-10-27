@@ -2,6 +2,7 @@ package android
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/user/auraphone-blue/kotlin"
 	"github.com/user/auraphone-blue/logger"
@@ -242,8 +243,12 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 	gatt.StartListening()
 
 	// Send initial gossip after service discovery completes
+	// Add a small delay to ensure subscriptions are fully established
 	remoteUUID := gatt.GetRemoteUUID()
-	go a.gossipHandler.SendGossipToDevice(remoteUUID)
+	go func() {
+		time.Sleep(100 * time.Millisecond) // Wait for subscribe to complete
+		a.gossipHandler.SendGossipToDevice(remoteUUID)
+	}()
 
 	// Retry any pending photo/profile requests for devices reachable via this connection
 	// This handles race condition where gossip arrives before connection completes
