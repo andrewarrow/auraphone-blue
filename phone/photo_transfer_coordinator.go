@@ -381,6 +381,13 @@ func (c *PhotoTransferCoordinator) StartReceive(deviceID string, photoHash strin
 	defer c.mu.Unlock()
 
 	now := time.Now()
+
+	// Initialize missing chunks list with all chunk indices
+	missingChunks := make([]int, totalChunks)
+	for i := 0; i < totalChunks; i++ {
+		missingChunks[i] = i
+	}
+
 	c.inProgressReceives[deviceID] = &ReceiveState{
 		DeviceID:        deviceID,
 		PhotoHash:       photoHash,
@@ -389,7 +396,7 @@ func (c *PhotoTransferCoordinator) StartReceive(deviceID string, photoHash strin
 		ChunksReceived:  0,
 		TotalChunks:     totalChunks,
 		ReceivedChunks:  make(map[int][]byte),
-		MissingChunks:   make([]int, 0),
+		MissingChunks:   missingChunks,
 	}
 
 	logger.Debug(c.hardwareUUID[:8], "📥 Started photo receive from %s (hash: %s, chunks: %d)",

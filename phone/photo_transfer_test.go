@@ -2,6 +2,7 @@ package phone
 
 import (
 	"crypto/sha256"
+	"sync"
 	"testing"
 	"time"
 )
@@ -225,8 +226,25 @@ func (m *MockDevice) GetUUIDToDeviceIDMap() map[string]string { return m.uuidToD
 func (m *MockDevice) GetPhotoCoordinator() *PhotoTransferCoordinator { return m.photoCoordinator }
 func (m *MockDevice) GetCacheManager() *DeviceCacheManager { return m.cacheManager }
 func (m *MockDevice) GetConnManager() *ConnectionManager {
-	// Return nil for tests - we're not testing full connection manager integration
-	return nil
+	// Create a real connection manager for testing
+	cm := NewConnectionManager(m.hardwareUUID)
+
+	// Set up send functions using our mock
+	if m.connManager != nil && m.connManager.sendFunc != nil {
+		cm.SetSendFunctions(m.connManager.sendFunc, m.connManager.sendFunc)
+	} else {
+		// Default no-op send function if none provided
+		noopSend := func(uuid, charUUID string, data []byte) error { return nil }
+		cm.SetSendFunctions(noopSend, noopSend)
+	}
+
+	// Register connections for all devices in our UUID map
+	// This ensures SendToDevice can find a connection path
+	for senderUUID := range m.uuidToDeviceIDMap {
+		cm.RegisterCentralConnection(senderUUID, struct{}{})
+	}
+
+	return cm
 }
 func (m *MockDevice) GetLocalProfile() *LocalProfile { return &LocalProfile{} }
 func (m *MockDevice) DisconnectFromDevice(uuid string) error { return nil }

@@ -258,28 +258,34 @@ func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
 			// Only add to discoveries if this is truly new (not a re-discovery of same photo)
 			newDiscoveries = append(newDiscoveries, deviceID)
 		} else {
-			// Update if gossip has newer information
+			// Update existing device
 			updated := false
-			if lastSeenTime.After(existing.LastSeenTime) {
-				// Hardware UUID is no longer stored here - it's managed by IdentityManager
-				if photoHashHex != "" && photoHashHex != existing.PhotoHash {
-					// Photo changed - this is a NEW photo for this device
-					existing.PhotoHash = photoHashHex
-					existing.PhotoRequestSent = false
-					existing.HavePhoto = false // Need to fetch new photo
-					updated = true
-				}
-				if profileVersion > 0 && (profileVersion != existing.ProfileVersion || profileSummaryHashHex != existing.ProfileSummaryHash) {
-					// Profile changed (version increased or hash differs)
-					existing.ProfileVersion = profileVersion
-					existing.ProfileSummaryHash = profileSummaryHashHex
-					existing.ProfileRequestSent = false
-					existing.HaveProfile = false // Need to fetch new profile
-					updated = true
-				}
+
+			// Check for photo hash change (regardless of timestamp)
+			if photoHashHex != "" && photoHashHex != existing.PhotoHash {
+				// Photo changed - this is a NEW photo for this device
+				existing.PhotoHash = photoHashHex
+				existing.PhotoRequestSent = false
+				existing.HavePhoto = false // Need to fetch new photo
+				updated = true
+			}
+
+			// Check for profile changes (regardless of timestamp)
+			if profileVersion > 0 && (profileVersion != existing.ProfileVersion || profileSummaryHashHex != existing.ProfileSummaryHash) {
+				// Profile changed (version increased or hash differs)
+				existing.ProfileVersion = profileVersion
+				existing.ProfileSummaryHash = profileSummaryHashHex
+				existing.ProfileRequestSent = false
+				existing.HaveProfile = false // Need to fetch new profile
+				updated = true
+			}
+
+			// Update metadata if timestamp is newer or equal
+			if !lastSeenTime.Before(existing.LastSeenTime) {
 				existing.LastSeenTime = lastSeenTime
 				existing.FirstName = firstName
 			}
+
 			// Only add to newDiscoveries if photo or profile actually changed
 			if updated {
 				newDiscoveries = append(newDiscoveries, deviceID)
