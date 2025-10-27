@@ -1,371 +1,321 @@
-# Plan: Fix Photo Transfer Reliability Issues
+# Plan: Fix 50% Photo Transfer Failure Rate
 
-## Problem Summary
+## Problem Analysis (Test Run 2025-10-27_09-49-03)
 
-From test run analysis (2025-10-27_09-00-37), we have:
-- **80% success rate** (16/20 transfers succeeded)
-- **4 failed transfers** due to:
-  1. Duplicate photo discovery events (same photo "discovered" multiple times)
-  2. Out-of-order chunk delivery (chunks arrive as 1→3→2, missing 0 and 4)
-  3. No missing chunk detection (receivers silently give up on incomplete photos)
-  4. Socket errors (112 errors on X0XUCWL8) causing packet loss
-  5. No retry mechanism for lost chunks
+**Result**: 10/20 transfers succeeded (50% success rate)
 
-## Phase 1: Write Tests to Reproduce the Problems
+### Root Causes Identified
 
-### Test 1: `message_requeue_test.go` - Duplicate Photo Discovery
-**Location**: `phone/message_requeue_test.go` (already exists, expand it)
+#### 1. **Chunks Sent But Never Received** (CRITICAL)
+- **Evidence**: 187 `send_started` events but only 65 `receive_started` events
+- **Symptoms**:
+  - Sender logs: `send_started` + `chunk_sent` (all chunks)
+  - Receiver logs: **NOTHING** (no `receive_started`, no `chunk_received`)
+- **Impact**: ~65% of transfer attempts fail silently on receiver side
 
-**Goal**: Prove that MeshView can discover the same photo multiple times
-
-```go
-func TestMeshView_DuplicatePhotoDiscovery(t *testing.T) {
-    // Setup: Create mesh view with device A
-    // Action: Merge gossip from device A twice
-    // Assert: photo_discovered should only trigger once
-    // Assert: PhotoRequestSent flag should prevent re-requesting
-}
+**Example failure:**
+```
+YMLA0QYO → ASG1KC19:
+  09:48:07 - photo_request_received [YMLA0QYO side]
+  09:48:07 - send_started [YMLA0QYO side]
+  09:48:07 - chunk_sent (x4) [YMLA0QYO side]
+  [NO EVENTS ON ASG1KC19 SIDE] ❌
 ```
 
-### Test 2: `photo_assembly_test.go` - Out-of-Order Chunks
-**Location**: `phone/photo_assembly_test.go` (new file)
+**Possible causes:**
+1. Photo chunks not reaching `HandlePhotoChunk()` on receiver
+2. UUID → DeviceID mapping failures causing early returns
+3. Wire layer dropping messages silently
+4. Wrong characteristic/socket being used for chunk delivery
 
-**Goal**: Prove that PhotoTransferCoordinator can handle out-of-order chunks
+#### 2. **Duplicate Photo Requests** (MAJOR)
+- **Evidence**: ASG1KC19 → TI05WNAZ shows 13+ `photo_request_received` events
+- **Impact**: Senders restart transfers multiple times, potentially losing progress
+- **Status**: MergeGossip fix IS implemented (prevents duplicate discoveries), but requests are still sent multiple times
 
+**Why it's still happening:**
+- Photo requests sent on every gossip interval (5 seconds)
+- `PhotoRequestSent` flag not checked before sending requests
+- Flag might be reset incorrectly somewhere
+
+#### 3. **Uneven Device Participation** (MODERATE)
+- **ASG1KC19** (F09FFFB7): Only 21 timeline events (vs 400-520 for others)
+  - 1 send, 2 receive_started, 1 receive_complete
+- **KXX18IL0** (E0D11F4F): Only 98 timeline events
+  - 7 sends, 9 receive_started, 7 receive_complete
+
+**Why**: These devices are not discovering/requesting photos properly
+
+#### 4. **Connection Drops During Transfers** (MINOR)
+- Only 6 socket errors total (very low impact)
+- ASG1KC19 ↔ TI05WNAZ: Connection dropped at 09:48:07, reconnected 09:48:28
+- May have interrupted 1-2 transfers
+
+---
+
+## Investigation Plan
+
+### Phase 1: Diagnose Why Chunks Don't Reach Receiver (2-3 hours)
+
+#### Step 1.1: Add Detailed Logging to Wire Layer
+**File**: `wire/wire.go` (or iOS/Android write methods)
+
+Add logging BEFORE and AFTER every chunk write:
 ```go
-func TestPhotoAssembly_OutOfOrderChunks(t *testing.T) {
-    // Setup: Photo with 5 chunks
-    // Action: Deliver chunks in order: 1, 3, 2, 0, 4
-    // Assert: Photo should assemble correctly
-}
+func (w *Wire) WriteCharacteristic(uuid, serviceUUID, charUUID string, data []byte) error {
+    logger.Debug(w.hardwareUUID[:8], "📤 WIRE WRITE: target=%s char=%s bytes=%d",
+        uuid[:8], charUUID[:8], len(data))
 
-func TestPhotoAssembly_MissingChunks(t *testing.T) {
-    // Setup: Photo with 5 chunks
-    // Action: Deliver chunks: 0, 1, 3 (skip 2 and 4)
-    // Wait for timeout
-    // Assert: Transfer should be marked as incomplete/failed
-    // Assert: Missing chunks [2, 4] should be tracked
-}
+    err := w.actualWriteToSocket(uuid, data)
 
-func TestPhotoAssembly_AllChunksMissing(t *testing.T) {
-    // Setup: Start receiving photo
-    // Action: Never deliver any chunks
-    // Wait for timeout
-    // Assert: Transfer marked as failed
-}
-```
-
-### Test 3: `packet_loss_test.go` - Socket Errors
-**Location**: `wire/packet_loss_test.go` (new file)
-
-**Goal**: Prove that packet loss doesn't cause silent failures
-
-```go
-func TestPacketLoss_WithRetries(t *testing.T) {
-    // Setup: Wire with 20% packet loss rate
-    // Action: Send 10 messages
-    // Assert: All messages eventually delivered (via retries)
-}
-
-func TestPacketLoss_RetriesExhausted(t *testing.T) {
-    // Setup: Wire with 100% packet loss (unreachable)
-    // Action: Send message with 3 max retries
-    // Assert: Error returned after 3 failed attempts
-    // Assert: Sender knows delivery failed
-}
-```
-
-### Test 4: `integration_reliability_test.go` - End-to-End
-**Location**: `integration_reliability_test.go` (new file)
-
-**Goal**: Reproduce the exact scenario from the failed test run
-
-```go
-func TestE2E_FivePhones_AllPhotosTransferred(t *testing.T) {
-    // Setup: 5 phones (2 iOS, 3 Android) with packet loss enabled
-    // Action: Run for 60 seconds
-    // Assert: All 20 photo transfers complete (5 phones × 4 others)
-    // Assert: No duplicate photo discovery events
-    // Assert: No incomplete transfers
-}
-
-func TestE2E_LateJoiner(t *testing.T) {
-    // Setup: 4 phones start, 5th joins after 20 seconds
-    // Action: Run for 60 seconds
-    // Assert: Late joiner receives all 4 photos
-    // Assert: All 4 early phones receive late joiner's photo
-}
-
-func TestE2E_HighPacketLoss(t *testing.T) {
-    // Setup: 5 phones with 10% packet loss
-    // Action: Run for 120 seconds
-    // Assert: Eventually all photos transferred (even with retries)
-}
-```
-
-## Phase 2: Fix the Issues
-
-### Fix 1: Prevent Duplicate Photo Discovery
-**Files**: `phone/mesh_view.go`
-
-**Changes**:
-```go
-// MergeGossip should check if photo already exists before adding to newDiscoveries
-func (mv *MeshView) MergeGossip(msg *proto.GossipMessage) []string {
-    var newDiscoveries []string
-
-    for _, deviceState := range msg.MeshView {
-        existing, exists := mv.Devices[deviceState.DeviceId]
-
-        // Only add to newDiscoveries if:
-        // 1. Device is new (doesn't exist)
-        // 2. OR photo hash changed (device updated their photo)
-        if !exists {
-            newDiscoveries = append(newDiscoveries, deviceState.DeviceId)
-        } else if existing.PhotoHash != hex.EncodeToString(deviceState.PhotoHash) {
-            // Photo changed - treat as new discovery
-            newDiscoveries = append(newDiscoveries, deviceState.DeviceId)
-        }
-        // If photo hash is same, DON'T add to newDiscoveries
-
-        // Update device state...
+    if err != nil {
+        logger.Error(w.hardwareUUID[:8], "❌ WIRE WRITE FAILED: target=%s error=%v",
+            uuid[:8], err)
+    } else {
+        logger.Debug(w.hardwareUUID[:8], "✅ WIRE WRITE SUCCESS: target=%s", uuid[:8])
     }
 
-    return newDiscoveries
-}
-
-// MarkPhotoRequested should be idempotent
-func (mv *MeshView) MarkPhotoRequested(deviceID string) {
-    if dev, exists := mv.Devices[deviceID]; exists {
-        if dev.PhotoRequestSent {
-            // Already requested, don't request again
-            return
-        }
-        dev.PhotoRequestSent = true
-    }
+    return err
 }
 ```
 
-### Fix 2: Track Missing Chunks and Retry
-**Files**: `phone/photo_transfer_coordinator.go` (new fields)
+#### Step 1.2: Add Logging to iOS/Android Receive Path
+**Files**: `iphone/central_delegate.go`, `iphone/peripheral_delegate.go`, `android/gatt_callback.go`
 
-**Add chunk tracking per transfer**:
+Add logging IMMEDIATELY when data arrives:
 ```go
-type PhotoReceiveState struct {
-    FromDeviceID     string
-    PhotoHash        string
-    TotalChunks      int
-    ReceivedChunks   map[int]bool    // NEW: Track which chunks we have
-    ChunkData        map[int][]byte  // NEW: Store chunks by index
-    StartTime        time.Time
-    LastChunkTime    time.Time       // NEW: Last time we received any chunk
-    Status           string          // "receiving", "complete", "failed"
-}
+func (d *CentralDelegate) DidUpdateValueForCharacteristic(characteristic *swift.CBCharacteristic) {
+    logger.Debug(d.iphone.hardwareUUID[:8],
+        "📥 RECEIVED DATA: char=%s bytes=%d from_peripheral=%s",
+        characteristic.UUID[:8], len(characteristic.Value), peripheral.UUID[:8])
 
-// Check for missing chunks after timeout
-func (ptc *PhotoTransferCoordinator) detectStalledTransfers() {
-    ptc.mu.Lock()
-    defer ptc.mu.Unlock()
-
-    now := time.Now()
-    for key, state := range ptc.receives {
-        if state.Status != "receiving" {
-            continue
-        }
-
-        // If no chunk in last 10 seconds, check for missing
-        if now.Sub(state.LastChunkTime) > 10*time.Second {
-            missing := state.GetMissingChunks()
-            if len(missing) > 0 {
-                // Request missing chunks specifically
-                ptc.requestMissingChunks(state, missing)
-            } else if len(state.ReceivedChunks) == state.TotalChunks {
-                // All chunks received, assemble photo
-                ptc.assemblePhoto(state)
-            } else {
-                // Timeout - mark as failed
-                state.Status = "failed"
-            }
-        }
-    }
-}
-
-func (state *PhotoReceiveState) GetMissingChunks() []int {
-    var missing []int
-    for i := 0; i < state.TotalChunks; i++ {
-        if !state.ReceivedChunks[i] {
-            missing = append(missing, i)
-        }
-    }
-    return missing
+    // Then decode and call HandlePhotoChunk...
 }
 ```
 
-### Fix 3: Chunk Reassembly with Out-of-Order Handling
-**Files**: `phone/photo_transfer_coordinator.go`
-
-**Changes**:
-```go
-func (ptc *PhotoTransferCoordinator) HandlePhotoChunk(chunk *proto.PhotoChunk) error {
-    key := fmt.Sprintf("%s:%s", chunk.FromDeviceId, hex.EncodeToString(chunk.PhotoHash))
-
-    ptc.mu.Lock()
-    state, exists := ptc.receives[key]
-    if !exists {
-        // First chunk - initialize state
-        state = &PhotoReceiveState{
-            FromDeviceID:   chunk.FromDeviceId,
-            PhotoHash:      hex.EncodeToString(chunk.PhotoHash),
-            TotalChunks:    int(chunk.TotalChunks),
-            ReceivedChunks: make(map[int]bool),
-            ChunkData:      make(map[int][]byte),
-            StartTime:      time.Now(),
-            LastChunkTime:  time.Now(),
-            Status:         "receiving",
-        }
-        ptc.receives[key] = state
-    }
-    ptc.mu.Unlock()
-
-    // Store this chunk (out-of-order OK)
-    state.ReceivedChunks[int(chunk.ChunkIndex)] = true
-    state.ChunkData[int(chunk.ChunkIndex)] = chunk.Data
-    state.LastChunkTime = time.Now()
-
-    // Check if we have all chunks now
-    if len(state.ReceivedChunks) == state.TotalChunks {
-        return ptc.assemblePhoto(state)
-    }
-
-    return nil
-}
-
-func (ptc *PhotoTransferCoordinator) assemblePhoto(state *PhotoReceiveState) error {
-    // Assemble chunks in correct order (0, 1, 2, 3, ...)
-    var photoData []byte
-    for i := 0; i < state.TotalChunks; i++ {
-        chunk, exists := state.ChunkData[i]
-        if !exists {
-            return fmt.Errorf("missing chunk %d during assembly", i)
-        }
-        photoData = append(photoData, chunk...)
-    }
-
-    // Verify hash
-    actualHash := sha256.Sum256(photoData)
-    if hex.EncodeToString(actualHash[:]) != state.PhotoHash {
-        state.Status = "failed"
-        return fmt.Errorf("photo hash mismatch")
-    }
-
-    // Save to disk
-    cacheManager.SavePhoto(state.PhotoHash, photoData)
-    state.Status = "complete"
-
-    return nil
-}
-```
-
-### Fix 4: Add Missing Chunk Request Protocol
-**Files**: `proto/handshake.proto`
-
-**Add new message type**:
-```protobuf
-message MissingChunksRequest {
-  string requester_device_id = 1;
-  bytes photo_hash = 2;
-  repeated int32 missing_chunk_indices = 3;  // e.g., [0, 4]
-}
-```
-
-**Files**: `phone/photo_transfer_coordinator.go`
-
-```go
-func (ptc *PhotoTransferCoordinator) requestMissingChunks(state *PhotoReceiveState, missing []int) {
-    // Send MissingChunksRequest to original sender
-    // Sender will re-send only the missing chunks
-}
-```
-
-### Fix 5: Background Goroutine for Stalled Transfer Detection
-**Files**: `phone/phone.go` (or `iphone/iphone.go`, `android/android.go`)
-
-**Add periodic check**:
-```go
-func (p *Phone) startTransferMonitor() {
-    ticker := time.NewTicker(5 * time.Second)
-    go func() {
-        for range ticker.C {
-            p.coordinator.detectStalledTransfers()
-        }
-    }()
-}
-```
-
-## Phase 3: Validation
-
-### Run Tests
+#### Step 1.3: Run Test With Enhanced Logging
 ```bash
-# Run new tests
-go test ./phone -run TestPhotoAssembly
-go test ./phone -run TestMeshView_DuplicatePhotoDiscovery
-go test ./wire -run TestPacketLoss
-go test . -run TestE2E_FivePhones_AllPhotosTransferred
+go run main.go --phones 5 --duration 60s --packet-loss 0.001
 
-# Run full suite
-go test ./...
+# Check logs for:
+# 1. Do WIRE WRITE SUCCESS events exist for failed transfers?
+# 2. Do RECEIVED DATA events exist on receiver side?
+# 3. Where is the data being lost?
 ```
 
-### Run Integration Test
-```bash
-# Run 5-phone test with packet loss enabled
-go run main.go --phones 5 --duration 120s --packet-loss 0.05
+**Expected outcomes:**
+- **If WIRE WRITE SUCCESS but no RECEIVED DATA**: Socket/connection issue
+- **If RECEIVED DATA but no HandlePhotoChunk**: Decoding/routing issue
+- **If HandlePhotoChunk called but no StartReceive**: UUID→DeviceID mapping failure
 
-# Check results
+#### Step 1.4: Check UUID → DeviceID Mapping
+**File**: `phone/photo_handler.go` line 130-165
+
+The code already logs the entire UUID→DeviceID map on every chunk. Check logs for:
+```
+📋 Current UUID→DeviceID map has N entries:
+   - UUID1 → DeviceID1
+   - UUID2 → DeviceID2
+```
+
+**If map is empty or missing sender**: That's the bug! Receiver can't identify sender.
+
+**Verify handshake completes:**
+- Handshake should populate UUID→DeviceID map
+- Check if handshake happens BEFORE photo chunks are sent
+- May need to wait for handshake before sending photo requests
+
+---
+
+### Phase 2: Fix Duplicate Photo Requests (1 hour)
+
+#### Issue: Photo requests sent repeatedly despite PhotoRequestSent=true
+
+**Find where photo requests are sent:**
+```bash
+grep -r "SendPhotoRequest\|photo_request_received" iphone/ android/ phone/
+```
+
+**Expected fix location**: Likely in gossip processing or connection establishment handler
+
+**Fix**: Add guard before sending request:
+```go
+// Before sending photo request
+device := meshView.GetDevice(deviceID)
+if device.PhotoRequestSent {
+    logger.Debug("⏭️ Skipping photo request to %s (already sent)", deviceID)
+    return
+}
+
+// Send request...
+meshView.MarkPhotoRequested(deviceID)
+```
+
+---
+
+### Phase 3: Fix Uneven Participation (1 hour)
+
+#### Issue: ASG1KC19 and KXX18IL0 barely participating
+
+**Check gossip neighbors:**
+```bash
+# From gossip_audit.jsonl, check which devices are gossiping to whom
+grep "gossip_sent\|gossip_received" ~/.auraphone-blue-data/*/gossip_audit.jsonl
+```
+
+**Verify neighbor selection:**
+- Should have ~3 neighbors each
+- ASG1KC19 might not be in anyone's neighbor list (due to SHA256 hash sorting)
+- If isolated, increase `maxNeighbors` or use different neighbor selection
+
+**Fix**: Ensure all devices have at least 2 neighbors
+```go
+// In mesh_view.go SelectRandomNeighbors()
+// Add minimum neighbor guarantee
+if len(neighbors) < 2 && len(mv.devices) >= 2 {
+    // Force inclusion of at least 2 neighbors even if hash is high
+}
+```
+
+---
+
+### Phase 4: Handle Connection Drops Gracefully (30 min)
+
+#### Current behavior: Transfers lost when connection drops
+
+**Fix**: Pause transfers on disconnect, resume on reconnect
+
+**File**: `phone/photo_transfer_coordinator.go`
+
+```go
+// Add methods:
+func (c *PhotoTransferCoordinator) PauseTransfersForDevice(deviceID string) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    if send, exists := c.inProgressSends[deviceID]; exists {
+        send.Paused = true
+        logger.Debug(c.hardwareUUID[:8], "⏸️ Paused send to %s", deviceID)
+    }
+
+    if recv, exists := c.inProgressReceives[deviceID]; exists {
+        recv.Paused = true
+        logger.Debug(c.hardwareUUID[:8], "⏸️ Paused receive from %s", deviceID)
+    }
+}
+
+func (c *PhotoTransferCoordinator) ResumeTransfersForDevice(deviceID string) {
+    // Resume and retry missing chunks
+}
+```
+
+**Call from**: iOS/Android disconnect handlers
+
+---
+
+## Testing Plan
+
+### Test 1: Enhanced Logging Test (diagnose)
+```bash
+go run main.go --phones 5 --duration 60s
+
+# Check logs line-by-line to find where chunks are lost
+# Focus on failed transfers from test report
+```
+
+### Test 2: After Fixes (validate)
+```bash
+# Run 5-phone test
+go run main.go --phones 5 --duration 120s --packet-loss 0.001
+
+# Expected: 20/20 transfers succeed (100%)
+# Check test report
 cat ~/.auraphone-blue-data/test_report_*.md
-# Should show 100% success rate (20/20 transfers)
 ```
+
+### Test 3: Stress Test (ensure reliability)
+```bash
+# Run with higher packet loss
+go run main.go --phones 5 --duration 180s --packet-loss 0.05
+
+# Should still achieve 90%+ success rate with retries
+```
+
+---
 
 ## Success Criteria
 
-✅ **All new tests pass**
-✅ **No duplicate photo discovery events** in gossip_audit.jsonl
-✅ **100% photo transfer success rate** in 5-phone test (20/20)
-✅ **No silent failures** - all incomplete transfers logged as failed
-✅ **Missing chunks detected and re-requested** within 10 seconds
-✅ **Out-of-order chunks handled correctly** (chunks can arrive in any order)
-✅ **Socket errors don't cause permanent failures** (retries succeed)
+✅ **Primary Goal: 100% success rate** (20/20 transfers)
+- All `send_started` events matched by `receive_started` events
+- No silent failures
 
-## Timeline
+✅ **No duplicate photo requests**
+- Each device→device pair: exactly 1 `photo_request_received` event
+- Unless photo hash changes (legitimate re-request)
 
-- **Phase 1 (Tests)**: 2-3 hours
-  - Write 4 test files
-  - Run and verify tests fail (showing the bugs exist)
+✅ **All devices participate equally**
+- Each device should have 100-500 timeline events
+- No device with <50 events
 
-- **Phase 2 (Fixes)**: 4-5 hours
-  - Fix duplicate discovery (30 min)
-  - Add chunk tracking (2 hours)
-  - Add missing chunk detection (1 hour)
-  - Add retry protocol (1 hour)
-  - Add background monitor (30 min)
+✅ **Connection drops don't cause failures**
+- Transfers resume after reconnection
+- Missing chunks detected and re-requested
 
-- **Phase 3 (Validation)**: 1 hour
-  - Run all tests
-  - Run 5-phone integration test
-  - Verify 100% success rate
+---
 
-**Total: 7-9 hours**
+## Implementation Order
 
-## Files to Create/Modify
+### Day 1: Investigation (3-4 hours)
+1. ✅ Add enhanced logging to wire layer (30 min)
+2. ✅ Add logging to iOS/Android receive paths (30 min)
+3. ✅ Run test with logging and analyze (2 hours)
+4. ✅ Identify exact failure point (1 hour)
 
-### New Files
-- `phone/photo_assembly_test.go`
-- `wire/packet_loss_test.go`
-- `integration_reliability_test.go`
+### Day 2: Fixes (3-4 hours)
+1. ✅ Fix root cause from investigation (varies)
+2. ✅ Fix duplicate photo requests (1 hour)
+3. ✅ Fix uneven participation (1 hour)
+4. ✅ Add connection drop handling (30 min)
+5. ✅ Run validation tests (1 hour)
 
-### Modified Files
-- `phone/mesh_view.go` (fix duplicate discovery)
-- `phone/photo_transfer_coordinator.go` (add chunk tracking, assembly, retry)
-- `proto/handshake.proto` (add MissingChunksRequest)
-- `phone/message_requeue_test.go` (expand existing test)
-- `iphone/iphone.go` and `android/android.go` (start transfer monitor)
+**Total: 6-8 hours**
+
+---
+
+## Files to Modify
+
+### Investigation Phase
+- `wire/wire.go` - Add write logging
+- `iphone/central_delegate.go` - Add receive logging
+- `iphone/peripheral_delegate.go` - Add receive logging
+- `android/gatt_callback.go` - Add receive logging
+
+### Fix Phase (TBD based on investigation results)
+Likely:
+- `phone/photo_handler.go` - Fix UUID→DeviceID handling
+- `iphone/iphone.go` or `android/android.go` - Fix photo request logic
+- `phone/mesh_view.go` - Fix neighbor selection
+- `phone/photo_transfer_coordinator.go` - Add pause/resume
+
+---
+
+## Key Insights
+
+1. **The old PLAN.md was wrong** - It assumed duplicate discovery was the main issue, but actually **chunks not reaching receivers** is the critical bug
+
+2. **Tests pass but integration fails** - Unit tests verify individual components work, but the end-to-end flow has a delivery problem
+
+3. **50% failure rate is suspiciously high** - Suggests a systematic issue, not random packet loss. Likely:
+   - Photo requests sent before handshake completes (no UUID→DeviceID mapping yet)
+   - Or chunks sent to wrong socket/characteristic
+   - Or receiver not subscribed to notifications properly
+
+4. **Device F09FFFB7 (ASG1KC19) is the canary** - Only 21 events means it's barely working. If we fix its issues, we'll likely fix everything.
+
+---
+
+## Next Steps
+
+**Immediate action**: Add logging from Phase 1 and run a test. The logs will tell us exactly where chunks are being lost, then we can write a targeted fix.
+
+Do NOT proceed with speculative fixes until we know the exact failure point from the logs.
