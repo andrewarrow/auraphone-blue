@@ -1,5 +1,6 @@
 auraphone-blue
 cmd/log2scenario/log2scenario
+test_report
 cmd/replay/replay
 cmd/demo-roles/demo-roles
 cmd/test-simulation/test-simulation

@@ -41,6 +41,7 @@ type SendState struct {
 	SentChunks     map[int]bool  // Track which chunks have been sent
 	RetryAttempts  int           // Number of times we've retried this transfer
 	NextRetryTime  time.Time     // When we can retry again (for exponential backoff)
+	Paused         bool          // Transfer paused due to disconnect
 
 	// Per-chunk ACK tracking
 	ChunkAckReceived map[int]bool      // Which chunks have been ACK'd
@@ -58,6 +59,7 @@ type ReceiveState struct {
 	TotalChunks     int
 	ReceivedChunks  map[int][]byte  // Map of chunk index to chunk data
 	MissingChunks   []int           // List of chunks we're still waiting for
+	Paused          bool            // Transfer paused due to disconnect
 }
 
 // PhotoTransferState persists to disk to survive restarts
@@ -607,21 +609,64 @@ func (c *PhotoTransferCoordinator) CleanupDisconnectedDevice(deviceID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Clean up send state
+	// Pause send state (don't delete - we'll resume on reconnect)
 	if sendState, exists := c.inProgressSends[deviceID]; exists {
-		logger.Debug(c.hardwareUUID[:8],
-			"🧹 Cleaning up photo send to %s on disconnect (sent %d/%d chunks)",
+		sendState.Paused = true
+		logger.Info(c.hardwareUUID[:8],
+			"⏸️  Paused photo send to %s on disconnect (sent %d/%d chunks)",
 			deviceID, sendState.ChunksSent, sendState.TotalChunks)
-		delete(c.inProgressSends, deviceID)
 	}
 
-	// Clean up receive state
+	// Pause receive state (don't delete - we'll resume on reconnect)
 	if recvState, exists := c.inProgressReceives[deviceID]; exists {
-		logger.Debug(c.hardwareUUID[:8],
-			"🧹 Cleaning up photo receive from %s on disconnect (received %d/%d chunks)",
+		recvState.Paused = true
+		logger.Info(c.hardwareUUID[:8],
+			"⏸️  Paused photo receive from %s on disconnect (received %d/%d chunks)",
 			deviceID, recvState.ChunksReceived, recvState.TotalChunks)
-		delete(c.inProgressReceives, deviceID)
 	}
+}
+
+// ResumeTransfersOnReconnect resumes any paused transfers when a device reconnects
+func (c *PhotoTransferCoordinator) ResumeTransfersOnReconnect(deviceID string) (hasPausedSend bool, hasPausedReceive bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Resume send state
+	if sendState, exists := c.inProgressSends[deviceID]; exists && sendState.Paused {
+		sendState.Paused = false
+		sendState.LastActivity = time.Now()
+
+		// Reset chunk send times to trigger immediate retry of un-ACKed chunks
+		now := time.Now().Add(-ChunkAckTimeout - 1*time.Second) // Set to past timeout
+		for chunkIdx := range sendState.ChunkLastSent {
+			if !sendState.ChunkAckReceived[chunkIdx] {
+				sendState.ChunkLastSent[chunkIdx] = now
+			}
+		}
+
+		hasPausedSend = true
+		unackedCount := 0
+		for i := 0; i < sendState.TotalChunks; i++ {
+			if !sendState.ChunkAckReceived[i] {
+				unackedCount++
+			}
+		}
+		logger.Info(c.hardwareUUID[:8],
+			"▶️  Resumed photo send to %s on reconnect (%d/%d chunks ACKed, will retry %d)",
+			deviceID, sendState.TotalChunks-unackedCount, sendState.TotalChunks, unackedCount)
+	}
+
+	// Resume receive state
+	if recvState, exists := c.inProgressReceives[deviceID]; exists && recvState.Paused {
+		recvState.Paused = false
+		recvState.LastActivity = time.Now()
+		hasPausedReceive = true
+		logger.Info(c.hardwareUUID[:8],
+			"▶️  Resumed photo receive from %s on reconnect (received %d/%d chunks)",
+			deviceID, recvState.ChunksReceived, recvState.TotalChunks)
+	}
+
+	return hasPausedSend, hasPausedReceive
 }
 
 // startTimeoutMonitor starts a background goroutine that periodically checks for stalled transfers

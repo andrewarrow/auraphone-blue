@@ -134,6 +134,12 @@ func (a *Android) OnConnectionStateChange(gatt *kotlin.BluetoothGatt, status int
 		// NEW (Week 3): Mark device as connected in mesh view
 		if deviceID, ok := a.identityManager.GetDeviceID(remoteUUID); ok {
 			a.meshView.MarkDeviceConnected(deviceID)
+
+			// Resume any paused photo transfers
+			hasSend, hasRecv := a.photoCoordinator.ResumeTransfersOnReconnect(deviceID)
+			if hasSend || hasRecv {
+				logger.Info(prefix, "🔄 Reconnected to %s - will resume incomplete transfers", deviceID)
+			}
 		}
 
 		// Re-add to connected list (might have been removed on disconnect)

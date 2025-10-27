@@ -70,6 +70,12 @@ func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, periphera
 	// NEW (Week 3): Mark device as connected in mesh view
 	if deviceID, ok := ip.identityManager.GetDeviceID(peripheral.UUID); ok {
 		ip.meshView.MarkDeviceConnected(deviceID)
+
+		// Resume any paused photo transfers
+		hasSend, hasRecv := ip.photoCoordinator.ResumeTransfersOnReconnect(deviceID)
+		if hasSend || hasRecv {
+			logger.Info(prefix, "🔄 Reconnected to %s - will resume incomplete transfers", deviceID)
+		}
 	}
 
 	// Set delegate and discover services on the stored peripheral
