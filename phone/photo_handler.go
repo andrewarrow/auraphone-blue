@@ -188,7 +188,7 @@ func (ph *PhotoHandler) HandlePhotoChunk(senderUUID string, data []byte) {
 	logger.Debug(prefix, "📊 Progress: %d/%d chunks received from %s",
 		recvState.ChunksReceived, recvState.TotalChunks, deviceID[:8])
 
-	if recvState != nil && recvState.ChunksReceived == recvState.TotalChunks {
+	if recvState.ChunksReceived == recvState.TotalChunks {
 		logger.Info(prefix, "✅ Received all %d chunks from %s, assembling photo",
 			recvState.TotalChunks, deviceID[:8])
 
