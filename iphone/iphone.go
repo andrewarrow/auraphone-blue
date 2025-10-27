@@ -254,6 +254,11 @@ func (ip *IPhone) handleIncomingCentralConnection(peerUUID string) {
 
 	ip.connectedPeers[peerUUID] = peripheral
 
+	// Register with central manager so notifications are routed correctly
+	// This is critical for bidirectional communication: even though we're Peripheral
+	// in the BLE connection, we can still receive notifications from the Central
+	ip.central.RegisterReversePeripheral(peripheral)
+
 	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🔌 Central %s connected (created reverse peripheral object)", peerUUID[:8])
 }
 

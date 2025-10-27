@@ -1483,3 +1483,185 @@ func TestEdgeCase_AddServiceWhileAdvertising(t *testing.T) {
 
 	t.Logf("✅ Correctly prevented service addition while advertising: %v", err)
 }
+
+// TestReversePeripheralNotifications tests the scenario where:
+// - Device A connects to Device B (A = Central, B = Peripheral)
+// - B creates a "reverse" CBPeripheral object to make requests back to A
+// - B subscribes to A's characteristics and receives notifications
+// This is the exact scenario that fails in the bug report
+func TestReversePeripheralNotifications(t *testing.T) {
+	// Create two devices
+	deviceAWire := wire.NewWire("device-a-uuid")
+	deviceBWire := wire.NewWire("device-b-uuid")
+
+	if err := deviceAWire.Start(); err != nil {
+		t.Fatalf("Failed to start device A: %v", err)
+	}
+	defer deviceAWire.Stop()
+
+	if err := deviceBWire.Start(); err != nil {
+		t.Fatalf("Failed to start device B: %v", err)
+	}
+	defer deviceBWire.Stop()
+
+	// Device A: Both Central and Peripheral managers
+	deviceAPeripheralDelegate := &testPeripheralManagerDelegate{
+		t:                 t,
+		didStartAdvertise: make(chan bool, 1),
+		didSubscribe:      make(chan string, 1),
+	}
+	deviceAPeripheralMgr := NewCBPeripheralManager(deviceAPeripheralDelegate, "device-a-uuid", "Device A", deviceAWire)
+
+	// Add service to A with notifiable characteristic
+	serviceA := &CBMutableService{
+		UUID:      "service-a",
+		IsPrimary: true,
+		Characteristics: []*CBMutableCharacteristic{
+			{
+				UUID:        "char-a",
+				Properties:  CBCharacteristicPropertyNotify | CBCharacteristicPropertyRead,
+				Permissions: CBAttributePermissionsReadable,
+			},
+		},
+	}
+	deviceAPeripheralMgr.AddService(serviceA)
+	deviceAPeripheralMgr.StartAdvertising(map[string]interface{}{
+		"kCBAdvDataLocalName": "Device A",
+	})
+	<-deviceAPeripheralDelegate.didStartAdvertise
+	t.Logf("✅ Device A advertising")
+
+	// Device B: Both Central and Peripheral managers
+	deviceBCentralDelegate := &testCentralDelegate{
+		t:          t,
+		didConnect: make(chan *CBPeripheral, 1),
+	}
+	deviceBPeripheralDelegate := &testPeripheralManagerDelegate{
+		t:                 t,
+		didStartAdvertise: make(chan bool, 1),
+	}
+
+	deviceBCentralMgr := NewCBCentralManager(deviceBCentralDelegate, "device-b-uuid", deviceBWire)
+	deviceBPeripheralMgr := NewCBPeripheralManager(deviceBPeripheralDelegate, "device-b-uuid", "Device B", deviceBWire)
+
+	// Set up GATT message routing for both devices
+	deviceAWire.SetGATTMessageHandler(func(peerUUID string, msg *wire.GATTMessage) {
+		// Device A routes messages to peripheral manager
+		deviceAPeripheralMgr.HandleGATTMessage(peerUUID, msg)
+	})
+
+	deviceBWire.SetGATTMessageHandler(func(peerUUID string, msg *wire.GATTMessage) {
+		// Device B routes messages to BOTH central and peripheral managers
+		handled := deviceBCentralMgr.HandleGATTMessage(peerUUID, msg)
+		if !handled {
+			deviceBPeripheralMgr.HandleGATTMessage(peerUUID, msg)
+		}
+	})
+
+	// Add service to B
+	serviceB := &CBMutableService{
+		UUID:      "service-b",
+		IsPrimary: true,
+		Characteristics: []*CBMutableCharacteristic{
+			{
+				UUID:        "char-b",
+				Properties:  CBCharacteristicPropertyWrite,
+				Permissions: CBAttributePermissionsWriteable,
+			},
+		},
+	}
+	deviceBPeripheralMgr.AddService(serviceB)
+	deviceBPeripheralMgr.StartAdvertising(map[string]interface{}{
+		"kCBAdvDataLocalName": "Device B",
+	})
+	<-deviceBPeripheralDelegate.didStartAdvertise
+	t.Logf("✅ Device B advertising")
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Device B connects to Device A (B = Central, A = Peripheral)
+	peripheralA := &CBPeripheral{
+		UUID: "device-a-uuid",
+		Name: "Device A",
+	}
+
+	// Create a delegate for the reverse peripheral that B will create
+	reversePeripheralDelegate := &testPeripheralDelegate{
+		t:               t,
+		didDiscoverSvcs: make(chan []*CBService, 1),
+		didUpdateValue:  make(chan []byte, 10),
+	}
+	peripheralA.Delegate = reversePeripheralDelegate
+
+	// B connects to A
+	deviceBCentralMgr.Connect(peripheralA, nil)
+
+	// Wait for connection
+	select {
+	case connectedPeripheral := <-deviceBCentralDelegate.didConnect:
+		t.Logf("✅ Device B connected to Device A: %s", connectedPeripheral.UUID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for B to connect to A")
+	}
+
+	// Now B discovers services on A
+	peripheralA.DiscoverServices([]string{"service-a"})
+
+	select {
+	case services := <-reversePeripheralDelegate.didDiscoverSvcs:
+		if len(services) == 0 {
+			t.Fatal("No services discovered on A")
+		}
+		t.Logf("✅ Device B discovered services on Device A")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for service discovery")
+	}
+
+	// B subscribes to A's characteristic
+	charA := peripheralA.GetCharacteristic("service-a", "char-a")
+	if charA == nil {
+		t.Fatal("Failed to get characteristic from A")
+	}
+
+	err := peripheralA.SetNotifyValue(true, charA)
+	if err != nil {
+		t.Fatalf("Failed to subscribe: %v", err)
+	}
+
+	// Wait for subscription at A
+	select {
+	case charUUID := <-deviceAPeripheralDelegate.didSubscribe:
+		if charUUID != "char-a" {
+			t.Errorf("Wrong characteristic subscribed: %s", charUUID)
+		}
+		t.Logf("✅ Device B subscribed to A's notifications")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for subscription at A")
+	}
+
+	// A sends notification to B
+	charAMutable := deviceAPeripheralMgr.GetCharacteristic("service-a", "char-a")
+	if charAMutable == nil {
+		t.Fatal("Failed to get mutable characteristic from A")
+	}
+
+	testData := []byte("Notification from A to B")
+	success := deviceAPeripheralMgr.UpdateValue(testData, charAMutable, nil)
+	if !success {
+		t.Error("Failed to send notification from A")
+	}
+
+	t.Logf("✅ Device A sent notification to B")
+
+	// *** THIS IS THE KEY TEST ***
+	// B should receive the notification via the reverse peripheral's delegate
+	select {
+	case receivedData := <-reversePeripheralDelegate.didUpdateValue:
+		if string(receivedData) != string(testData) {
+			t.Errorf("Data mismatch: expected %s, got %s", string(testData), string(receivedData))
+		}
+		t.Logf("✅ Device B received notification from A via reverse peripheral delegate")
+	case <-time.After(2 * time.Second):
+		t.Fatal("❌ TIMEOUT: Device B did not receive notification from A (THIS IS THE BUG)")
+	}
+}

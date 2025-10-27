@@ -244,6 +244,15 @@ func (c *CBCentralManager) CancelPeripheralConnection(peripheral *CBPeripheral) 
 	c.wire.Disconnect(peripheral.UUID)
 }
 
+// RegisterReversePeripheral registers a peripheral object created when a Central connects to us
+// This is needed for bidirectional communication: when we're acting as Peripheral in the BLE connection
+// but we create a CBPeripheral object to make requests back to the Central
+// This ensures notifications from the remote Central are routed to this peripheral's delegate
+func (c *CBCentralManager) RegisterReversePeripheral(peripheral *CBPeripheral) {
+	// Add to pending peripherals so HandleGATTMessage can route notifications to it
+	c.pendingPeripherals[peripheral.UUID] = peripheral
+}
+
 // HandleGATTMessage processes incoming GATT messages and routes them to the appropriate peripheral
 // Should be called from iPhone layer for gatt_notification and gatt_response messages
 // Returns true if message was handled, false otherwise
