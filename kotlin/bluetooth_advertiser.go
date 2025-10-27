@@ -68,7 +68,7 @@ type BluetoothLeAdvertiser struct {
 }
 
 // NewBluetoothLeAdvertiser creates a new advertiser
-func NewBluetoothLeAdvertiser(uuid string, platform wire.Platform, deviceName string, sharedWire *wire.Wire) *BluetoothLeAdvertiser {
+func NewBluetoothLeAdvertiser(uuid string, deviceName string, sharedWire *wire.Wire) *BluetoothLeAdvertiser {
 	return &BluetoothLeAdvertiser{
 		uuid:          uuid,
 		wire:          sharedWire,
@@ -307,7 +307,7 @@ const (
 
 // NewBluetoothGattServer creates a new GATT server
 // Matches: bluetoothManager.openGattServer(context, callback)
-func NewBluetoothGattServer(uuid string, callback BluetoothGattServerCallback, platform wire.Platform, deviceName string, sharedWire *wire.Wire) *BluetoothGattServer {
+func NewBluetoothGattServer(uuid string, callback BluetoothGattServerCallback, deviceName string, sharedWire *wire.Wire) *BluetoothGattServer {
 	return &BluetoothGattServer{
 		uuid:             uuid,
 		wire:             sharedWire,

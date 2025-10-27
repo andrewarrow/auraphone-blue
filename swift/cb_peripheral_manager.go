@@ -100,7 +100,7 @@ type CBPeripheralManager struct {
 
 // NewCBPeripheralManager creates a new peripheral manager
 // Matches: CBPeripheralManager(delegate:queue:options:)
-func NewCBPeripheralManager(delegate CBPeripheralManagerDelegate, uuid string, platform wire.Platform, deviceName string, sharedWire *wire.Wire) *CBPeripheralManager {
+func NewCBPeripheralManager(delegate CBPeripheralManagerDelegate, uuid string, deviceName string, sharedWire *wire.Wire) *CBPeripheralManager {
 	pm := &CBPeripheralManager{
 		Delegate:          delegate,
 		State:             "poweredOn",

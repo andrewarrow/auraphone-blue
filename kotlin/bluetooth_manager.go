@@ -18,32 +18,29 @@ func NewBluetoothManager(uuid string) *BluetoothManager {
 
 // OpenGattServer opens a GATT server for peripheral mode
 // Matches: bluetoothManager.openGattServer(context, callback)
-func (m *BluetoothManager) OpenGattServer(callback BluetoothGattServerCallback, platform wire.Platform, deviceName string, sharedWire *wire.Wire) *BluetoothGattServer {
-	return NewBluetoothGattServer(m.uuid, callback, platform, deviceName, sharedWire)
+func (m *BluetoothManager) OpenGattServer(callback BluetoothGattServerCallback, deviceName string, sharedWire *wire.Wire) *BluetoothGattServer {
+	return NewBluetoothGattServer(m.uuid, callback, deviceName, sharedWire)
 }
 
 type BluetoothAdapter struct {
 	scanner    *BluetoothLeScanner
 	advertiser *BluetoothLeAdvertiser
 	uuid       string
-	platform   wire.Platform
 	deviceName string
 }
 
 func NewBluetoothAdapter(uuid string) *BluetoothAdapter {
 	return &BluetoothAdapter{
-		scanner:  NewBluetoothLeScanner(uuid),
-		uuid:     uuid,
-		platform: wire.PlatformAndroid,
+		scanner: NewBluetoothLeScanner(uuid),
+		uuid:    uuid,
 	}
 }
 
-// NewBluetoothAdapterWithPlatform creates an adapter with platform info for advertising
-func NewBluetoothAdapterWithPlatform(uuid string, platform wire.Platform, deviceName string) *BluetoothAdapter {
+// NewBluetoothAdapterWithDeviceName creates an adapter with device name for advertising
+func NewBluetoothAdapterWithDeviceName(uuid string, deviceName string) *BluetoothAdapter {
 	return &BluetoothAdapter{
 		scanner:    NewBluetoothLeScanner(uuid),
 		uuid:       uuid,
-		platform:   platform,
 		deviceName: deviceName,
 	}
 }
@@ -55,7 +52,7 @@ func (a *BluetoothAdapter) GetBluetoothLeScanner() *BluetoothLeScanner {
 // ShouldInitiateConnection determines if this Android device should initiate connection to target
 // Simple Role Policy: Use hardware UUID comparison regardless of platform
 // Device with LARGER UUID acts as Central (initiates connection)
-func (a *BluetoothAdapter) ShouldInitiateConnection(targetPlatform wire.Platform, targetUUID string) bool {
+func (a *BluetoothAdapter) ShouldInitiateConnection(targetUUID string) bool {
 	// Use hardware UUID comparison for all devices
 	// Device with LARGER UUID initiates the connection (deterministic collision avoidance)
 	return a.uuid > targetUUID
@@ -65,7 +62,7 @@ func (a *BluetoothAdapter) ShouldInitiateConnection(targetPlatform wire.Platform
 // Matches: bluetoothAdapter.getBluetoothLeAdvertiser()
 func (a *BluetoothAdapter) GetBluetoothLeAdvertiser(sharedWire *wire.Wire) *BluetoothLeAdvertiser {
 	if a.advertiser == nil {
-		a.advertiser = NewBluetoothLeAdvertiser(a.uuid, a.platform, a.deviceName, sharedWire)
+		a.advertiser = NewBluetoothLeAdvertiser(a.uuid, a.deviceName, sharedWire)
 	}
 	return a.advertiser
 }

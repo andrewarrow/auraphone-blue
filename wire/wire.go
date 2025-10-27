@@ -20,14 +20,6 @@ const (
 	RolePeripheral ConnectionRole = "peripheral" // They initiated connection
 )
 
-// Platform represents the device platform (stub for old API compatibility)
-type Platform string
-
-const (
-	PlatformIOS     Platform = "ios"
-	PlatformAndroid Platform = "android"
-)
-
 // AdvertisingData represents BLE advertising packet data (stub for old API compatibility)
 // TODO Step 4: Implement full advertising protocol
 type AdvertisingData struct {

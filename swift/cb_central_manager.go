@@ -165,7 +165,7 @@ func (c *CBCentralManager) RetrievePeripheralsByIdentifiers(identifiers []string
 // ShouldInitiateConnection determines if this iOS device should initiate connection to target
 // Simple Role Policy: Use hardware UUID comparison regardless of platform
 // Device with LARGER UUID acts as Central (initiates connection)
-func (c *CBCentralManager) ShouldInitiateConnection(targetPlatform wire.Platform, targetUUID string) bool {
+func (c *CBCentralManager) ShouldInitiateConnection(targetUUID string) bool {
 	// Use hardware UUID comparison for all devices
 	// Device with LARGER UUID initiates the connection (deterministic collision avoidance)
 	return c.uuid > targetUUID
