@@ -159,3 +159,46 @@ func (mr *MessageRouter) handleProfileRequest(senderUUID string, req *proto.Prof
 	}
 	return nil
 }
+
+// RetryMissingRequestsForConnection checks if there are pending photo/profile requests
+// for devices reachable via this hardware UUID and retries them
+// This handles race conditions where gossip arrives before connection completes
+func (mr *MessageRouter) RetryMissingRequestsForConnection(hardwareUUID string) {
+	prefix := fmt.Sprintf("%s %s", mr.deviceHardwareUUID[:8], mr.devicePlatform)
+
+	// Check for missing photos that can be reached via this connection
+	if mr.onPhotoNeeded != nil {
+		missingPhotos := mr.meshView.GetMissingPhotos()
+		for _, device := range missingPhotos {
+			// Check if this device is reachable via the connected hardware UUID
+			deviceHardwareUUID := mr.meshView.GetHardwareUUID(device.DeviceID)
+			if deviceHardwareUUID == hardwareUUID {
+				logger.Debug(prefix, "🔄 Retrying photo request for %s (now connected to %s)",
+					device.DeviceID[:8], hardwareUUID[:8])
+				err := mr.onPhotoNeeded(device.DeviceID, device.PhotoHash)
+				if err == nil {
+					// Only mark as requested if send succeeded
+					mr.meshView.MarkPhotoRequested(device.DeviceID)
+				}
+			}
+		}
+	}
+
+	// Check for missing profiles that can be reached via this connection
+	if mr.onProfileNeeded != nil {
+		missingProfiles := mr.meshView.GetMissingProfiles()
+		for _, device := range missingProfiles {
+			// Check if this device is reachable via the connected hardware UUID
+			deviceHardwareUUID := mr.meshView.GetHardwareUUID(device.DeviceID)
+			if deviceHardwareUUID == hardwareUUID {
+				logger.Debug(prefix, "🔄 Retrying profile request for %s (now connected to %s)",
+					device.DeviceID[:8], hardwareUUID[:8])
+				err := mr.onProfileNeeded(device.DeviceID, device.ProfileVersion)
+				if err == nil {
+					// Only mark as requested if send succeeded
+					mr.meshView.MarkProfileRequested(device.DeviceID)
+				}
+			}
+		}
+	}
+}

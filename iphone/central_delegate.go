@@ -67,6 +67,10 @@ func (ip *iPhone) DidConnectPeripheral(central swift.CBCentralManager, periphera
 
 	// Start listening for notifications from this peripheral
 	peripheral.StartListening()
+
+	// Retry any pending photo/profile requests for devices reachable via this connection
+	// This handles race condition where gossip arrives before connection completes
+	go ip.messageRouter.RetryMissingRequestsForConnection(peripheral.UUID)
 }
 
 func (ip *iPhone) DidFailToConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, err error) {

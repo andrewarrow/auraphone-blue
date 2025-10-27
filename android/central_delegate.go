@@ -186,6 +186,10 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 	// Send initial gossip after service discovery completes
 	remoteUUID := gatt.GetRemoteUUID()
 	go a.gossipHandler.SendGossipToDevice(remoteUUID)
+
+	// Retry any pending photo/profile requests for devices reachable via this connection
+	// This handles race condition where gossip arrives before connection completes
+	go a.messageRouter.RetryMissingRequestsForConnection(remoteUUID)
 }
 
 // OnCharacteristicChanged is called when a notification/indication is received
