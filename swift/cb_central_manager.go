@@ -37,10 +37,15 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedW
 	// Set up disconnect callback
 	sharedWire.SetDisconnectCallback(func(deviceUUID string) {
 		// Connection was randomly dropped
+		var peripheralCopy CBPeripheral
+		if peripheral, exists := cm.pendingPeripherals[deviceUUID]; exists {
+			peripheralCopy = *peripheral
+		} else {
+			peripheralCopy = CBPeripheral{UUID: deviceUUID}
+		}
+
 		if delegate != nil {
-			delegate.DidDisconnectPeripheral(*cm, CBPeripheral{
-				UUID: deviceUUID,
-			}, nil) // nil error = clean disconnect (not an error, just interference/distance)
+			delegate.DidDisconnectPeripheral(*cm, peripheralCopy, nil) // nil error = clean disconnect (not an error, just interference/distance)
 		}
 
 		// iOS auto-reconnect: if this peripheral was in pendingPeripherals, try to reconnect
@@ -186,8 +191,9 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 	go func() {
 		err := c.wire.Connect(peripheral.UUID)
 		if err != nil {
-			// Connection failed
-			c.Delegate.DidFailToConnectPeripheral(*c, *peripheral, err)
+			// Connection failed - pass copy to delegate
+			peripheralCopy := *peripheral
+			c.Delegate.DidFailToConnectPeripheral(*c, peripheralCopy, err)
 
 			// iOS auto-reconnect: retry connection in background
 			if c.autoReconnectActive {
@@ -196,8 +202,9 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 			return
 		}
 
-		// Connection succeeded
-		c.Delegate.DidConnectPeripheral(*c, *peripheral)
+		// Connection succeeded - pass copy to delegate
+		peripheralCopy := *peripheral
+		c.Delegate.DidConnectPeripheral(*c, peripheralCopy)
 	}()
 }
 
@@ -220,9 +227,10 @@ func (c *CBCentralManager) attemptReconnect(peripheral *CBPeripheral) {
 		return
 	}
 
-	// Success! Notify delegate
+	// Success! Notify delegate with copy
 	if c.Delegate != nil {
-		c.Delegate.DidConnectPeripheral(*c, *peripheral)
+		peripheralCopy := *peripheral
+		c.Delegate.DidConnectPeripheral(*c, peripheralCopy)
 	}
 }
 

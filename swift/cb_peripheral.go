@@ -276,6 +276,10 @@ func (p *CBPeripheral) GetCharacteristic(serviceUUID, charUUID string) *CBCharac
 		if service.UUID == serviceUUID {
 			for _, char := range service.Characteristics {
 				if char.UUID == charUUID {
+					// Ensure Service back-reference is set (for manually created services in tests)
+					if char.Service == nil {
+						char.Service = service
+					}
 					return char
 				}
 			}
