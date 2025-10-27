@@ -70,6 +70,12 @@ func (ph *PhotoHandler) HandlePhotoRequest(senderUUID string, req *auraphone.Pho
 		return
 	}
 
+	// Log photo request received event
+	timelineLogger := device.GetPhotoCoordinator().GetTimelineLogger()
+	if timelineLogger != nil {
+		timelineLogger.LogPhotoRequestReceived(req.RequesterDeviceId, senderUUID, string(req.PhotoHash))
+	}
+
 	logger.Info(prefix, "📸 Sending our photo to %s in response to request", req.RequesterDeviceId[:8])
 
 	// Load our photo from cache (stored as my_photo.jpg by SetProfilePhoto)

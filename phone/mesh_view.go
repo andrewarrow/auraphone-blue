@@ -62,6 +62,10 @@ type MeshView struct {
 
 	// Random source for neighbor selection
 	rng *rand.Rand
+
+	// Gossip audit logging
+	gossipAuditFile *os.File
+	auditMutex      sync.Mutex
 }
 
 // NewMeshView creates a new mesh view manager
@@ -80,6 +84,9 @@ func NewMeshView(ourDeviceID, ourHardwareUUID, dataDir string, cacheManager *Dev
 
 	// Try to load persisted state
 	mv.loadFromDisk()
+
+	// Initialize gossip audit log
+	mv.initGossipAuditLog()
 
 	return mv
 }
@@ -625,4 +632,111 @@ func (mv *MeshView) loadFromDisk() error {
 // SaveToDisk persists the mesh view (public method for periodic saves)
 func (mv *MeshView) SaveToDisk() error {
 	return mv.saveToDisk()
+}
+
+// Gossip Audit Logging
+// ====================
+
+// GossipAuditEvent represents a single gossip audit log entry (JSONL format)
+type GossipAuditEvent struct {
+	Timestamp      int64    `json:"timestamp"`       // Nanoseconds since epoch
+	Event          string   `json:"event"`           // "gossip_received", "gossip_sent", "photo_discovered"
+	FromDeviceID   string   `json:"from_deviceid,omitempty"`
+	FromUUID       string   `json:"from_uuid,omitempty"`
+	ToDeviceID     string   `json:"to_deviceid,omitempty"`
+	ToUUID         string   `json:"to_uuid,omitempty"`
+	MeshSize       int      `json:"mesh_size,omitempty"`
+	NewDevices     []string `json:"new_devices,omitempty"`
+	NewPhotos      []string `json:"new_photos,omitempty"`
+	PhotoHash      string   `json:"photo_hash,omitempty"`
+	DiscoveredVia  string   `json:"discovered_via,omitempty"`
+	ViaSocket      string   `json:"via_socket,omitempty"`
+}
+
+// initGossipAuditLog opens the gossip audit log file for appending
+func (mv *MeshView) initGossipAuditLog() {
+	auditPath := filepath.Join(mv.dataDir, "gossip_audit.jsonl")
+
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(auditPath), 0755); err != nil {
+		return // Silently fail if we can't create directory
+	}
+
+	// Open file in append mode (create if doesn't exist)
+	file, err := os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return // Silently fail
+	}
+
+	mv.gossipAuditFile = file
+}
+
+// logGossipAuditEvent writes a gossip audit event to the JSONL file
+func (mv *MeshView) logGossipAuditEvent(event *GossipAuditEvent) {
+	if mv.gossipAuditFile == nil {
+		return
+	}
+
+	mv.auditMutex.Lock()
+	defer mv.auditMutex.Unlock()
+
+	// Marshal to JSON (single line)
+	data, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+
+	// Write line + newline
+	mv.gossipAuditFile.Write(data)
+	mv.gossipAuditFile.Write([]byte("\n"))
+}
+
+// LogGossipReceived logs when we receive a gossip message
+func (mv *MeshView) LogGossipReceived(fromDeviceID, fromUUID string, meshSize int, newDevices []string, newPhotos []string) {
+	event := &GossipAuditEvent{
+		Timestamp:    time.Now().UnixNano(),
+		Event:        "gossip_received",
+		FromDeviceID: fromDeviceID,
+		FromUUID:     fromUUID,
+		MeshSize:     meshSize,
+		NewDevices:   newDevices,
+		NewPhotos:    newPhotos,
+	}
+	mv.logGossipAuditEvent(event)
+}
+
+// LogGossipSent logs when we send a gossip message
+func (mv *MeshView) LogGossipSent(toDeviceID, toUUID string, meshSize int, viaSocket string) {
+	event := &GossipAuditEvent{
+		Timestamp:  time.Now().UnixNano(),
+		Event:      "gossip_sent",
+		ToDeviceID: toDeviceID,
+		ToUUID:     toUUID,
+		MeshSize:   meshSize,
+		ViaSocket:  viaSocket,
+	}
+	mv.logGossipAuditEvent(event)
+}
+
+// LogPhotoDiscovered logs when we discover a new photo via gossip
+func (mv *MeshView) LogPhotoDiscovered(deviceID, photoHash, discoveredVia string) {
+	event := &GossipAuditEvent{
+		Timestamp:     time.Now().UnixNano(),
+		Event:         "photo_discovered",
+		ToDeviceID:    deviceID, // Device that has the photo
+		PhotoHash:     photoHash,
+		DiscoveredVia: discoveredVia,
+	}
+	mv.logGossipAuditEvent(event)
+}
+
+// CloseGossipAuditLog closes the audit log file (call on shutdown)
+func (mv *MeshView) CloseGossipAuditLog() {
+	mv.auditMutex.Lock()
+	defer mv.auditMutex.Unlock()
+
+	if mv.gossipAuditFile != nil {
+		mv.gossipAuditFile.Close()
+		mv.gossipAuditFile = nil
+	}
 }

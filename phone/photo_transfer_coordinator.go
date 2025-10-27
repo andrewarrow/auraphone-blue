@@ -115,6 +115,11 @@ func NewPhotoTransferCoordinator(hardwareUUID string) *PhotoTransferCoordinator 
 	return coordinator
 }
 
+// GetTimelineLogger returns the photo timeline logger for this coordinator
+func (c *PhotoTransferCoordinator) GetTimelineLogger() *PhotoTimelineLogger {
+	return c.timelineLogger
+}
+
 // loadState loads persistent state from disk
 func (c *PhotoTransferCoordinator) loadState() {
 	data, err := os.ReadFile(c.statePath)

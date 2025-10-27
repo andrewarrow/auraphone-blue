@@ -161,6 +161,9 @@ type Wire struct {
 	enableDebugLog       bool
 	connectionEventLog   *ConnectionEventLogger
 
+	// Socket health monitoring
+	socketHealthMonitor  *SocketHealthMonitor
+
 	// Message queue for polling compatibility with old Wire API
 	messageQueue         []*CharacteristicMessage
 	queueMutex           sync.Mutex
@@ -224,6 +227,7 @@ func newWireInternal(deviceUUID string, platform Platform, deviceName string, co
 		stopChan:             make(chan struct{}),
 		enableDebugLog:       true,
 		connectionEventLog:   NewConnectionEventLogger(deviceUUID, true),
+		socketHealthMonitor:  NewSocketHealthMonitor(deviceUUID),
 	}
 
 	return w, nil
@@ -242,6 +246,7 @@ func (sw *Wire) InitializeDevice() error {
 	}
 	sw.peripheralListener = peripheralListener
 	sw.connectionEventLog.LogSocketCreated("peripheral", sw.peripheralSocketPath)
+	sw.socketHealthMonitor.InitializeSocket("peripheral", sw.peripheralSocketPath)
 
 	// Create Central socket listener (accepts connections from Peripherals)
 	centralListener, err := net.Listen("unix", sw.centralSocketPath)
@@ -251,6 +256,7 @@ func (sw *Wire) InitializeDevice() error {
 	}
 	sw.centralListener = centralListener
 	sw.connectionEventLog.LogSocketCreated("central", sw.centralSocketPath)
+	sw.socketHealthMonitor.InitializeSocket("central", sw.centralSocketPath)
 
 	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 		"🔌 Dual socket listeners created:\n  Peripheral: %s\n  Central: %s",
@@ -260,6 +266,9 @@ func (sw *Wire) InitializeDevice() error {
 	sw.wg.Add(2)
 	go sw.acceptLoopPeripheral()
 	go sw.acceptLoopCentral()
+
+	// Start socket health monitoring (periodic snapshots every 5s)
+	sw.socketHealthMonitor.StartPeriodicSnapshots()
 
 	// Create debug log directories (optional, for inspection)
 	if sw.enableDebugLog {
@@ -386,6 +395,9 @@ func (sw *Wire) handleIncomingConnection(conn net.Conn, ourRole ConnectionRole) 
 	// Log connection acceptance (deviceID not yet known)
 	sw.connectionEventLog.LogConnectionAccepted(string(ourRole), remoteUUID, "")
 
+	// Record connection in health monitor
+	sw.socketHealthMonitor.RecordConnection(string(ourRole), remoteUUID)
+
 	// Create RoleConnection for this directional connection
 	roleConn := &RoleConnection{
 		conn:          conn,
@@ -445,12 +457,14 @@ func (sw *Wire) handleIncomingConnection(conn net.Conn, ourRole ConnectionRole) 
 			dualConn.asCentral = nil
 			logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 				"🔌 Central connection closed from %s", remoteUUID[:8])
+			sw.socketHealthMonitor.RemoveConnection(string(ourRole), remoteUUID)
 		}
 	} else {
 		if dualConn.asPeripheral == roleConn {
 			dualConn.asPeripheral = nil
 			logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 				"🔌 Peripheral connection closed from %s", remoteUUID[:8])
+			sw.socketHealthMonitor.RemoveConnection(string(ourRole), remoteUUID)
 		}
 	}
 
@@ -506,6 +520,7 @@ func (sw *Wire) readLoop(remoteUUID string, roleConn *RoleConnection) {
 				logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 					"Read error from %s: %v", remoteUUID[:8], err)
 				sw.connectionEventLog.LogSocketError(string(ourRole), remoteUUID, "", err.Error(), "read length")
+				sw.socketHealthMonitor.RecordError(string(ourRole), remoteUUID, err.Error())
 			}
 			return
 		}
@@ -517,6 +532,7 @@ func (sw *Wire) readLoop(remoteUUID string, roleConn *RoleConnection) {
 				"Failed to read complete message from %s (expected %d bytes): %v",
 				remoteUUID[:8], totalLen, err)
 			sw.connectionEventLog.LogSocketError(string(ourRole), remoteUUID, "", err.Error(), "read message")
+			sw.socketHealthMonitor.RecordError(string(ourRole), remoteUUID, err.Error())
 			return
 		}
 
@@ -554,6 +570,9 @@ func (sw *Wire) readLoop(remoteUUID string, roleConn *RoleConnection) {
 				msg.Operation, theirRole, ourRole, remoteUUID[:8],
 				msg.ServiceUUID[len(msg.ServiceUUID)-4:],
 				msg.CharUUID[len(msg.CharUUID)-4:], len(msg.Data)), &msg)
+
+		// Record message received in health monitor
+		sw.socketHealthMonitor.RecordMessageReceived(string(ourRole), remoteUUID)
 
 		// Dispatch to handler
 		sw.dispatchMessage(&msg)
@@ -668,6 +687,10 @@ func (sw *Wire) Connect(targetUUID string) error {
 	sw.connectionEventLog.LogConnectionEstablished("central", targetUUID, "", targetPeripheralSocket)
 	sw.connectionEventLog.LogConnectionEstablished("peripheral", targetUUID, "", targetCentralSocket)
 	sw.connectionEventLog.LogDualConnectionComplete(targetUUID, "")
+
+	// Record connections in health monitor
+	sw.socketHealthMonitor.RecordConnection("central", targetUUID)
+	sw.socketHealthMonitor.RecordConnection("peripheral", targetUUID)
 
 	// Start read loops for both connections
 	sw.wg.Add(2)
@@ -867,6 +890,7 @@ func (sw *Wire) sendViaRoleConnection(roleConn *RoleConnection, targetUUID strin
 	// Send complete message length first
 	totalLen := uint32(len(data))
 	if err := binary.Write(conn, binary.BigEndian, totalLen); err != nil {
+		sw.socketHealthMonitor.RecordError(string(roleConn.role), targetUUID, err.Error())
 		return fmt.Errorf("failed to write message length: %w", err)
 	}
 
@@ -906,9 +930,13 @@ func (sw *Wire) sendViaRoleConnection(roleConn *RoleConnection, targetUUID strin
 			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
 				"❌ Failed to send fragment %d/%d to %s [%s] after %d retries: %v",
 				i+1, len(fragments), targetUUID[:8], roleConn.role, sw.simulator.config.MaxRetries, lastErr)
+			sw.socketHealthMonitor.RecordError(string(roleConn.role), targetUUID, lastErr.Error())
 			return lastErr
 		}
 	}
+
+	// Successfully sent all fragments - record message sent
+	sw.socketHealthMonitor.RecordMessageSent(string(roleConn.role), targetUUID)
 
 	return nil
 }
@@ -1247,6 +1275,9 @@ func (sw *Wire) Cleanup() {
 	// Signal shutdown
 	close(sw.stopChan)
 
+	// Stop socket health monitoring (writes final snapshot)
+	sw.socketHealthMonitor.Stop()
+
 	// Close all dual connections
 	sw.connMutex.Lock()
 	for uuid, dualConn := range sw.connections {
@@ -1259,6 +1290,10 @@ func (sw *Wire) Cleanup() {
 		delete(sw.connections, uuid)
 	}
 	sw.connMutex.Unlock()
+
+	// Mark sockets as closed in health monitor
+	sw.socketHealthMonitor.MarkSocketClosed("peripheral")
+	sw.socketHealthMonitor.MarkSocketClosed("central")
 
 	// Close both listeners
 	if sw.peripheralListener != nil {
