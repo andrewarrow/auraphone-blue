@@ -1026,8 +1026,10 @@ func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
 				statusMsg := fmt.Sprintf("Started %d/%d devices (%s)", i+1, numPhones, platformType)
 				fmt.Println(statusMsg)
 
-				// Update status label
-				statusLabel.SetText(statusMsg)
+				// Update status label (must be on UI thread)
+				fyne.Do(func() {
+					statusLabel.SetText(statusMsg)
+				})
 			}
 
 			// Wait 1 second before starting next phone (except after last phone)
@@ -1037,7 +1039,10 @@ func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
 		}
 
 		finalMsg := fmt.Sprintf("All %d devices started!", numPhones)
-		statusLabel.SetText(finalMsg)
+		// Update status label (must be on UI thread)
+		fyne.Do(func() {
+			statusLabel.SetText(finalMsg)
+		})
 		fmt.Println(finalMsg)
 
 		// If duration is specified, set up auto-shutdown
