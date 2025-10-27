@@ -368,12 +368,14 @@ func (g *BluetoothGatt) StartListening() {
 					continue
 				}
 
-				// Process each notification - messages are already consumed (deleted) by wire layer
+				// Process each notification
 				for _, msg := range messages {
 					// IMPORTANT: Only process messages from the device we're connected to
-					// Messages from other devices are already deleted but ignored
+					// If the message is not for us, we need to put it back in the queue
 					if msg.SenderUUID != g.GetRemoteUUID() {
-						continue // Skip messages not from our connected peripheral
+						// Put message back in queue for other GATT connections to process
+						g.wire.RequeueMessage(msg)
+						continue
 					}
 
 					// Find the characteristic this message is for

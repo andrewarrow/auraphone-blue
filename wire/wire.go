@@ -1761,3 +1761,13 @@ func (w *Wire) ReadAndConsumeCharacteristicMessagesFromInbox(inboxType string) (
 
 	return filtered, nil
 }
+
+// RequeueMessage puts a message back into the queue
+// This is used when a message is consumed but not processed (wrong recipient)
+func (w *Wire) RequeueMessage(msg *CharacteristicMessage) {
+	w.queueMutex.Lock()
+	defer w.queueMutex.Unlock()
+
+	// Add message back to the front of the queue for priority processing
+	w.messageQueue = append([]*CharacteristicMessage{msg}, w.messageQueue...)
+}
