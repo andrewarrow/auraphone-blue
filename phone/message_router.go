@@ -2,7 +2,6 @@ package phone
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/proto"
@@ -140,71 +139,31 @@ func (mr *MessageRouter) handleGossipMessage(senderUUID string, gossip *proto.Go
 	_ = newDiscoveries
 
 	// Check for missing photos
+	// NEW (Week 3): GetMissingPhotos() now only returns connected devices, so we can send directly
 	if mr.onPhotoNeeded != nil {
 		missingPhotos := mr.meshView.GetMissingPhotos()
 		for _, device := range missingPhotos {
-			// Look up hardware UUID from identity manager
-			hardwareUUID := ""
-			if mr.identityManager != nil {
-				hardwareUUID, _ = mr.identityManager.GetHardwareUUID(device.DeviceID)
-			}
-
-			// Check if we're connected before sending
-			if hardwareUUID != "" && mr.isConnected(hardwareUUID) {
-				// Direct send
-				err := mr.onPhotoNeeded(device.DeviceID, device.PhotoHash)
-				if err == nil {
-					mr.meshView.MarkPhotoRequested(device.DeviceID)
-				} else {
-					logger.Warn(prefix, "Failed to send photo request for %s: %v", device.DeviceID[:8], err)
-				}
+			// We know these devices are connected, safe to send directly
+			err := mr.onPhotoNeeded(device.DeviceID, device.PhotoHash)
+			if err == nil {
+				mr.meshView.MarkPhotoRequested(device.DeviceID)
 			} else {
-				// Queue for later delivery
-				req := &PendingRequest{
-					DeviceID:     device.DeviceID,
-					HardwareUUID: hardwareUUID,
-					Type:         RequestTypePhoto,
-					PhotoHash:    device.PhotoHash,
-					CreatedAt:    time.Now(),
-				}
-				if err := mr.requestQueue.Enqueue(req); err == nil {
-					logger.Debug(prefix, "📥 Queued photo request for %s (not connected)", device.DeviceID[:8])
-				}
+				logger.Warn(prefix, "Failed to send photo request for %s: %v", device.DeviceID[:8], err)
 			}
 		}
 	}
 
 	// Check for missing/updated profiles
+	// NEW (Week 3): GetMissingProfiles() now only returns connected devices, so we can send directly
 	if mr.onProfileNeeded != nil {
 		missingProfiles := mr.meshView.GetMissingProfiles()
 		for _, device := range missingProfiles {
-			// Look up hardware UUID from identity manager
-			hardwareUUID := ""
-			if mr.identityManager != nil {
-				hardwareUUID, _ = mr.identityManager.GetHardwareUUID(device.DeviceID)
-			}
-
-			// Check if we're connected before sending
-			if hardwareUUID != "" && mr.isConnected(hardwareUUID) {
-				// Direct send
-				err := mr.onProfileNeeded(device.DeviceID, device.ProfileVersion)
-				if err == nil {
-					mr.meshView.MarkProfileRequested(device.DeviceID)
-				} else {
-					logger.Warn(prefix, "Failed to send profile request for %s: %v", device.DeviceID[:8], err)
-				}
+			// We know these devices are connected, safe to send directly
+			err := mr.onProfileNeeded(device.DeviceID, device.ProfileVersion)
+			if err == nil {
+				mr.meshView.MarkProfileRequested(device.DeviceID)
 			} else {
-				// Queue for later delivery
-				req := &PendingRequest{
-					DeviceID:       device.DeviceID,
-					HardwareUUID:   hardwareUUID,
-					Type:           RequestTypeProfile,
-					ProfileVersion: device.ProfileVersion,
-					CreatedAt:      time.Now(),
-				}
-				if err := mr.requestQueue.Enqueue(req); err == nil {
-					logger.Debug(prefix, "📥 Queued profile request for %s (not connected)", device.DeviceID[:8])
-				}
+				logger.Warn(prefix, "Failed to send profile request for %s: %v", device.DeviceID[:8], err)
 			}
 		}
 	}

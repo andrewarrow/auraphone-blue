@@ -65,6 +65,14 @@ func (d *iPhonePeripheralDelegate) CentralDidSubscribe(peripheralManager *swift.
 	// Register this central connection
 	d.iphone.connManager.RegisterPeripheralConnection(central.UUID)
 
+	// Mark device as connected in identity manager
+	d.iphone.identityManager.MarkConnected(central.UUID)
+
+	// NEW (Week 3): Mark device as connected in mesh view
+	if deviceID, ok := d.iphone.identityManager.GetDeviceID(central.UUID); ok {
+		d.iphone.meshView.MarkDeviceConnected(deviceID)
+	}
+
 	// Send initial gossip when they subscribe to protocol characteristic
 	if characteristic.UUID == phone.AuraProtocolCharUUID {
 		go d.iphone.gossipHandler.SendGossipToDevice(central.UUID)
@@ -74,6 +82,17 @@ func (d *iPhonePeripheralDelegate) CentralDidSubscribe(peripheralManager *swift.
 func (d *iPhonePeripheralDelegate) CentralDidUnsubscribe(peripheralManager *swift.CBPeripheralManager, central swift.CBCentral, characteristic *swift.CBMutableCharacteristic) {
 	prefix := fmt.Sprintf("%s iOS", d.iphone.hardwareUUID[:8])
 	logger.Debug(prefix, "🔕 Central %s unsubscribed from %s", central.UUID[:8], characteristic.UUID[:8])
+
+	// Get device ID before cleanup
+	deviceID, _ := d.iphone.identityManager.GetDeviceID(central.UUID)
+
+	// Mark device as disconnected in identity manager
+	d.iphone.identityManager.MarkDisconnected(central.UUID)
+
+	// NEW (Week 3): Mark device as disconnected in mesh view
+	if deviceID != "" {
+		d.iphone.meshView.MarkDeviceDisconnected(deviceID)
+	}
 
 	// Unregister when they disconnect completely (we'd get unsubscribe for all chars)
 	d.iphone.connManager.UnregisterPeripheralConnection(central.UUID)

@@ -36,6 +36,14 @@ func (d *androidGattServerDelegate) OnConnectionStateChange(device *kotlin.Bluet
 			d.android.connManager.RegisterPeripheralConnection(device.Address)
 		}
 
+		// Mark device as connected in identity manager
+		d.android.identityManager.MarkConnected(device.Address)
+
+		// NEW (Week 3): Mark device as connected in mesh view
+		if deviceID, ok := d.android.identityManager.GetDeviceID(device.Address); ok {
+			d.android.meshView.MarkDeviceConnected(deviceID)
+		}
+
 		// Track this central connection
 		d.android.mu.Lock()
 		d.android.connectedCentrals[device.Address] = true
@@ -46,6 +54,17 @@ func (d *androidGattServerDelegate) OnConnectionStateChange(device *kotlin.Bluet
 
 	} else if newState == kotlin.STATE_DISCONNECTED {
 		logger.Debug(prefix, "📥 GATT server: Central %s disconnected", device.Address[:8])
+
+		// Get device ID before cleanup
+		deviceID, _ := d.android.identityManager.GetDeviceID(device.Address)
+
+		// Mark device as disconnected in identity manager
+		d.android.identityManager.MarkDisconnected(device.Address)
+
+		// NEW (Week 3): Mark device as disconnected in mesh view
+		if deviceID != "" {
+			d.android.meshView.MarkDeviceDisconnected(deviceID)
+		}
 
 		// Unregister connection with ConnectionManager
 		if d.android.connManager != nil {

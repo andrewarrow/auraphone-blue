@@ -39,6 +39,9 @@ type MeshView struct {
 	// Mesh state: deviceID -> device state
 	devices map[string]*MeshDeviceState
 
+	// Connection state: which devices we're actually connected to right now
+	connectedNeighbors map[string]bool // deviceID -> is connected
+
 	// Neighbor management
 	maxNeighbors     int
 	currentNeighbors []string // device IDs of current neighbors
@@ -64,14 +67,15 @@ type MeshView struct {
 // NewMeshView creates a new mesh view manager
 func NewMeshView(ourDeviceID, ourHardwareUUID, dataDir string, cacheManager *DeviceCacheManager) *MeshView {
 	mv := &MeshView{
-		ourDeviceID:     ourDeviceID,
-		ourHardwareUUID: ourHardwareUUID,
-		devices:         make(map[string]*MeshDeviceState),
-		maxNeighbors:    3,
-		gossipInterval:  5 * time.Second,
-		cacheManager:    cacheManager,
-		dataDir:         dataDir,
-		rng:             rand.New(rand.NewSource(time.Now().UnixNano())),
+		ourDeviceID:        ourDeviceID,
+		ourHardwareUUID:    ourHardwareUUID,
+		devices:            make(map[string]*MeshDeviceState),
+		connectedNeighbors: make(map[string]bool),
+		maxNeighbors:       3,
+		gossipInterval:     5 * time.Second,
+		cacheManager:       cacheManager,
+		dataDir:            dataDir,
+		rng:                rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 
 	// Try to load persisted state
@@ -85,6 +89,43 @@ func (mv *MeshView) SetIdentityManager(im *IdentityManager) {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
 	mv.identityManager = im
+}
+
+// MarkDeviceConnected marks a device as currently connected
+func (mv *MeshView) MarkDeviceConnected(deviceID string) {
+	mv.mu.Lock()
+	defer mv.mu.Unlock()
+	mv.connectedNeighbors[deviceID] = true
+}
+
+// MarkDeviceDisconnected marks a device as disconnected
+func (mv *MeshView) MarkDeviceDisconnected(deviceID string) {
+	mv.mu.Lock()
+	defer mv.mu.Unlock()
+	delete(mv.connectedNeighbors, deviceID)
+}
+
+// IsDeviceConnected checks if a device is currently connected
+func (mv *MeshView) IsDeviceConnected(deviceID string) bool {
+	mv.mu.RLock()
+	defer mv.mu.RUnlock()
+	return mv.connectedNeighbors[deviceID]
+}
+
+// GetConnectedDevices returns only devices we're currently connected to
+func (mv *MeshView) GetConnectedDevices() []*MeshDeviceState {
+	mv.mu.RLock()
+	defer mv.mu.RUnlock()
+
+	connected := []*MeshDeviceState{}
+	for deviceID := range mv.connectedNeighbors {
+		if device, exists := mv.devices[deviceID]; exists {
+			// Make a copy
+			deviceCopy := *device
+			connected = append(connected, &deviceCopy)
+		}
+	}
+	return connected
 }
 
 // UpdateDevice updates or adds a device to the mesh view
@@ -235,6 +276,7 @@ func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
 }
 
 // GetMissingPhotos returns list of devices whose photos we need to fetch
+// NOW ONLY RETURNS DEVICES WE'RE CURRENTLY CONNECTED TO
 func (mv *MeshView) GetMissingPhotos() []*MeshDeviceState {
 	mv.mu.RLock()
 	defer mv.mu.RUnlock()
@@ -244,7 +286,15 @@ func (mv *MeshView) GetMissingPhotos() []*MeshDeviceState {
 	for _, device := range mv.devices {
 		// Need photo if: we don't have it, photo hash is known, and we haven't sent request yet
 		if !device.HavePhoto && device.PhotoHash != "" && !device.PhotoRequestSent {
-			missing = append(missing, device)
+			// NEW: Only include if this device is currently connected
+			// Check via identity manager for connection state
+			if mv.identityManager != nil {
+				if hardwareUUID, ok := mv.identityManager.GetHardwareUUID(device.DeviceID); ok {
+					if mv.identityManager.IsConnected(hardwareUUID) {
+						missing = append(missing, device)
+					}
+				}
+			}
 		}
 	}
 
@@ -274,6 +324,7 @@ func (mv *MeshView) MarkPhotoReceived(deviceID, photoHashHex string) {
 }
 
 // GetMissingProfiles returns list of devices whose profiles we need to fetch
+// NOW ONLY RETURNS DEVICES WE'RE CURRENTLY CONNECTED TO
 func (mv *MeshView) GetMissingProfiles() []*MeshDeviceState {
 	mv.mu.RLock()
 	defer mv.mu.RUnlock()
@@ -283,7 +334,15 @@ func (mv *MeshView) GetMissingProfiles() []*MeshDeviceState {
 	for _, device := range mv.devices {
 		// Need profile if: we don't have it, profile version is known, and we haven't sent request yet
 		if !device.HaveProfile && device.ProfileVersion > 0 && !device.ProfileRequestSent {
-			missing = append(missing, device)
+			// NEW: Only include if this device is currently connected
+			// Check via identity manager for connection state
+			if mv.identityManager != nil {
+				if hardwareUUID, ok := mv.identityManager.GetHardwareUUID(device.DeviceID); ok {
+					if mv.identityManager.IsConnected(hardwareUUID) {
+						missing = append(missing, device)
+					}
+				}
+			}
 		}
 	}
 
