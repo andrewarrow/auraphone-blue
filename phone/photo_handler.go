@@ -64,6 +64,9 @@ func (ph *PhotoHandler) HandlePhotoRequest(senderUUID string, req *auraphone.Pho
 	device := ph.device
 	prefix := fmt.Sprintf("%s %s", device.GetHardwareUUID()[:8], device.GetPlatform())
 
+	logger.Debug(prefix, "📩 Photo request: from=%s requester=%s target=%s (we are %s)",
+		senderUUID[:8], req.RequesterDeviceId[:8], req.TargetDeviceId[:8], device.GetDeviceID()[:8])
+
 	// Check if they're requesting OUR photo
 	if req.TargetDeviceId != device.GetDeviceID() {
 		logger.Debug(prefix, "⏭️  Photo request for %s, not us", req.TargetDeviceId[:8])

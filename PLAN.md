@@ -1,8 +1,10 @@
 # Plan: Fix 50% Photo Transfer Failure Rate
 
-## Problem Analysis (Test Run 2025-10-27_09-49-03)
+## Problem Analysis (Test Run 2025-10-27_10-14-10)
 
 **Result**: 10/20 transfers succeeded (50% success rate)
+
+**Previous run (2025-10-27_09-49-03)**: Also 10/20 (50%) - **SAME ISSUE PERSISTS**
 
 ### Root Causes Identified
 
@@ -266,10 +268,10 @@ go run main.go --phones 5 --duration 180s --packet-loss 0.05
 ## Implementation Order
 
 ### Day 1: Investigation (3-4 hours)
-1. ✅ Add enhanced logging to wire layer (30 min)
-2. ✅ Add logging to iOS/Android receive paths (30 min)
-3. ✅ Run test with logging and analyze (2 hours)
-4. ✅ Identify exact failure point (1 hour)
+1. 🔄 Add enhanced logging to wire layer (30 min) - IN PROGRESS
+2. ⏳ Add logging to iOS/Android receive paths (30 min)
+3. ⏳ Run test with logging and analyze (2 hours)
+4. ⏳ Identify exact failure point (1 hour)
 
 ### Day 2: Fixes (3-4 hours)
 1. ✅ Fix root cause from investigation (varies)
@@ -314,8 +316,48 @@ Likely:
 
 ---
 
-## Next Steps
+## Bug Found! (2025-10-27 Analysis)
 
-**Immediate action**: Add logging from Phase 1 and run a test. The logs will tell us exactly where chunks are being lost, then we can write a targeted fix.
+### Root Cause
+**Multiple devices are responding to photo requests intended for a single device.**
 
-Do NOT proceed with speculative fixes until we know the exact failure point from the logs.
+Example from logs:
+- Device 0JSEUJO6 (B4698CEC) requests ZSJSMVL7's photo (hash 35a9a4ad)
+- ZSJSMVL7 (12D90340) correctly responds with its 18777-byte photo ✅
+- BUT: B4698CEC, F09FFFB7, and 88716210 ALSO respond with THEIR OWN photos ❌
+- Result: ZSJSMVL7 receives wrong photos from wrong devices
+
+### Evidence from Logs
+```
+[B4698CEC iOS DEBUG] 📤 Sent photo request for 35a9a4ad
+[B4698CEC iOS INFO ] 📸 Sending our photo to ZSJSMVL7 (13964 bytes, 4 chunks)  ❌ WRONG!
+[F09FFFB7 iOS INFO ] 📸 Sending our photo to ZSJSMVL7 (15311 bytes, 4 chunks)  ❌ WRONG!
+[88716210 iOS INFO ] 📸 Sending our photo to ZSJSMVL7 (11138 bytes, 3 chunks)  ❌ WRONG!
+```
+
+Wire statistics:
+- 327 photo chunks SENT
+- 432 photo chunks RECEIVED (32% more!)
+- Chunks ARE arriving, but wrong devices are sending
+
+### Hypothesis
+The `PhotoRequestMessage` is either:
+1. Being broadcast to all devices instead of just the target
+2. Has swapped requester/target fields
+3. Handler logic incorrectly interprets who should respond
+
+### Fix Applied
+Added debug logging to `photo_handler.go:67-68` to log:
+```go
+logger.Debug(prefix, "📩 Photo request: from=%s requester=%s target=%s (we are %s)",
+    senderUUID[:8], req.RequesterDeviceId[:8], req.TargetDeviceId[:8], device.GetDeviceID()[:8])
+```
+
+### Next Step
+Run test again with new logging to see exact field values in PhotoRequestMessage.
+
+---
+
+## Previous Analysis (Obsolete)
+
+**Immediate action**: ~~Add logging from Phase 1 and run a test~~. Logging already added in commits fad5094 and 94b97d6.
