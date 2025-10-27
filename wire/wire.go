@@ -1349,6 +1349,25 @@ func (sw *Wire) DiscoverDevices() ([]string, error) {
 	return devices, nil
 }
 
+// DeviceExists checks if a device with the given UUID exists and is reachable
+// This checks for the presence of socket files, indicating the device is active
+// Used by iOS retrievePeripherals(withIdentifiers:) to check if devices learned via gossip are available
+func (sw *Wire) DeviceExists(deviceUUID string) bool {
+	if deviceUUID == sw.localUUID {
+		return false // Don't return our own device
+	}
+
+	// Check if dual sockets exist (both peripheral and central)
+	peripheralSock := fmt.Sprintf("/tmp/auraphone-%s-peripheral.sock", deviceUUID)
+	centralSock := fmt.Sprintf("/tmp/auraphone-%s-central.sock", deviceUUID)
+
+	_, err1 := os.Stat(peripheralSock)
+	_, err2 := os.Stat(centralSock)
+
+	// Device exists if both sockets are present
+	return err1 == nil && err2 == nil
+}
+
 // StartDiscovery continuously scans for devices
 func (sw *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
 	stopChan := make(chan struct{})

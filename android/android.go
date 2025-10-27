@@ -108,6 +108,10 @@ func NewAndroid(hardwareUUID string) *Android {
 		a.identityManager.SaveToDisk()
 
 		logger.Debug(prefix, "✅ Mapping stored. Total mappings: %d", a.identityManager.GetMappingCount())
+
+		// NEW: Try to connect to this device if we're not already connected
+		// This enables connections via gossip (getRemoteDevice without discovery)
+		a.tryConnectToGossipDevice(hardwareUUID, deviceID)
 	})
 
 	// Set callback to check if a device is connected

@@ -110,6 +110,10 @@ func NewIPhone(hardwareUUID string) *iPhone {
 		// If we received a message from this device, they must be connected to us
 		// Register them as a peripheral connection so we can send messages back
 		ip.connManager.RegisterPeripheralConnection(hardwareUUID)
+
+		// NEW: Try to connect to this device if we're not already connected
+		// This enables iOS-to-iOS connections via gossip (retrievePeripherals without discovery)
+		ip.tryConnectToGossipDevice(hardwareUUID, deviceID)
 	})
 
 	// Set callback to check if a device is connected
@@ -384,4 +388,37 @@ func (ip *iPhone) UpdateLocalProfile(profile map[string]string) error {
 
 func (ip *iPhone) shouldActAsCentral(remoteUUID, remoteName string) bool {
 	return ip.hardwareUUID > remoteUUID
+}
+
+// tryConnectToGossipDevice attempts to connect to a device learned via gossip
+// This is critical for iOS-to-iOS connections, where discovery may not work
+// Uses retrievePeripherals(withIdentifiers:) instead of relying on scanning
+func (ip *iPhone) tryConnectToGossipDevice(hardwareUUID, deviceID string) {
+	prefix := fmt.Sprintf("%s iOS", ip.hardwareUUID[:8])
+
+	// Check if we're already connected
+	if ip.connManager.IsConnected(hardwareUUID) {
+		logger.Debug(prefix, "⏭️  Already connected to %s (gossip)", hardwareUUID[:8])
+		return
+	}
+
+	// Check if we should act as Central (role negotiation)
+	if !ip.shouldActAsCentral(hardwareUUID, "") {
+		logger.Debug(prefix, "⏸️  Not connecting to %s via gossip (will act as Peripheral)", hardwareUUID[:8])
+		return
+	}
+
+	// Use retrievePeripherals to get peripheral by UUID (works without discovery)
+	// This is how real iOS apps connect to devices learned via gossip/server/QR code
+	peripherals := ip.manager.RetrievePeripheralsByIdentifiers([]string{hardwareUUID})
+	if len(peripherals) == 0 {
+		logger.Debug(prefix, "⚠️  Device %s learned via gossip but not reachable (sockets don't exist)", hardwareUUID[:8])
+		return
+	}
+
+	peripheral := peripherals[0]
+	logger.Info(prefix, "🔗 Connecting to %s via gossip (no discovery needed)", hardwareUUID[:8])
+
+	// Connect using standard flow (will trigger DidConnectPeripheral callback)
+	ip.manager.Connect(peripheral, nil)
 }

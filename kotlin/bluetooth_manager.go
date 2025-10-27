@@ -70,6 +70,32 @@ func (a *BluetoothAdapter) GetBluetoothLeAdvertiser(sharedWire *wire.Wire) *Blue
 	return a.advertiser
 }
 
+// GetRemoteDevice returns a BluetoothDevice for the given address
+// Matches: bluetoothAdapter.getRemoteDevice(address)
+// This allows connecting to devices by address without scanning (learned via gossip)
+// In real Android, this always succeeds even if device doesn't exist (connection will fail later)
+func (a *BluetoothAdapter) GetRemoteDevice(address string, sharedWire *wire.Wire) *BluetoothDevice {
+	// Check if device exists (optional - real Android doesn't check this)
+	if !sharedWire.DeviceExists(address) {
+		return nil // Device not reachable
+	}
+
+	// Read advertising data to get device name if available
+	advData, err := sharedWire.ReadAdvertisingData(address)
+	deviceName := "Unknown Device"
+	if err == nil && advData.DeviceName != "" {
+		deviceName = advData.DeviceName
+	}
+
+	device := &BluetoothDevice{
+		Name:    deviceName,
+		Address: address,
+	}
+	device.SetWire(sharedWire)
+
+	return device
+}
+
 type BluetoothLeScanner struct {
 	callback ScanCallback
 	uuid     string

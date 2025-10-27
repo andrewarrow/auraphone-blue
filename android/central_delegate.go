@@ -75,6 +75,44 @@ func (a *Android) shouldActAsCentral(remoteUUID, remoteName string) bool {
 	return a.hardwareUUID > remoteUUID
 }
 
+// tryConnectToGossipDevice attempts to connect to a device learned via gossip
+// This allows connecting to devices without waiting for scan discovery
+// Uses getRemoteDevice() instead of relying on scanning
+func (a *Android) tryConnectToGossipDevice(hardwareUUID, deviceID string) {
+	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
+
+	// Check if we're already connected
+	if a.connManager.IsConnected(hardwareUUID) {
+		logger.Debug(prefix, "⏭️  Already connected to %s (gossip)", hardwareUUID[:8])
+		return
+	}
+
+	// Check if we should act as Central (role negotiation)
+	if !a.shouldActAsCentral(hardwareUUID, "") {
+		logger.Debug(prefix, "⏸️  Not connecting to %s via gossip (will act as Peripheral)", hardwareUUID[:8])
+		return
+	}
+
+	// Use getRemoteDevice to get device by address (works without discovery)
+	// This is how real Android apps connect to devices learned via server/QR code/gossip
+	device := a.manager.Adapter.GetRemoteDevice(hardwareUUID, a.wire)
+	if device == nil {
+		logger.Debug(prefix, "⚠️  Device %s learned via gossip but not reachable (sockets don't exist)", hardwareUUID[:8])
+		return
+	}
+
+	logger.Info(prefix, "🔗 Connecting to %s via gossip (no discovery needed)", hardwareUUID[:8])
+
+	// Connect using standard flow (will trigger OnConnectionStateChange callback)
+	// Android API signature: device.connectGatt(context, autoConnect, callback)
+	gatt := device.ConnectGatt(nil, a.useAutoConnect, a)
+	if gatt != nil {
+		a.mu.Lock()
+		a.connectedGatts[hardwareUUID] = gatt
+		a.mu.Unlock()
+	}
+}
+
 // BluetoothGattCallback methods (GATT Client callbacks)
 
 // OnConnectionStateChange handles connection state changes

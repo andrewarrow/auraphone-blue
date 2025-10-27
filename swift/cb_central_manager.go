@@ -110,6 +110,37 @@ func (c *CBCentralManager) StopScan() {
 	}
 }
 
+// RetrievePeripheralsByIdentifiers retrieves known peripherals by their identifiers
+// Matches: centralManager.retrievePeripherals(withIdentifiers:)
+// This allows connecting to peripherals without scanning (critical for iOS-to-iOS connections)
+// In real iOS, this returns peripherals that the system knows about (previously connected or discovered)
+// In our simulator, we check if the device exists in the wire layer (socket file exists)
+func (c *CBCentralManager) RetrievePeripheralsByIdentifiers(identifiers []string) []*CBPeripheral {
+	peripherals := make([]*CBPeripheral, 0, len(identifiers))
+
+	for _, uuid := range identifiers {
+		// Check if this device exists (has a socket file or is known to wire layer)
+		if c.wire.DeviceExists(uuid) {
+			// Read advertising data to get device name if available
+			advData, err := c.wire.ReadAdvertisingData(uuid)
+			deviceName := "Unknown Device"
+			if err == nil && advData.DeviceName != "" {
+				deviceName = advData.DeviceName
+			}
+
+			peripheral := &CBPeripheral{
+				UUID: uuid,
+				Name: deviceName,
+				wire: c.wire,
+				remoteUUID: uuid,
+			}
+			peripherals = append(peripherals, peripheral)
+		}
+	}
+
+	return peripherals
+}
+
 // ShouldInitiateConnection determines if this iOS device should initiate connection to target
 // Simple Role Policy: Use hardware UUID comparison regardless of platform
 // Device with LARGER UUID acts as Central (initiates connection)
