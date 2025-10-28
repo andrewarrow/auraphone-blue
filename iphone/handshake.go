@@ -79,19 +79,7 @@ func (ip *IPhone) handleProtocolMessage(peerUUID string, data []byte) {
 		return
 	}
 
-	// Try to parse as ProfileMessage (has first_name, phone_number, or tagline fields)
-	// Check this BEFORE ProfileRequestMessage because field 1 and 2 overlap!
-	// ProfileMessage: device_id(1), first_name(2), last_name(3), phone_number(4)...
-	// ProfileRequestMessage: requester_device_id(1), target_device_id(2), expected_version(3)
-	// Without checking ProfileMessage first, last_name gets misread as target_device_id
-	var profileMsg pb.ProfileMessage
-	if proto.Unmarshal(data, &profileMsg) == nil && profileMsg.DeviceId != "" && (profileMsg.FirstName != "" || profileMsg.PhoneNumber != "" || profileMsg.Tagline != "" || profileMsg.Insta != "" || profileMsg.LastName != "") {
-		ip.handleProfileMessage(peerUUID, &profileMsg)
-		return
-	}
-
 	// Try to parse as PhotoRequestMessage (has RequesterDeviceId and PhotoHash)
-	// MUST check this BEFORE ProfileRequestMessage because both have fields 1 and 2!
 	// PhotoRequestMessage: requester_device_id(1), target_device_id(2), photo_hash(3) [bytes]
 	// ProfileRequestMessage: requester_device_id(1), target_device_id(2), expected_version(3) [int32]
 	// The presence of PhotoHash (bytes field 3) is the discriminator
@@ -102,10 +90,22 @@ func (ip *IPhone) handleProtocolMessage(peerUUID string, data []byte) {
 	}
 
 	// Try to parse as ProfileRequestMessage (has RequesterDeviceId and ExpectedVersion)
-	// Check this AFTER PhotoRequestMessage to avoid false match
+	// MUST check this BEFORE ProfileMessage because fields 1 and 2 overlap!
+	// ProfileMessage: device_id(1), first_name(2), last_name(3)...
+	// ProfileRequestMessage: requester_device_id(1), target_device_id(2), expected_version(3)
+	// Without checking ProfileRequestMessage first, target_device_id gets misread as first_name!
 	var profileReq pb.ProfileRequestMessage
 	if proto.Unmarshal(data, &profileReq) == nil && profileReq.RequesterDeviceId != "" && profileReq.TargetDeviceId != "" {
 		ip.handleProfileRequest(peerUUID, &profileReq)
+		return
+	}
+
+	// Try to parse as ProfileMessage (has first_name, phone_number, or tagline fields)
+	// Check this LAST because it's the most ambiguous (many string fields that could match other messages)
+	// Requires at least one profile field (FirstName, LastName, PhoneNumber, Tagline, or Insta) to be non-empty
+	var profileMsg pb.ProfileMessage
+	if proto.Unmarshal(data, &profileMsg) == nil && profileMsg.DeviceId != "" && (profileMsg.FirstName != "" || profileMsg.PhoneNumber != "" || profileMsg.Tagline != "" || profileMsg.Insta != "" || profileMsg.LastName != "") {
+		ip.handleProfileMessage(peerUUID, &profileMsg)
 		return
 	}
 
