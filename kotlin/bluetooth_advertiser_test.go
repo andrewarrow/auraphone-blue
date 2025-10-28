@@ -72,11 +72,11 @@ func TestBluetoothLeAdvertiser_DirectMessageDelivery(t *testing.T) {
 
 	// Create a GATT message and deliver it directly (new pattern - no inbox polling!)
 	msg := &wire.GATTMessage{
-		Operation:   "write",
-		ServiceUUID: phone.AuraServiceUUID,
-		CharUUID:    phone.AuraProtocolCharUUID,
-		Data:        []byte("test write from central"),
-		SenderUUID:  "central-uuid",
+		Operation:          "write",
+		ServiceUUID:        phone.AuraServiceUUID,
+		CharacteristicUUID: phone.AuraProtocolCharUUID,
+		Data:               []byte("test write from central"),
+		SenderUUID:         "central-uuid",
 	}
 
 	// Deliver directly via HandleGATTMessage (no polling!)

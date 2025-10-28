@@ -18,10 +18,10 @@ func (ip *IPhone) DidUpdateCentralState(central swift.CBCentralManager) {
 
 func (ip *IPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, advertisementData map[string]interface{}, rssi float64) {
 	ip.mu.Lock()
-	defer ip.mu.Unlock()
 
 	// Check if already discovered
 	if _, exists := ip.discovered[peripheral.UUID]; exists {
+		ip.mu.Unlock()
 		return
 	}
 
@@ -35,18 +35,27 @@ func (ip *IPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 	}
 	ip.discovered[peripheral.UUID] = device
 
+	// Store peripheral for message routing (if we're going to connect)
+	var shouldConnect bool
+	var peripheralObj *swift.CBPeripheral
+	if ip.central.ShouldInitiateConnection(peripheral.UUID) {
+		peripheralObj = &peripheral
+		ip.connectedPeers[peripheral.UUID] = peripheralObj
+		shouldConnect = true
+	}
+
+	// Unlock BEFORE calling callback and Connect to avoid deadlock
+	// (callbacks may trigger other operations that need the mutex)
+	ip.mu.Unlock()
+
 	// Call callback
 	if ip.callback != nil {
 		ip.callback(device)
 	}
 
 	// Decide if we should initiate connection based on role negotiation
-	if ip.central.ShouldInitiateConnection(peripheral.UUID) {
+	if shouldConnect {
 		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🔌 Initiating connection to %s (role: Central)", shortHash(peripheral.UUID))
-
-		// Store peripheral for message routing
-		peripheralObj := &peripheral
-		ip.connectedPeers[peripheral.UUID] = peripheralObj
 
 		// Connect
 		ip.central.Connect(peripheralObj, nil)

@@ -390,7 +390,7 @@ func (pm *CBPeripheralManager) HandleGATTMessage(peerUUID string, msg *wire.GATT
 		Type:               msg.Type,
 		Operation:          msg.Operation,
 		ServiceUUID:        msg.ServiceUUID,
-		CharUUID:           msg.CharacteristicUUID,
+		CharacteristicUUID: msg.CharacteristicUUID,
 		Data:               msg.Data,
 		SenderUUID:         peerUUID,
 	}

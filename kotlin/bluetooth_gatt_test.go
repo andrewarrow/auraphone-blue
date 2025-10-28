@@ -60,11 +60,11 @@ func TestBluetoothGatt_DirectMessageDelivery(t *testing.T) {
 
 	// Create a GATT message and deliver it directly (new pattern)
 	msg := &wire.GATTMessage{
-		Operation:   "notify",
-		ServiceUUID: phone.AuraServiceUUID,
-		CharUUID:    phone.AuraProtocolCharUUID,
-		Data:        []byte("test notification"),
-		SenderUUID:  "peripheral-uuid",
+		Operation:          "notify",
+		ServiceUUID:        phone.AuraServiceUUID,
+		CharacteristicUUID: phone.AuraProtocolCharUUID,
+		Data:               []byte("test notification"),
+		SenderUUID:         "peripheral-uuid",
 	}
 
 	// Deliver directly via HandleGATTMessage (no inbox polling!)
