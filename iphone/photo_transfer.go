@@ -45,18 +45,18 @@ func (ip *IPhone) requestAndReceivePhoto(peerUUID string, photoHash string, devi
 		return
 	}
 
+	// Set up a delegate to handle photo notifications
+	// This must be done BEFORE subscribing, regardless of whether services are already discovered
+	peripheral.Delegate = &photoTransferDelegate{
+		iphone:    ip,
+		peerUUID:  peerUUID,
+		photoHash: photoHash,
+		deviceID:  deviceID,
+	}
+
 	// Discover services if not already done
 	if len(peripheral.Services) == 0 {
 		logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Discovering services on %s for photo transfer", shortHash(peerUUID))
-
-		// Set up a delegate to handle service discovery
-		peripheral.Delegate = &photoTransferDelegate{
-			iphone:    ip,
-			peerUUID:  peerUUID,
-			photoHash: photoHash,
-			deviceID:  deviceID,
-		}
-
 		peripheral.DiscoverServices([]string{phone.AuraServiceUUID})
 		// Note: Transfer state will be updated with actual chunk count when first chunk arrives
 		return
