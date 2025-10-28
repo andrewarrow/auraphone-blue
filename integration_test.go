@@ -1,24 +1,38 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/user/auraphone-blue/android"
 	"github.com/user/auraphone-blue/iphone"
+	"github.com/user/auraphone-blue/phone"
 )
 
 // TestBasicDiscoveryNoProfile tests that one iPhone and one Android can discover each other
 // and exchange handshakes WITHOUT profile data (since profile is not set).
 // This test isolates BLE behavior from GUI logic.
 func TestBasicDiscoveryNoProfile(t *testing.T) {
-	// Create one iPhone with default settings
-	// Hardware UUID from testdata/hardware_uuids.txt
+	// Hardware UUIDs for test devices
 	iphoneUUID := "11111111-1111-1111-1111-111111111111"
+	androidUUID := "22222222-2222-2222-2222-222222222222"
+
+	// Clean up data directories from previous runs to ensure fresh state
+	dataDir := phone.GetDataDir()
+	iphoneDataDir := filepath.Join(dataDir, iphoneUUID)
+	androidDataDir := filepath.Join(dataDir, androidUUID)
+
+	os.RemoveAll(iphoneDataDir)
+	os.RemoveAll(androidDataDir)
+
+	t.Logf("🧹 Cleaned up test data directories")
+
+	// Create one iPhone with default settings
 	ip := iphone.NewIPhone(iphoneUUID)
 
 	// Create one Android with default settings
-	androidUUID := "22222222-2222-2222-2222-222222222222"
 	droid := android.NewAndroid(androidUUID)
 
 	// Verify default first names

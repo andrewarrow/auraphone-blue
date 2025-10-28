@@ -96,12 +96,16 @@ func (ip *IPhone) Start() {
 	ip.startScanning()
 
 	// Set our firstName in mesh view so gossip messages include it
-	ip.meshView.SetOurFirstName(ip.firstName)
+	ip.mu.RLock()
+	firstName := ip.firstName
+	deviceID := ip.deviceID
+	ip.mu.RUnlock()
+	ip.meshView.SetOurFirstName(firstName)
 
 	// Start gossip protocol timer (sends gossip every 5 seconds to connected peers)
 	ip.startGossipTimer()
 
-	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "✅ Started iPhone: %s (ID: %s)", ip.firstName, ip.deviceID)
+	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "✅ Started iPhone: %s (ID: %s)", firstName, deviceID)
 }
 
 // Stop shuts down the iPhone

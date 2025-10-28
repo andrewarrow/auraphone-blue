@@ -26,13 +26,14 @@ func (ip *IPhone) sendHandshake(peerUUID string) {
 		}
 	}
 	profileVersion := ip.profileVersion
+	firstName := ip.firstName  // Capture firstName while holding lock!
 	peripheral := ip.connectedPeers[peerUUID]
 	ip.mu.RUnlock()
 
 	// Use protobuf HandshakeMessage
 	pbHandshake := &pb.HandshakeMessage{
 		DeviceId:        ip.deviceID,
-		FirstName:       ip.firstName,
+		FirstName:       firstName,  // Use captured value
 		ProtocolVersion: 1,
 		TxPhotoHash:     photoHashBytes,  // Photo hash we're offering to send
 		ProfileVersion:  profileVersion, // Current profile version

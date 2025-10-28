@@ -107,12 +107,16 @@ func (a *Android) Start() {
 	a.startScanning()
 
 	// Set our firstName in mesh view so gossip messages include it
-	a.meshView.SetOurFirstName(a.firstName)
+	a.mu.RLock()
+	firstName := a.firstName
+	deviceID := a.deviceID
+	a.mu.RUnlock()
+	a.meshView.SetOurFirstName(firstName)
 
 	// Start gossip protocol timer (sends gossip every 5 seconds to connected peers)
 	a.startGossipTimer()
 
-	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Started Android: %s (ID: %s)", a.firstName, a.deviceID)
+	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Started Android: %s (ID: %s)", firstName, deviceID)
 }
 
 // Stop stops the Android device
