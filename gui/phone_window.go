@@ -120,6 +120,32 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 		fmt.Printf("Failed to set initial profile photo: %v\n", err)
 	}
 
+	// Generate and set random profile data for simulation (GUI only)
+	// Real phones would have users enter this themselves
+	profileData, err := phone.GetProfileForIndex(allocatedCount)
+	if err != nil {
+		fmt.Printf("Warning: Failed to load profile data: %v (using defaults)\n", err)
+		profileData = phone.ProfileData{
+			FirstName: platformType,
+			LastName:  "User",
+			Tagline:   "Tech enthusiast",
+			Instagram: "@user",
+			YouTube:   "TechTalks",
+		}
+	}
+
+	// Set the generated profile data on the phone
+	profile := map[string]string{
+		"first_name": profileData.FirstName,
+		"last_name":  profileData.LastName,
+		"tagline":    profileData.Tagline,
+		"insta":      profileData.Instagram,
+		"youtube":    profileData.YouTube,
+	}
+	if err := pw.phone.UpdateLocalProfile(profile); err != nil {
+		fmt.Printf("Failed to set initial profile: %v\n", err)
+	}
+
 	// Start BLE operations
 	pw.phone.Start()
 

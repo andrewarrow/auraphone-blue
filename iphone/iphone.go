@@ -19,24 +19,8 @@ func NewIPhone(hardwareUUID string) *IPhone {
 		panic(fmt.Sprintf("Failed to load/generate device ID: %v", err))
 	}
 
-	// Get the index for this phone to assign consistent profile data
-	manager := phone.GetHardwareUUIDManager()
-	allocatedCount := manager.GetAllocatedCount()
-
-	// Load random profile data based on allocated count
-	profileData, err := phone.GetProfileForIndex(allocatedCount)
-	if err != nil {
-		logger.Warn(fmt.Sprintf("%s iOS", hardwareUUID[:8]), "Failed to load profile data: %v (using defaults)", err)
-		profileData = phone.ProfileData{
-			FirstName: "iPhone",
-			LastName:  "User",
-			Tagline:   "Tech enthusiast",
-			Instagram: "@iphoneuser",
-			YouTube:   "TechTalks",
-		}
-	}
-
-	firstName := profileData.FirstName
+	// Default first name to platform name (will be set by GUI for simulation)
+	firstName := "iPhone"
 	deviceName := fmt.Sprintf("iPhone (%s)", firstName)
 
 	// Create identity manager (tracks all hardware UUID ↔ device ID mappings)
@@ -52,15 +36,6 @@ func NewIPhone(hardwareUUID string) *IPhone {
 	meshView := phone.NewMeshView(deviceID, hardwareUUID, dataDir, photoCache)
 	meshView.SetIdentityManager(identityManager)
 
-	// Initialize profile with random data
-	profile := map[string]string{
-		"first_name": profileData.FirstName,
-		"last_name":  profileData.LastName,
-		"tagline":    profileData.Tagline,
-		"insta":      profileData.Instagram,
-		"youtube":    profileData.YouTube,
-	}
-
 	return &IPhone{
 		hardwareUUID:    hardwareUUID,
 		deviceID:        deviceID,
@@ -75,7 +50,7 @@ func NewIPhone(hardwareUUID string) *IPhone {
 		photoTransfers:  make(map[string]*phone.PhotoTransferState),
 		meshView:        meshView,
 		stopGossip:      make(chan struct{}),
-		profile:         profile,
+		profile:         make(map[string]string),
 	}
 }
 
