@@ -17,10 +17,17 @@ func (a *Android) broadcastProfileUpdate() {
 	for k, v := range a.profile {
 		profile[k] = v
 	}
+	wire := a.wire
 	a.mu.RUnlock()
 
+	// Don't broadcast if phone hasn't started yet (wire not initialized)
+	if wire == nil {
+		logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📋 Skipping profile broadcast (phone not started)")
+		return
+	}
+
 	// Get ALL connected peers (both Central and Peripheral connections)
-	peerUUIDs := a.wire.GetConnectedPeers()
+	peerUUIDs := wire.GetConnectedPeers()
 
 	if len(peerUUIDs) == 0 {
 		logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📋 No connected peers to broadcast profile update")

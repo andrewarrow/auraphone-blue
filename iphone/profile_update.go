@@ -17,10 +17,17 @@ func (ip *IPhone) broadcastProfileUpdate() {
 	for k, v := range ip.profile {
 		profile[k] = v
 	}
+	wire := ip.wire
 	ip.mu.RUnlock()
 
+	// Don't broadcast if phone hasn't started yet (wire not initialized)
+	if wire == nil {
+		logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "📋 Skipping profile broadcast (phone not started)")
+		return
+	}
+
 	// Get ALL connected peers (both Central and Peripheral connections)
-	peerUUIDs := ip.wire.GetConnectedPeers()
+	peerUUIDs := wire.GetConnectedPeers()
 
 	if len(peerUUIDs) == 0 {
 		logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "📋 No connected peers to broadcast profile update")
