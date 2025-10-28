@@ -33,6 +33,42 @@ func (ip *IPhone) GetPlatform() string {
 	return "iOS"
 }
 
+func (ip *IPhone) GetFirstName() string {
+	ip.mu.RLock()
+	defer ip.mu.RUnlock()
+	return ip.firstName
+}
+
+func (ip *IPhone) GetDiscovered() map[string]phone.DiscoveredDevice {
+	ip.mu.RLock()
+	defer ip.mu.RUnlock()
+
+	result := make(map[string]phone.DiscoveredDevice)
+	for k, v := range ip.discovered {
+		result[k] = v
+	}
+	return result
+}
+
+func (ip *IPhone) GetHandshaked() map[string]*HandshakeMessage {
+	ip.mu.RLock()
+	defer ip.mu.RUnlock()
+
+	result := make(map[string]*HandshakeMessage)
+	for k, v := range ip.handshaked {
+		result[k] = v
+	}
+	return result
+}
+
+func (ip *IPhone) Lock() {
+	ip.mu.Lock()
+}
+
+func (ip *IPhone) Unlock() {
+	ip.mu.Unlock()
+}
+
 func (ip *IPhone) SetProfilePhoto(photoPath string) error {
 	ip.mu.Lock()
 	defer ip.mu.Unlock()

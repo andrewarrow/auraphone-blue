@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/user/auraphone-blue/logger"
+	"github.com/user/auraphone-blue/phone"
 )
 
 // ============================================================================
@@ -12,6 +13,42 @@ import (
 
 func (a *Android) GetDeviceID() string {
 	return a.deviceID
+}
+
+func (a *Android) GetFirstName() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.firstName
+}
+
+func (a *Android) GetDiscovered() map[string]phone.DiscoveredDevice {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	result := make(map[string]phone.DiscoveredDevice)
+	for k, v := range a.discovered {
+		result[k] = v
+	}
+	return result
+}
+
+func (a *Android) GetHandshaked() map[string]*HandshakeMessage {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	result := make(map[string]*HandshakeMessage)
+	for k, v := range a.handshaked {
+		result[k] = v
+	}
+	return result
+}
+
+func (a *Android) Lock() {
+	a.mu.Lock()
+}
+
+func (a *Android) Unlock() {
+	a.mu.Unlock()
 }
 
 func (a *Android) SetProfilePhoto(photoPath string) error {
