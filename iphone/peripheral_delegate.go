@@ -6,8 +6,6 @@ import (
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
 	"github.com/user/auraphone-blue/swift"
-	pb "github.com/user/auraphone-blue/proto"
-	"google.golang.org/protobuf/proto"
 )
 
 // ============================================================================
