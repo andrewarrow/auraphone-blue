@@ -203,28 +203,23 @@ func (a *Android) startScanning() {
 // handleGATTMessage routes incoming GATT messages to the appropriate handler
 // This is the central message routing point - ALL messages come through here
 func (a *Android) handleGATTMessage(peerUUID string, msg *wire.GATTMessage) {
-	// Determine if this is central mode (we initiated) or peripheral mode (they initiated)
-	role, exists := a.wire.GetConnectionRole(peerUUID)
-	if !exists {
-		return // No connection
+	// Route to appropriate handler based on message type
+	// For bidirectional communication, we try both handlers
+	handled := false
+
+	// Try GATT client (handles notifications from peripherals we're connected to)
+	a.mu.RLock()
+	gatt, exists := a.connectedGatts[peerUUID]
+	a.mu.RUnlock()
+
+	if exists && gatt != nil {
+		gatt.HandleGATTMessage(msg)
+		handled = true
 	}
 
-	if role == wire.RoleCentral {
-		// Central mode - we initiated the connection
-		// Route to the appropriate BluetoothGatt connection
-		a.mu.RLock()
-		gatt, exists := a.connectedGatts[peerUUID]
-		a.mu.RUnlock()
-
-		if exists && gatt != nil {
-			gatt.HandleGATTMessage(msg)
-		}
-	} else if role == wire.RolePeripheral {
-		// Peripheral mode - they initiated the connection
-		// Route to advertiser/GATT server
-		if a.advertiser != nil {
-			a.advertiser.HandleGATTMessage(msg)
-		}
+	// Try GATT server (handles requests from centrals connecting to us)
+	if !handled && a.advertiser != nil {
+		a.advertiser.HandleGATTMessage(msg)
 	}
 }
 
