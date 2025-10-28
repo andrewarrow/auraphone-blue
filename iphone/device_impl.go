@@ -93,6 +93,7 @@ func (ip *IPhone) UpdateLocalProfile(profile map[string]string) error {
 		ip.firstName = profile["first_name"]
 		// Update mesh view so gossip messages include the new firstName
 		ip.meshView.SetOurFirstName(ip.firstName)
+		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "✏️  Updated firstName to: %s", ip.firstName)
 	}
 
 	// Increment version if profile changed
