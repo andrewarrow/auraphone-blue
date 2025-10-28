@@ -59,10 +59,11 @@ func (ip *IPhone) handleProtocolMessage(peerUUID string, data []byte) {
 		return
 	}
 
-	// Try to parse as ProfileMessage (has LastName field)
-	var profileMsg pb.ProfileMessage
-	if proto.Unmarshal(data, &profileMsg) == nil && profileMsg.DeviceId != "" && profileMsg.LastName != "" {
-		ip.handleProfileMessage(peerUUID, &profileMsg)
+	// Try to parse as HandshakeMessage (has ProtocolVersion field)
+	// Check this BEFORE ProfileMessage to avoid field number collision
+	var pbHandshake pb.HandshakeMessage
+	if proto.Unmarshal(data, &pbHandshake) == nil && pbHandshake.DeviceId != "" && pbHandshake.ProtocolVersion > 0 {
+		ip.handleHandshakeProto(&pbHandshake, peerUUID)
 		return
 	}
 
@@ -73,10 +74,10 @@ func (ip *IPhone) handleProtocolMessage(peerUUID string, data []byte) {
 		return
 	}
 
-	// Try to parse as HandshakeMessage (has DeviceId field)
-	var pbHandshake pb.HandshakeMessage
-	if proto.Unmarshal(data, &pbHandshake) == nil && pbHandshake.DeviceId != "" {
-		ip.handleHandshakeProto(&pbHandshake, peerUUID)
+	// Try to parse as ProfileMessage (has phone_number or tagline fields)
+	var profileMsg pb.ProfileMessage
+	if proto.Unmarshal(data, &profileMsg) == nil && profileMsg.DeviceId != "" && (profileMsg.PhoneNumber != "" || profileMsg.Tagline != "" || profileMsg.Insta != "") {
+		ip.handleProfileMessage(peerUUID, &profileMsg)
 		return
 	}
 
