@@ -73,8 +73,9 @@ func (a *Android) Start() {
 	// Set up connection callback - handles when Centrals connect to us (as Peripheral)
 	a.wire.SetConnectCallback(func(peerUUID string, role wire.ConnectionRole) {
 		if role == wire.RolePeripheral {
-			// Someone connected to us as Central
-			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Central %s connected to us", peerUUID[:8])
+			// Someone connected to us as Central - create GATT client for them
+			// This enables bidirectional photo requests
+			a.handleIncomingCentralConnection(peerUUID)
 		}
 	})
 
@@ -247,4 +248,47 @@ func (a *Android) GetDeviceName() string {
 // GetPlatform returns the platform name
 func (a *Android) GetPlatform() string {
 	return "android"
+}
+
+// handleIncomingCentralConnection handles when a Central connects to us (we're Peripheral)
+// This creates a BluetoothGatt object so we can send requests back to them
+func (a *Android) handleIncomingCentralConnection(peerUUID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Check if already tracked
+	if _, exists := a.connectedGatts[peerUUID]; exists {
+		return
+	}
+
+	// Get device name from discovered devices, or create a minimal entry
+	deviceName := "Unknown"
+	if device, exists := a.discovered[peerUUID]; exists {
+		deviceName = device.Name
+	} else {
+		// Central connected to us but we haven't discovered them yet
+		// Add them to discovered map so photo callback will work later
+		a.discovered[peerUUID] = phone.DiscoveredDevice{
+			HardwareUUID: peerUUID,
+			Name:         deviceName,
+			RSSI:         0,
+		}
+		if a.callback != nil {
+			a.callback(a.discovered[peerUUID])
+		}
+	}
+
+	// Create BluetoothDevice for the Central that connected to us
+	device := &kotlin.BluetoothDevice{
+		Name:    deviceName,
+		Address: peerUUID,
+	}
+
+	// Create BluetoothGatt object for the Central that connected to us
+	// This allows us to make requests back to them
+	gatt := kotlin.NewBluetoothGattFromConnection(device, a, a.wire)
+
+	a.connectedGatts[peerUUID] = gatt
+
+	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔌 Central %s connected (created reverse GATT client)", shortHash(peerUUID))
 }

@@ -66,3 +66,19 @@ func (d *BluetoothDevice) ConnectGatt(context interface{}, autoConnect bool, cal
 
 	return gatt
 }
+
+// NewBluetoothGattFromConnection creates a GATT client for an existing connection
+// Used when we're acting as Peripheral and a Central connected to us
+func NewBluetoothGattFromConnection(device *BluetoothDevice, callback BluetoothGattCallback, w *wire.Wire) *BluetoothGatt {
+	gatt := &BluetoothGatt{
+		callback:    callback,
+		wire:        w,
+		remoteUUID:  device.Address,
+		autoConnect: false, // No auto-reconnect for reverse connections
+	}
+
+	// Connection already exists, so we're immediately in connected state
+	// But we need to discover services to make this usable
+
+	return gatt
+}
