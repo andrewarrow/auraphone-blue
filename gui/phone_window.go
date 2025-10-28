@@ -57,7 +57,7 @@ type PhoneWindow struct {
 // NewPhoneWindow creates a new phone window
 func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 	// Allocate next hardware UUID from the pool
-	manager := phone.GetHardwareUUIDManager()
+	manager := GetHardwareUUIDManager()
 	hardwareUUID, err := manager.AllocateNextUUID()
 	if err != nil {
 		fmt.Printf("ERROR: %v\n", err)
@@ -111,7 +111,7 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 	// Cleanup on close - release hardware UUID back to the pool
 	pw.window.SetOnClosed(func() {
 		pw.cleanup()
-		manager := phone.GetHardwareUUIDManager()
+		manager := GetHardwareUUIDManager()
 		manager.ReleaseUUID(pw.hardwareUUID)
 	})
 
@@ -122,10 +122,10 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 
 	// Generate and set random profile data for simulation (GUI only)
 	// Real phones would have users enter this themselves
-	profileData, err := phone.GetProfileForIndex(allocatedCount)
+	profileData, err := GetProfileForIndex(allocatedCount)
 	if err != nil {
 		fmt.Printf("Warning: Failed to load profile data: %v (using defaults)\n", err)
-		profileData = phone.ProfileData{
+		profileData = ProfileData{
 			FirstName: platformType,
 			LastName:  "User",
 			Tagline:   "Tech enthusiast",

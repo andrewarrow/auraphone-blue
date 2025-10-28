@@ -1,4 +1,4 @@
-package phone
+package gui
 
 import (
 	"fmt"

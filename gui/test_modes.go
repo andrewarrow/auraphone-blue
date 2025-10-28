@@ -100,7 +100,7 @@ func RunStressTest(numPhones int, duration time.Duration) {
 	// Note: Log level is already set from CLI flag in main(), don't override it here
 
 	// Create device manager for hardware UUIDs
-	manager := phone.GetHardwareUUIDManager()
+	manager := GetHardwareUUIDManager()
 
 	// Create iOS devices only
 	phones := make([]phone.Phone, numPhones)
@@ -132,10 +132,10 @@ func RunStressTest(numPhones int, duration time.Duration) {
 		// Generate and set random profile data for simulation (GUI only)
 		// Real phones would have users enter this themselves
 		allocatedCount := manager.GetAllocatedCount()
-		profileData, err := phone.GetProfileForIndex(allocatedCount)
+		profileData, err := GetProfileForIndex(allocatedCount)
 		if err != nil {
 			fmt.Printf("Warning: Failed to load profile data for phone %d: %v (using defaults)\n", i+1, err)
-			profileData = phone.ProfileData{
+			profileData = ProfileData{
 				FirstName: platform,
 				LastName:  "User",
 				Tagline:   "Tech enthusiast",
