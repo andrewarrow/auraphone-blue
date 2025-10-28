@@ -3,6 +3,7 @@ package kotlin
 import (
 	"time"
 
+	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/wire"
 )
 
@@ -237,6 +238,10 @@ func (g *BluetoothGatt) SetCharacteristicNotification(characteristic *BluetoothG
 
 	g.notifyingCharacteristics[characteristic.UUID] = enable
 
+	logger.Debug("BluetoothGatt", "🔔 SetCharacteristicNotification: char=%s, enable=%v (remote=%s)",
+		characteristic.UUID[:8], enable, g.remoteUUID[:8])
+	logger.Debug("BluetoothGatt", "   Subscribed characteristics: %v", g.notifyingCharacteristics)
+
 	// Send subscribe/unsubscribe message to peripheral
 	// In real Android, this would also write to the CCCD descriptor
 	var err error
@@ -255,6 +260,16 @@ func (g *BluetoothGatt) HandleGATTMessage(msg *wire.GATTMessage) {
 	// Find the characteristic this message is for
 	char := g.GetCharacteristic(msg.ServiceUUID, msg.CharacteristicUUID)
 	if char == nil {
+		// Log when characteristic not found - helps debug subscription issues
+		logger.Warn("BluetoothGatt", "⚠️  Characteristic not found: service=%s, char=%s, op=%s (remote=%s)",
+			msg.ServiceUUID[:8], msg.CharacteristicUUID[:8], msg.Operation, g.remoteUUID[:8])
+		logger.Debug("BluetoothGatt", "📋 Available services: %d", len(g.services))
+		for _, svc := range g.services {
+			logger.Debug("BluetoothGatt", "   Service: %s (%d characteristics)", svc.UUID[:8], len(svc.Characteristics))
+			for _, ch := range svc.Characteristics {
+				logger.Debug("BluetoothGatt", "      Char: %s", ch.UUID[:8])
+			}
+		}
 		return
 	}
 
@@ -265,7 +280,11 @@ func (g *BluetoothGatt) HandleGATTMessage(msg *wire.GATTMessage) {
 		shouldDeliver = true
 	} else if msg.Operation == "notify" || msg.Operation == "indicate" {
 		// Only deliver notifications/indications if we subscribed
-		shouldDeliver = g.notifyingCharacteristics != nil && g.notifyingCharacteristics[char.UUID]
+		isSubscribed := g.notifyingCharacteristics != nil && g.notifyingCharacteristics[char.UUID]
+		if !isSubscribed {
+			logger.Debug("BluetoothGatt", "⚠️  Notification/indication ignored - not subscribed to char %s", char.UUID[:8])
+		}
+		shouldDeliver = isSubscribed
 	}
 
 	if shouldDeliver {
