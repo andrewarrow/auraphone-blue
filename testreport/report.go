@@ -16,6 +16,8 @@ type DeviceInfo struct {
 	Platform       string
 	PhotoHash      string // Full 64-char hash
 	PhotoHashShort string // First 8 chars for display
+	FirstName      string // From advertising or mesh_view
+	LastName       string // From own profile
 }
 
 // PhotoMatrix tracks which devices have which photos
@@ -171,6 +173,41 @@ func discoverDevices(dataDir string) ([]DeviceInfo, error) {
 			}
 		}
 
+		// Load first_name from mesh_view.json (gossip protocol)
+		meshViewPath := filepath.Join(dataDir, hardwareUUID, "cache", "mesh_view.json")
+		if data, err := os.ReadFile(meshViewPath); err == nil {
+			var meshView struct {
+				Devices map[string]struct {
+					FirstName string `json:"first_name"`
+				} `json:"devices"`
+			}
+			if json.Unmarshal(data, &meshView) == nil {
+				// Look for ourselves in the mesh view (shouldn't be there, but check)
+				// Actually, mesh_view only contains OTHER devices, not ourselves
+				// So we need to get our own first_name from our own profile
+			}
+		}
+
+		// Load own profile (first_name and last_name)
+		profilePath := filepath.Join(dataDir, hardwareUUID, "cache", "profiles", deviceInfo.DeviceID+".json")
+		if data, err := os.ReadFile(profilePath); err == nil {
+			var profile struct {
+				FirstName string `json:"FirstName"`
+				LastName  string `json:"LastName"`
+			}
+			if json.Unmarshal(data, &profile) == nil {
+				deviceInfo.FirstName = profile.FirstName
+				deviceInfo.LastName = profile.LastName
+			}
+		}
+
+		// If we couldn't load from profile, try to parse from test setup
+		// (test harness often sets first_name in profile map)
+		if deviceInfo.FirstName == "" {
+			// Try to extract from identity_mappings or other sources
+			// For now, leave empty - the report will show this as missing
+		}
+
 		devices = append(devices, deviceInfo)
 	}
 
@@ -311,10 +348,75 @@ func generateReport(timestamp string, devices []DeviceInfo, matrix PhotoMatrix, 
 	// Devices section
 	sb.WriteString("## Devices\n\n")
 	for _, device := range devices {
-		sb.WriteString(fmt.Sprintf("- **%s** (%s, %s) - Photo: %s\n",
-			device.DeviceID, device.HardwareUUID[:8], device.Platform, device.PhotoHashShort))
+		nameInfo := ""
+		if device.FirstName != "" && device.LastName != "" {
+			nameInfo = fmt.Sprintf(" - Name: %s %s", device.FirstName, device.LastName)
+		} else if device.FirstName != "" {
+			nameInfo = fmt.Sprintf(" - Name: %s (last_name missing)", device.FirstName)
+		} else if device.LastName != "" {
+			nameInfo = fmt.Sprintf(" - Name: (first_name missing) %s", device.LastName)
+		} else {
+			nameInfo = " - Name: (not set)"
+		}
+		sb.WriteString(fmt.Sprintf("- **%s** (%s, %s) - Photo: %s%s\n",
+			device.DeviceID, device.HardwareUUID[:8], device.Platform, device.PhotoHashShort, nameInfo))
 	}
 	sb.WriteString("\n")
+
+	// Name Propagation section (shows which devices know about which other devices' names)
+	sb.WriteString("## Name Propagation\n\n")
+	sb.WriteString("Shows which devices have received name information about others via gossip/profile messages.\n\n")
+
+	for _, device := range devices {
+		sb.WriteString(fmt.Sprintf("### Device %s (%s)\n\n", device.DeviceID, device.FirstName))
+
+		// Check mesh_view.json for this device
+		meshViewPath := filepath.Join(dataDir, device.HardwareUUID, "cache", "mesh_view.json")
+		if data, err := os.ReadFile(meshViewPath); err == nil {
+			var meshView struct {
+				Devices map[string]struct {
+					FirstName      string `json:"first_name"`
+					ProfileVersion int32  `json:"profile_version"`
+				} `json:"devices"`
+			}
+			if json.Unmarshal(data, &meshView) == nil && len(meshView.Devices) > 0 {
+				sb.WriteString("**Via Gossip (mesh_view.json):**\n")
+				for deviceID, info := range meshView.Devices {
+					sb.WriteString(fmt.Sprintf("- %s: first_name=%s, profile_v=%d\n", deviceID, info.FirstName, info.ProfileVersion))
+				}
+				sb.WriteString("\n")
+			} else {
+				sb.WriteString("❌ No mesh_view data\n\n")
+			}
+		} else {
+			sb.WriteString("❌ mesh_view.json not found\n\n")
+		}
+
+		// Check profiles directory
+		profilesDir := filepath.Join(dataDir, device.HardwareUUID, "cache", "profiles")
+		if entries, err := os.ReadDir(profilesDir); err == nil && len(entries) > 0 {
+			sb.WriteString("**Via Profile Messages (cache/profiles/):**\n")
+			for _, entry := range entries {
+				if strings.HasSuffix(entry.Name(), ".json") {
+					profilePath := filepath.Join(profilesDir, entry.Name())
+					if data, err := os.ReadFile(profilePath); err == nil {
+						var profile struct {
+							FirstName      string `json:"FirstName"`
+							LastName       string `json:"LastName"`
+							ProfileVersion int32  `json:"ProfileVersion"`
+						}
+						if json.Unmarshal(data, &profile) == nil {
+							deviceID := strings.TrimSuffix(entry.Name(), ".json")
+							sb.WriteString(fmt.Sprintf("- %s: %s %s (profile_v=%d)\n", deviceID, profile.FirstName, profile.LastName, profile.ProfileVersion))
+						}
+					}
+				}
+			}
+			sb.WriteString("\n")
+		} else {
+			sb.WriteString("❌ No cached profiles\n\n")
+		}
+	}
 
 	// Photo Matrix section
 	sb.WriteString("## Photo Matrix (Expected vs Actual)\n\n")

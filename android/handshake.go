@@ -118,10 +118,13 @@ func (a *Android) sendHandshakeViaWire(peerUUID string) {
 }
 
 func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
+	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔍 handleProtocolMessage: %d bytes from %s", len(data), shortHash(peerUUID))
+
 	// Try to parse as GossipMessage first (has MeshView field)
 	var pbGossip pb.GossipMessage
 	err := proto.Unmarshal(data, &pbGossip)
 	if err == nil && len(pbGossip.MeshView) > 0 {
+		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Identified as GossipMessage (mesh_view has %d devices)", len(pbGossip.MeshView))
 		// It's a gossip message
 		a.handleGossipMessage(peerUUID, &pbGossip)
 		return
@@ -132,6 +135,7 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 	var pbHandshake pb.HandshakeMessage
 	err = proto.Unmarshal(data, &pbHandshake)
 	if err == nil && pbHandshake.DeviceId != "" && pbHandshake.ProtocolVersion > 0 {
+		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Identified as HandshakeMessage (protocol_version=%d)", pbHandshake.ProtocolVersion)
 		// It's a handshake
 		a.handleHandshake(peerUUID, &pbHandshake)
 		return
@@ -143,6 +147,7 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 	// The presence of PhotoHash (bytes field 3) is the discriminator
 	var photoReq pb.PhotoRequestMessage
 	if proto.Unmarshal(data, &photoReq) == nil && photoReq.RequesterDeviceId != "" && len(photoReq.PhotoHash) > 0 {
+		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Identified as PhotoRequestMessage")
 		a.handlePhotoRequest(peerUUID, &photoReq)
 		return
 	}
@@ -159,9 +164,11 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 		var testProfile pb.ProfileMessage
 		if proto.Unmarshal(data, &testProfile) == nil && testProfile.ProfileVersion > 0 {
 			// It's actually a ProfileMessage, not a ProfileRequestMessage
+			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔀 Looks like ProfileRequestMessage but has profile_version=%d, treating as ProfileMessage", testProfile.ProfileVersion)
 			// Fall through to ProfileMessage check below
 		} else {
 			// It's a real ProfileRequestMessage
+			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Identified as ProfileRequestMessage (target=%s, version=%d)", profileReq.TargetDeviceId[:8], profileReq.ExpectedVersion)
 			a.handleProfileRequest(peerUUID, &profileReq)
 			return
 		}
@@ -171,12 +178,34 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 	// Check this LAST because it's the most ambiguous (many string fields that could match other messages)
 	// Requires at least one profile field (FirstName, LastName, PhoneNumber, Tagline, or Insta) to be non-empty
 	var profileMsg pb.ProfileMessage
-	if proto.Unmarshal(data, &profileMsg) == nil && profileMsg.DeviceId != "" && (profileMsg.FirstName != "" || profileMsg.PhoneNumber != "" || profileMsg.Tagline != "" || profileMsg.Insta != "" || profileMsg.LastName != "") {
+	parseErr := proto.Unmarshal(data, &profileMsg)
+	hasDeviceID := profileMsg.DeviceId != ""
+	hasProfileFields := profileMsg.FirstName != "" || profileMsg.PhoneNumber != "" || profileMsg.Tagline != "" || profileMsg.Insta != "" || profileMsg.LastName != ""
+
+	taglinePreview := profileMsg.Tagline
+	if len(taglinePreview) > 20 {
+		taglinePreview = taglinePreview[:20]
+	}
+
+	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]),
+		"🔍 ProfileMessage check: parseErr=%v, deviceID=%s, firstName=%s, lastName=%s, tagline=%s, version=%d, hasProfileFields=%v",
+		parseErr, profileMsg.DeviceId[:min(8, len(profileMsg.DeviceId))], profileMsg.FirstName, profileMsg.LastName,
+		taglinePreview, profileMsg.ProfileVersion, hasProfileFields)
+
+	if parseErr == nil && hasDeviceID && hasProfileFields {
+		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Identified as ProfileMessage (device=%s, version=%d)", profileMsg.DeviceId[:8], profileMsg.ProfileVersion)
 		a.handleProfileMessage(peerUUID, &profileMsg)
 		return
 	}
 
-	logger.Warn(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "⚠️  Failed to parse protocol message from %s", shortHash(peerUUID))
+	logger.Warn(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "⚠️  Failed to parse protocol message from %s (%d bytes)", shortHash(peerUUID), len(data))
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (a *Android) handleHandshake(peerUUID string, pbHandshake *pb.HandshakeMessage) {
