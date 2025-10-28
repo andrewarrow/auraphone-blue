@@ -250,22 +250,32 @@ func (m *SocketHealthMonitor) snapshotLoop() {
 func (m *SocketHealthMonitor) writeSnapshot() {
 	m.mu.RLock()
 
-	// Update uptime for sockets
+	// Make deep copies while holding the read lock
+	var peripheralCopy, centralCopy *SocketStats
 	now := time.Now()
-	if m.peripheralSocket != nil && m.peripheralSocket.CreatedAt > 0 {
-		m.peripheralSocket.UptimeSeconds = int(now.Sub(time.Unix(0, m.peripheralSocket.CreatedAt)).Seconds())
-	}
-	if m.centralSocket != nil && m.centralSocket.CreatedAt > 0 {
-		m.centralSocket.UptimeSeconds = int(now.Sub(time.Unix(0, m.centralSocket.CreatedAt)).Seconds())
+
+	if m.peripheralSocket != nil {
+		peripheralCopy = m.copySocketStats(m.peripheralSocket)
+		if peripheralCopy.CreatedAt > 0 {
+			peripheralCopy.UptimeSeconds = int(now.Sub(time.Unix(0, peripheralCopy.CreatedAt)).Seconds())
+		}
 	}
 
-	snapshot := &SocketHealthSnapshot{
-		Timestamp:        now.UnixNano(),
-		PeripheralSocket: m.peripheralSocket,
-		CentralSocket:    m.centralSocket,
+	if m.centralSocket != nil {
+		centralCopy = m.copySocketStats(m.centralSocket)
+		if centralCopy.CreatedAt > 0 {
+			centralCopy.UptimeSeconds = int(now.Sub(time.Unix(0, centralCopy.CreatedAt)).Seconds())
+		}
 	}
 
 	m.mu.RUnlock()
+
+	// Build snapshot from copies (no lock needed)
+	snapshot := &SocketHealthSnapshot{
+		Timestamp:        now.UnixNano(),
+		PeripheralSocket: peripheralCopy,
+		CentralSocket:    centralCopy,
+	}
 
 	// Marshal to JSON
 	data, err := json.MarshalIndent(snapshot, "", "  ")
@@ -280,6 +290,37 @@ func (m *SocketHealthMonitor) writeSnapshot() {
 	}
 
 	os.Rename(tempPath, m.snapshotFile)
+}
+
+// copySocketStats makes a deep copy of SocketStats
+func (m *SocketHealthMonitor) copySocketStats(orig *SocketStats) *SocketStats {
+	if orig == nil {
+		return nil
+	}
+
+	copy := &SocketStats{
+		Path:         orig.Path,
+		CreatedAt:    orig.CreatedAt,
+		UptimeSeconds: orig.UptimeSeconds,
+		TotalErrors:  orig.TotalErrors,
+		Status:       orig.Status,
+		Connections:  make([]*ConnectionStats, len(orig.Connections)),
+	}
+
+	// Deep copy connections
+	for i, conn := range orig.Connections {
+		copy.Connections[i] = &ConnectionStats{
+			RemoteUUID:       conn.RemoteUUID,
+			ConnectedAt:      conn.ConnectedAt,
+			MessagesReceived: conn.MessagesReceived,
+			MessagesSent:     conn.MessagesSent,
+			LastActivity:     conn.LastActivity,
+			Errors:           conn.Errors,
+			LastError:        conn.LastError,
+		}
+	}
+
+	return copy
 }
 
 // Stop stops the snapshot loop and writes final snapshot

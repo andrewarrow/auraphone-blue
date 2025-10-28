@@ -168,13 +168,18 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 		return false
 	}
 
+	// Copy the value before spawning goroutine to avoid race conditions
+	// (caller might modify characteristic.Value after this call returns)
+	valueCopy := make([]byte, len(characteristic.Value))
+	copy(valueCopy, characteristic.Value)
+
 	// Write asynchronously (matches real Android BLE behavior)
 	go func() {
 		var err error
 		if characteristic.WriteType == WRITE_TYPE_NO_RESPONSE {
-			err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, characteristic.Value)
+			err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, valueCopy)
 		} else {
-			err = g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, characteristic.Value)
+			err = g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, valueCopy)
 		}
 
 		if g.callback != nil {

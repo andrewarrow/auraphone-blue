@@ -1,6 +1,7 @@
 package swift
 
 import (
+	"sync"
 	"time"
 
 	"github.com/user/auraphone-blue/wire"
@@ -19,6 +20,7 @@ type CBCentralManager struct {
 	State               string
 	uuid                string
 	wire                *wire.Wire
+	mu                  sync.RWMutex
 	stopChan            chan struct{}
 	pendingPeripherals  map[string]*CBPeripheral // UUID -> peripheral (for auto-reconnect and message routing)
 	autoReconnectActive bool                     // Whether auto-reconnect is enabled
@@ -37,20 +39,27 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedW
 	// Set up disconnect callback
 	sharedWire.SetDisconnectCallback(func(deviceUUID string) {
 		// Connection was randomly dropped
+		cm.mu.RLock()
 		var peripheralCopy CBPeripheral
 		if peripheral, exists := cm.pendingPeripherals[deviceUUID]; exists {
 			peripheralCopy = *peripheral
 		} else {
 			peripheralCopy = CBPeripheral{UUID: deviceUUID}
 		}
+		autoReconnect := cm.autoReconnectActive
+		cm.mu.RUnlock()
 
 		if delegate != nil {
 			delegate.DidDisconnectPeripheral(*cm, peripheralCopy, nil) // nil error = clean disconnect (not an error, just interference/distance)
 		}
 
 		// iOS auto-reconnect: if this peripheral was in pendingPeripherals, try to reconnect
-		if cm.autoReconnectActive {
-			if peripheral, exists := cm.pendingPeripherals[deviceUUID]; exists {
+		if autoReconnect {
+			cm.mu.RLock()
+			peripheral, exists := cm.pendingPeripherals[deviceUUID]
+			cm.mu.RUnlock()
+
+			if exists {
 				// Automatically retry connection in background (matches real iOS behavior)
 				go cm.attemptReconnect(peripheral)
 			}
@@ -61,7 +70,7 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedW
 }
 
 func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map[string]interface{}) {
-	c.stopChan = c.wire.StartDiscovery(func(deviceUUID string) {
+	stopChan := c.wire.StartDiscovery(func(deviceUUID string) {
 		// Read advertising data from the discovered device
 		advData, err := c.wire.ReadAdvertisingData(deviceUUID)
 		if err != nil {
@@ -122,14 +131,31 @@ func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map
 		// Get realistic RSSI from wire layer
 		rssi := float64(c.wire.GetRSSI(deviceUUID))
 
-		c.Delegate.DidDiscoverPeripheral(*c, CBPeripheral{
+		// Make a copy of the manager struct to avoid races when dereferencing
+		c.mu.RLock()
+		managerCopy := CBCentralManager{
+			Delegate: c.Delegate,
+			State:    c.State,
+			uuid:     c.uuid,
+			wire:     c.wire,
+		}
+		c.mu.RUnlock()
+
+		c.Delegate.DidDiscoverPeripheral(managerCopy, CBPeripheral{
 			Name: deviceName,
 			UUID: deviceUUID,
 		}, advertisementData, rssi)
 	})
+
+	c.mu.Lock()
+	c.stopChan = stopChan
+	c.mu.Unlock()
 }
 
 func (c *CBCentralManager) StopScan() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.stopChan != nil {
 		close(c.stopChan)
 		c.stopChan = nil
@@ -185,7 +211,9 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 	peripheral.remoteUUID = peripheral.UUID
 
 	// iOS remembers this peripheral for auto-reconnect
+	c.mu.Lock()
 	c.pendingPeripherals[peripheral.UUID] = peripheral
+	c.mu.Unlock()
 
 	// Attempt realistic connection with timing and potential failure
 	go func() {
@@ -196,7 +224,11 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 			c.Delegate.DidFailToConnectPeripheral(*c, peripheralCopy, err)
 
 			// iOS auto-reconnect: retry connection in background
-			if c.autoReconnectActive {
+			c.mu.RLock()
+			autoReconnect := c.autoReconnectActive
+			c.mu.RUnlock()
+
+			if autoReconnect {
 				go c.attemptReconnect(peripheral)
 			}
 			return
@@ -215,7 +247,11 @@ func (c *CBCentralManager) attemptReconnect(peripheral *CBPeripheral) {
 	time.Sleep(2 * time.Second)
 
 	// Check if still in pending list (app might have cancelled)
-	if _, exists := c.pendingPeripherals[peripheral.UUID]; !exists {
+	c.mu.RLock()
+	_, exists := c.pendingPeripherals[peripheral.UUID]
+	c.mu.RUnlock()
+
+	if !exists {
 		return
 	}
 
@@ -238,7 +274,9 @@ func (c *CBCentralManager) attemptReconnect(peripheral *CBPeripheral) {
 // Stops auto-reconnect for this peripheral (matches real iOS API)
 func (c *CBCentralManager) CancelPeripheralConnection(peripheral *CBPeripheral) {
 	// Remove from pending peripherals to stop auto-reconnect
+	c.mu.Lock()
 	delete(c.pendingPeripherals, peripheral.UUID)
+	c.mu.Unlock()
 
 	// Disconnect if currently connected
 	c.wire.Disconnect(peripheral.UUID)
@@ -250,7 +288,9 @@ func (c *CBCentralManager) CancelPeripheralConnection(peripheral *CBPeripheral) 
 // This ensures notifications from the remote Central are routed to this peripheral's delegate
 func (c *CBCentralManager) RegisterReversePeripheral(peripheral *CBPeripheral) {
 	// Add to pending peripherals so HandleGATTMessage can route notifications to it
+	c.mu.Lock()
 	c.pendingPeripherals[peripheral.UUID] = peripheral
+	c.mu.Unlock()
 }
 
 // HandleGATTMessage processes incoming GATT messages and routes them to the appropriate peripheral
@@ -263,7 +303,9 @@ func (c *CBCentralManager) HandleGATTMessage(peerUUID string, msg *wire.GATTMess
 	}
 
 	// Find the peripheral for this UUID
+	c.mu.RLock()
 	peripheral, exists := c.pendingPeripherals[peerUUID]
+	c.mu.RUnlock()
 	if !exists {
 		return false // Not connected to this peripheral
 	}
