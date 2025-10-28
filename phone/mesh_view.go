@@ -564,6 +564,11 @@ func (mv *MeshView) logGossipAudit(eventType, peerDeviceID string, totalDevices,
 	mv.gossipAuditFile.Write(append(data, '\n'))
 }
 
+// LogGossipSent logs a "sent" gossip event for a specific peer
+func (mv *MeshView) LogGossipSent(peerDeviceID string, totalDevices int) {
+	mv.logGossipAudit("sent", peerDeviceID, totalDevices, 0)
+}
+
 // Close cleans up resources
 func (mv *MeshView) Close() error {
 	mv.SaveToDisk()

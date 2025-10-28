@@ -39,18 +39,9 @@ func (ip *IPhone) sendGossipToConnected() {
 		return // Not time yet
 	}
 
-	// Get list of connected peers
-	ip.mu.RLock()
-	connectedPeers := make([]string, 0, len(ip.connectedPeers))
-	for peerUUID := range ip.connectedPeers {
-		// Get deviceID from hardware UUID
-		if deviceID, exists := ip.identityManager.GetDeviceID(peerUUID); exists {
-			connectedPeers = append(connectedPeers, deviceID)
-		}
-	}
-	ip.mu.RUnlock()
-
-	if len(connectedPeers) == 0 {
+	// Get list of all connected peers (includes both Central and Peripheral connections)
+	connectedPeerUUIDs := ip.wire.GetConnectedPeers()
+	if len(connectedPeerUUIDs) == 0 {
 		return // No one to gossip with
 	}
 
@@ -62,21 +53,40 @@ func (ip *IPhone) sendGossipToConnected() {
 
 	gossipMsg := ip.meshView.BuildGossipMessage(photoHash, profileVersion)
 
-	// Send to all connected peers
+	// Marshal gossip message once
 	data, err := proto.Marshal(gossipMsg)
 	if err != nil {
 		logger.Error(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to marshal gossip: %v", err)
 		return
 	}
 
+	// Send to all connected peers using appropriate method based on role
 	sentCount := 0
-	for _, peerDeviceID := range connectedPeers {
-		// Get hardware UUID from device ID
-		if peerUUID, exists := ip.identityManager.GetHardwareUUID(peerDeviceID); exists {
-			err := ip.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
-			if err == nil {
-				sentCount++
+	for _, peerUUID := range connectedPeerUUIDs {
+		// Determine our role in this connection
+		role, exists := ip.wire.GetConnectionRole(peerUUID)
+		if !exists {
+			continue
+		}
+
+		var sendErr error
+		if role == "central" {
+			// We're Central - write to characteristic
+			sendErr = ip.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+		} else {
+			// We're Peripheral - send notification
+			sendErr = ip.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+		}
+
+		if sendErr == nil {
+			sentCount++
+			// Log successful gossip send for audit trail
+			if deviceID, exists := ip.identityManager.GetDeviceID(peerUUID); exists {
+				ip.meshView.LogGossipSent(deviceID, len(gossipMsg.MeshView))
 			}
+		} else {
+			logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+				"Failed to send gossip to %s (role: %s): %v", shortHash(peerUUID), role, sendErr)
 		}
 	}
 
