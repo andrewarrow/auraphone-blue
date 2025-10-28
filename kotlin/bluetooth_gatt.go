@@ -8,9 +8,10 @@ import (
 
 // BluetoothGattDescriptor represents a BLE descriptor
 type BluetoothGattDescriptor struct {
-	UUID        string
-	Value       []byte
-	Permissions int // PERMISSION_READ, PERMISSION_WRITE, etc.
+	UUID           string
+	Value          []byte
+	Permissions    int                             // PERMISSION_READ, PERMISSION_WRITE, etc.
+	Characteristic *BluetoothGattCharacteristic // Parent characteristic
 }
 
 // Write type constants (matches Android BLE API)

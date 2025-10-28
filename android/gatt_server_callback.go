@@ -83,8 +83,24 @@ func (cb *androidGattServerCallback) OnDescriptorReadRequest(device *kotlin.Blue
 
 func (cb *androidGattServerCallback) OnDescriptorWriteRequest(device *kotlin.BluetoothDevice, requestId int, descriptor *kotlin.BluetoothGattDescriptor, preparedWrite bool, responseNeeded bool, offset int, value []byte) {
 	a := cb.android
+	peerUUID := device.Address
+
 	// CCCD descriptor writes happen when centrals subscribe to notifications
-	// We don't need to do anything special here - just acknowledge
+	// Check if this is a subscribe (value = [0x01, 0x00] for notifications)
+	if len(value) >= 2 && value[0] == 0x01 {
+		// Central subscribed to notifications
+		charUUID := descriptor.Characteristic.UUID
+		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔔 Central %s subscribed to %s",
+			shortHash(peerUUID), shortHash(charUUID))
+
+		// If they subscribed to photo characteristic, send them our photo
+		if charUUID == phone.AuraPhotoCharUUID {
+			logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📸 Central %s subscribed to photo - sending chunks",
+				shortHash(peerUUID))
+			go a.sendPhotoChunks(peerUUID)
+		}
+	}
+
 	if responseNeeded {
 		a.gattServer.SendResponse(device, requestId, kotlin.GATT_SUCCESS, offset, nil)
 	}

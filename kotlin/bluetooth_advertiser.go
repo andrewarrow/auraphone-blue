@@ -481,8 +481,8 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 
 	case "subscribe":
 		// Central is subscribing to notifications
-		// In real BLE, this would write to the CCCD descriptor
-		// For now, just log it - the subscription tracking happens in the wire layer
+		// In real BLE, this would write to the CCCD descriptor (0x2902)
+		// Simulate CCCD write by calling OnDescriptorWriteRequest
 		centralID := device.Address
 		if len(centralID) > 8 {
 			centralID = centralID[:8]
@@ -492,6 +492,15 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 			charID = charID[:8]
 		}
 		logger.Debug(fmt.Sprintf("%s Android", s.uuid[:8]), "📲 Central %s subscribed to characteristic %s", centralID, charID)
+
+		// Simulate CCCD descriptor write (0x01 0x00 = enable notifications)
+		if s.callback != nil {
+			cccdDescriptor := &BluetoothGattDescriptor{
+				UUID:           "00002902-0000-1000-8000-00805f9b34fb", // CCCD UUID
+				Characteristic: targetChar,
+			}
+			s.callback.OnDescriptorWriteRequest(device, requestId, cccdDescriptor, false, true, 0, []byte{0x01, 0x00})
+		}
 
 	case "unsubscribe":
 		// Central is unsubscribing from notifications
