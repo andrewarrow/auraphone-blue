@@ -106,7 +106,7 @@ func discoverDevices(dataDir string) ([]DeviceInfo, error) {
 			HardwareUUID: hardwareUUID,
 		}
 
-		// Load identity mappings to get device ID
+		// Load device ID - try identity_mappings.json first, fall back to cache/device_id.json
 		identityPath := filepath.Join(dataDir, hardwareUUID, "identity_mappings.json")
 		if data, err := os.ReadFile(identityPath); err == nil {
 			var idMap struct {
@@ -114,6 +114,19 @@ func discoverDevices(dataDir string) ([]DeviceInfo, error) {
 			}
 			if json.Unmarshal(data, &idMap) == nil {
 				deviceInfo.DeviceID = idMap.OurDeviceID
+			}
+		}
+
+		// Fall back to cache/device_id.json if identity_mappings.json doesn't exist
+		if deviceInfo.DeviceID == "" {
+			cachePath := filepath.Join(dataDir, hardwareUUID, "cache", "device_id.json")
+			if data, err := os.ReadFile(cachePath); err == nil {
+				var cacheID struct {
+					DeviceID string `json:"device_id"`
+				}
+				if json.Unmarshal(data, &cacheID) == nil {
+					deviceInfo.DeviceID = cacheID.DeviceID
+				}
 			}
 		}
 

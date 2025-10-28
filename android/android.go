@@ -145,6 +145,13 @@ func (a *Android) Stop() {
 		a.gattServer.Close()
 	}
 
+	// Save identity mappings before shutdown
+	if a.identityManager != nil {
+		if err := a.identityManager.SaveToDisk(); err != nil {
+			logger.Warn(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Failed to save identity mappings: %v", err)
+		}
+	}
+
 	// Stop wire
 	if a.wire != nil {
 		a.wire.Stop()

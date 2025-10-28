@@ -23,6 +23,13 @@ func (ip *IPhone) sendProfileMessage(peerUUID string) {
 	deviceID := ip.deviceID
 	ip.mu.RUnlock()
 
+	// Don't send ProfileMessage if profile is empty (no last_name set)
+	// This prevents sending messages that can't be discriminated from HandshakeMessage
+	if profile["last_name"] == "" {
+		logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Skipping profile send to %s (profile not set)", shortHash(peerUUID))
+		return
+	}
+
 	// Build ProfileMessage from map
 	profileMsg := &pb.ProfileMessage{
 		DeviceId:    deviceID,
