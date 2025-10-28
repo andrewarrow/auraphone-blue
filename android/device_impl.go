@@ -57,9 +57,21 @@ func (a *Android) UpdateLocalProfile(profile map[string]string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	// Check if any fields actually changed
+	changed := false
 	for k, v := range profile {
+		if a.profile[k] != v {
+			changed = true
+		}
 		a.profile[k] = v
 	}
-	// TODO: Step 8 - broadcast profile changes
+
+	// Increment version if profile changed
+	if changed {
+		a.profileVersion++
+		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📋 Profile updated, version now: %d", a.profileVersion)
+	}
+
+	// TODO: Step 8 - broadcast profile changes to connected peers
 	return nil
 }

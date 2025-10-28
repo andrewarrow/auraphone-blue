@@ -76,9 +76,21 @@ func (ip *IPhone) UpdateLocalProfile(profile map[string]string) error {
 	ip.mu.Lock()
 	defer ip.mu.Unlock()
 
+	// Check if any fields actually changed
+	changed := false
 	for k, v := range profile {
+		if ip.profile[k] != v {
+			changed = true
+		}
 		ip.profile[k] = v
 	}
-	// TODO: Step 8 - broadcast profile changes
+
+	// Increment version if profile changed
+	if changed {
+		ip.profileVersion++
+		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📋 Profile updated, version now: %d", ip.profileVersion)
+	}
+
+	// TODO: Step 8 - broadcast profile changes to connected peers
 	return nil
 }

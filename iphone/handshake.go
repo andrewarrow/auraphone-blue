@@ -25,6 +25,7 @@ func (ip *IPhone) sendHandshake(peerUUID string) {
 			photoHashBytes = append(photoHashBytes, b)
 		}
 	}
+	profileVersion := ip.profileVersion
 	ip.mu.RUnlock()
 
 	// Use protobuf HandshakeMessage
@@ -32,7 +33,8 @@ func (ip *IPhone) sendHandshake(peerUUID string) {
 		DeviceId:        ip.deviceID,
 		FirstName:       ip.firstName,
 		ProtocolVersion: 1,
-		TxPhotoHash:     photoHashBytes, // Photo hash we're offering to send
+		TxPhotoHash:     photoHashBytes,  // Photo hash we're offering to send
+		ProfileVersion:  profileVersion, // Current profile version
 	}
 
 	data, err := proto.Marshal(pbHandshake)

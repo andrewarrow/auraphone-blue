@@ -52,12 +52,13 @@ type IPhone struct {
 	gossipTicker *time.Ticker
 	stopGossip   chan struct{}
 
-	mu           sync.RWMutex
-	callback     phone.DeviceDiscoveryCallback
-	profilePhoto string
-	photoHash    string // SHA-256 hash of our current profile photo
-	photoData    []byte // Our current profile photo data
-	profile      map[string]string
+	mu             sync.RWMutex
+	callback       phone.DeviceDiscoveryCallback
+	profilePhoto   string
+	photoHash      string            // SHA-256 hash of our current profile photo
+	photoData      []byte            // Our current profile photo data
+	profile        map[string]string // Profile fields (last_name, tagline, etc.)
+	profileVersion int32             // Increments on any profile change
 }
 
 // photoTransferDelegate handles service discovery for photo transfers

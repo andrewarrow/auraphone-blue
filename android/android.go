@@ -51,6 +51,7 @@ func NewAndroid(hardwareUUID string) *Android {
 		meshView:        meshView,
 		stopGossip:      make(chan struct{}),
 		profile:         make(map[string]string),
+		profileVersion:  1, // Start at version 1
 	}
 }
 
