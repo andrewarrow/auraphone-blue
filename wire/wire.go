@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/user/auraphone-blue/logger"
 )
 
 // ConnectionRole represents the role in a specific connection
@@ -830,6 +832,8 @@ func (w *Wire) WriteAdvertisingData(data *AdvertisingData) error {
 // NotifyCharacteristic sends a notification (stub for old API)
 // TODO Step 6: Implement via SendGATTMessage notification
 func (w *Wire) NotifyCharacteristic(peerUUID, serviceUUID, charUUID string, data []byte) error {
+	logger.Debug(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "📤 NotifyCharacteristic to %s: svc=%s, char=%s, len=%d",
+		peerUUID[:8], serviceUUID[:8], charUUID[:8], len(data))
 	msg := &GATTMessage{
 		Type:               "gatt_notification",
 		Operation:          "notify",
@@ -837,7 +841,11 @@ func (w *Wire) NotifyCharacteristic(peerUUID, serviceUUID, charUUID string, data
 		CharacteristicUUID: charUUID,
 		Data:               data,
 	}
-	return w.SendGATTMessage(peerUUID, msg)
+	err := w.SendGATTMessage(peerUUID, msg)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "❌ NotifyCharacteristic failed: %v", err)
+	}
+	return err
 }
 
 // ReadAndConsumeCharacteristicMessagesFromInbox reads messages (stub for old API)

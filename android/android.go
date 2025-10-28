@@ -211,7 +211,7 @@ func (a *Android) startScanning() {
 // handleGATTMessage routes incoming GATT messages to the appropriate handler
 // This is the central message routing point - ALL messages come through here
 func (a *Android) handleGATTMessage(peerUUID string, msg *wire.GATTMessage) {
-	logger.Trace(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📬 GATT message from %s: type=%s, op=%s, char=%s",
+	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📬 GATT message from %s: type=%s, op=%s, char=%s",
 		shortHash(peerUUID), msg.Type, msg.Operation, shortHash(msg.CharacteristicUUID))
 
 	// Route to appropriate handler based on message type
@@ -223,12 +223,16 @@ func (a *Android) handleGATTMessage(peerUUID string, msg *wire.GATTMessage) {
 	gatt, exists := a.connectedGatts[peerUUID]
 	a.mu.RUnlock()
 
+	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "   🔍 GATT client exists=%v, gatt=%v", exists, gatt != nil)
+
 	if exists && gatt != nil {
+		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "   ➡️  Routing to GATT client")
 		gatt.HandleGATTMessage(msg)
 	}
 
 	// Try GATT server (handles requests from centrals connecting to us)
 	if a.advertiser != nil {
+		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "   ➡️  Routing to GATT server")
 		a.advertiser.HandleGATTMessage(msg)
 	}
 }

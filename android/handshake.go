@@ -148,17 +148,22 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 		return
 	}
 
-	// Try to parse as ProfileRequestMessage (has RequesterDeviceId field)
-	var profileReq pb.ProfileRequestMessage
-	if proto.Unmarshal(data, &profileReq) == nil && profileReq.RequesterDeviceId != "" && profileReq.TargetDeviceId != "" {
-		a.handleProfileRequest(peerUUID, &profileReq)
-		return
-	}
-
 	// Try to parse as PhotoRequestMessage (has RequesterDeviceId and PhotoHash)
+	// MUST check this BEFORE ProfileRequestMessage because both have fields 1 and 2!
+	// PhotoRequestMessage: requester_device_id(1), target_device_id(2), photo_hash(3) [bytes]
+	// ProfileRequestMessage: requester_device_id(1), target_device_id(2), expected_version(3) [int32]
+	// The presence of PhotoHash (bytes field 3) is the discriminator
 	var photoReq pb.PhotoRequestMessage
 	if proto.Unmarshal(data, &photoReq) == nil && photoReq.RequesterDeviceId != "" && len(photoReq.PhotoHash) > 0 {
 		a.handlePhotoRequest(peerUUID, &photoReq)
+		return
+	}
+
+	// Try to parse as ProfileRequestMessage (has RequesterDeviceId and ExpectedVersion)
+	// Check this AFTER PhotoRequestMessage to avoid false match
+	var profileReq pb.ProfileRequestMessage
+	if proto.Unmarshal(data, &profileReq) == nil && profileReq.RequesterDeviceId != "" && profileReq.TargetDeviceId != "" {
+		a.handleProfileRequest(peerUUID, &profileReq)
 		return
 	}
 
