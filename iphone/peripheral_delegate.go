@@ -41,16 +41,8 @@ func (ip *IPhone) DidReceiveWriteRequests(peripheralManager *swift.CBPeripheralM
 
 		// Handle based on characteristic
 		if request.Characteristic.UUID == phone.AuraProtocolCharUUID {
-			// Protocol characteristic receives both handshakes and gossip messages
-			// Try to distinguish by parsing as gossip first (has MeshView field)
-			var gossipMsg pb.GossipMessage
-			if proto.Unmarshal(request.Value, &gossipMsg) == nil && len(gossipMsg.MeshView) > 0 {
-				// It's a gossip message
-				ip.handleGossipMessage(request.Central.UUID, request.Value)
-			} else {
-				// It's a handshake message
-				ip.handleHandshake(request.Central.UUID, request.Value)
-			}
+			// Protocol characteristic receives handshakes, gossip, profile messages, and profile requests
+			ip.handleProtocolMessage(request.Central.UUID, request.Value)
 		} else if request.Characteristic.UUID == phone.AuraPhotoCharUUID {
 			// Photo data
 			ip.handlePhotoData(request.Central.UUID, request.Value)

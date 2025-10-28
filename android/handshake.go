@@ -113,7 +113,7 @@ func (a *Android) sendHandshakeViaWire(peerUUID string) {
 }
 
 func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
-	// Try to parse as GossipMessage first (check for MeshView field to distinguish from handshake)
+	// Try to parse as GossipMessage first (has MeshView field)
 	var pbGossip pb.GossipMessage
 	err := proto.Unmarshal(data, &pbGossip)
 	if err == nil && len(pbGossip.MeshView) > 0 {
@@ -122,7 +122,21 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 		return
 	}
 
-	// Try to parse as HandshakeMessage
+	// Try to parse as ProfileMessage (has LastName field)
+	var profileMsg pb.ProfileMessage
+	if proto.Unmarshal(data, &profileMsg) == nil && profileMsg.DeviceId != "" && profileMsg.LastName != "" {
+		a.handleProfileMessage(peerUUID, &profileMsg)
+		return
+	}
+
+	// Try to parse as ProfileRequestMessage (has RequesterDeviceId field)
+	var profileReq pb.ProfileRequestMessage
+	if proto.Unmarshal(data, &profileReq) == nil && profileReq.RequesterDeviceId != "" && profileReq.TargetDeviceId != "" {
+		a.handleProfileRequest(peerUUID, &profileReq)
+		return
+	}
+
+	// Try to parse as HandshakeMessage (has DeviceId field)
 	var pbHandshake pb.HandshakeMessage
 	err = proto.Unmarshal(data, &pbHandshake)
 	if err == nil && pbHandshake.DeviceId != "" {
@@ -232,6 +246,9 @@ func (a *Android) handleHandshake(peerUUID string, pbHandshake *pb.HandshakeMess
 		} else {
 			logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "⚠️ Cannot send handshake back to %s - no connection", shortHash(peerUUID))
 		}
+
+		// Send ProfileMessage after handshake completes
+		a.sendProfileMessage(peerUUID)
 	}
 
 	// Check if we need to start a photo transfer

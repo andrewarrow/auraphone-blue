@@ -1,6 +1,7 @@
 package phone
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 )
@@ -71,8 +72,37 @@ type DeviceMetadata struct {
 	Telegram  string
 }
 
-// LoadDeviceMetadata loads metadata for a device (stub for now)
+// LoadDeviceMetadata loads metadata for a device
 func (m *DeviceCacheManager) LoadDeviceMetadata(deviceID string) (*DeviceMetadata, error) {
-	// For now, return empty metadata (will be implemented when we add handshake/profile exchange)
-	return &DeviceMetadata{}, nil
+	metadataPath := filepath.Join(GetDeviceCacheDir(m.deviceUUID), "cache", "profiles", deviceID+".json")
+
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		// Return empty metadata if file doesn't exist
+		return &DeviceMetadata{}, nil
+	}
+
+	var metadata DeviceMetadata
+	err = json.Unmarshal(data, &metadata)
+	if err != nil {
+		return nil, err
+	}
+
+	return &metadata, nil
+}
+
+// SaveDeviceMetadata saves metadata for a device
+func (m *DeviceCacheManager) SaveDeviceMetadata(deviceID string, metadata *DeviceMetadata) error {
+	profilesDir := filepath.Join(GetDeviceCacheDir(m.deviceUUID), "cache", "profiles")
+	if err := os.MkdirAll(profilesDir, 0755); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	metadataPath := filepath.Join(profilesDir, deviceID+".json")
+	return os.WriteFile(metadataPath, data, 0644)
 }

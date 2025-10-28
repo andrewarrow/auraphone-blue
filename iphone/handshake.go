@@ -50,6 +50,39 @@ func (ip *IPhone) sendHandshake(peerUUID string) {
 	}
 }
 
+// handleProtocolMessage routes incoming protocol messages (handshake, gossip, profile, profile request)
+func (ip *IPhone) handleProtocolMessage(peerUUID string, data []byte) {
+	// Try to parse as GossipMessage first (has MeshView field)
+	var gossipMsg pb.GossipMessage
+	if proto.Unmarshal(data, &gossipMsg) == nil && len(gossipMsg.MeshView) > 0 {
+		ip.handleGossipMessage(peerUUID, data)
+		return
+	}
+
+	// Try to parse as ProfileMessage (has LastName field)
+	var profileMsg pb.ProfileMessage
+	if proto.Unmarshal(data, &profileMsg) == nil && profileMsg.DeviceId != "" && profileMsg.LastName != "" {
+		ip.handleProfileMessage(peerUUID, &profileMsg)
+		return
+	}
+
+	// Try to parse as ProfileRequestMessage (has RequesterDeviceId field)
+	var profileReq pb.ProfileRequestMessage
+	if proto.Unmarshal(data, &profileReq) == nil && profileReq.RequesterDeviceId != "" && profileReq.TargetDeviceId != "" {
+		ip.handleProfileRequest(peerUUID, &profileReq)
+		return
+	}
+
+	// Try to parse as HandshakeMessage (has DeviceId field)
+	var pbHandshake pb.HandshakeMessage
+	if proto.Unmarshal(data, &pbHandshake) == nil && pbHandshake.DeviceId != "" {
+		ip.handleHandshakeProto(&pbHandshake, peerUUID)
+		return
+	}
+
+	logger.Warn(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "⚠️  Failed to parse protocol message from %s", shortHash(peerUUID))
+}
+
 func (ip *IPhone) handleHandshake(peerUUID string, data []byte) {
 	// Try to parse as protobuf first
 	var pbHandshake pb.HandshakeMessage
@@ -66,6 +99,11 @@ func (ip *IPhone) handleHandshake(peerUUID string, data []byte) {
 		pbHandshake.DeviceId = jsonHandshake.DeviceID
 		pbHandshake.FirstName = jsonHandshake.FirstName
 	}
+
+	ip.handleHandshakeProto(&pbHandshake, peerUUID)
+}
+
+func (ip *IPhone) handleHandshakeProto(pbHandshake *pb.HandshakeMessage, peerUUID string) {
 
 	// Convert photo hash bytes to hex string
 	photoHashHex := ""
@@ -119,6 +157,9 @@ func (ip *IPhone) handleHandshake(peerUUID string, data []byte) {
 	if !alreadyHandshaked {
 		logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "🤝 Sending handshake back to %s", shortHash(peerUUID))
 		ip.sendHandshake(peerUUID)
+
+		// Send ProfileMessage after handshake completes
+		ip.sendProfileMessage(peerUUID)
 	}
 
 	// Check if we need to start a photo transfer
