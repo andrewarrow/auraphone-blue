@@ -1,4 +1,4 @@
-package main
+package testreport
 
 import (
 	"encoding/json"
@@ -31,10 +31,10 @@ type TestIssue struct {
 	Timeline    []string
 }
 
-func main() {
-	dataDir := os.ExpandEnv("$HOME/.auraphone-blue-data")
-	if len(os.Args) > 1 {
-		dataDir = os.Args[1]
+// Generate creates a test report from the data directory
+func Generate(dataDir string) error {
+	if dataDir == "" {
+		dataDir = os.ExpandEnv("$HOME/.auraphone-blue-data")
 	}
 
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
@@ -46,13 +46,11 @@ func main() {
 	// Discover all devices
 	devices, err := discoverDevices(dataDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error discovering devices: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("error discovering devices: %w", err)
 	}
 
 	if len(devices) == 0 {
-		fmt.Fprintf(os.Stderr, "No devices found in %s\n", dataDir)
-		os.Exit(1)
+		return fmt.Errorf("no devices found in %s", dataDir)
 	}
 
 	fmt.Printf("Found %d devices\n", len(devices))
@@ -68,8 +66,7 @@ func main() {
 
 	// Write report
 	if err := os.WriteFile(reportPath, []byte(report), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing report: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("error writing report: %w", err)
 	}
 
 	fmt.Printf("✅ Report written to: %s\n", reportPath)
@@ -83,6 +80,8 @@ func main() {
 	} else {
 		fmt.Printf("\n✅ All tests passed!\n")
 	}
+
+	return nil
 }
 
 func discoverDevices(dataDir string) ([]DeviceInfo, error) {
