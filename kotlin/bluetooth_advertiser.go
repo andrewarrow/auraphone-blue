@@ -61,7 +61,6 @@ type BluetoothLeAdvertiser struct {
 	wire            *wire.Wire
 	isAdvertising   bool
 	stopAdvertising chan struct{}
-	stopListening   chan struct{}
 	callback        AdvertiseCallback
 	settings        *AdvertiseSettings
 	gattServer      *BluetoothGattServer
@@ -163,9 +162,6 @@ func (a *BluetoothLeAdvertiser) StartAdvertising(
 
 	logger.Info(fmt.Sprintf("%s Android", a.uuid[:8]), "📡 Started Advertising")
 
-	// Start listening for incoming connections
-	a.startListeningForRequests()
-
 	// Handle timeout if specified
 	if settings.Timeout > 0 {
 		go func() {
@@ -200,11 +196,6 @@ func (a *BluetoothLeAdvertiser) StopAdvertising() {
 		a.stopAdvertising = nil
 	}
 
-	if a.stopListening != nil {
-		close(a.stopListening)
-		a.stopListening = nil
-	}
-
 	a.isAdvertising = false
 
 	logger.Info(fmt.Sprintf("%s Android", a.uuid[:8]), "📡 Stopped Advertising")
@@ -231,47 +222,13 @@ func (a *BluetoothLeAdvertiser) txPowerLevelToDbm(level int) int {
 	}
 }
 
-// startListeningForRequests listens for incoming GATT requests
-func (a *BluetoothLeAdvertiser) startListeningForRequests() {
-	if a.stopListening != nil {
-		// Already listening
-		return
+// HandleGATTMessage is called by android.go when a GATT message arrives in peripheral mode
+// This replaces the old inbox polling mechanism with direct message delivery
+func (a *BluetoothLeAdvertiser) HandleGATTMessage(msg *wire.GATTMessage) {
+	// Forward to GATT server
+	if a.gattServer != nil {
+		a.gattServer.handleCharacteristicMessage(msg)
 	}
-
-	a.stopListening = make(chan struct{})
-
-	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-a.stopListening:
-				return
-			case <-ticker.C:
-				// Peripheral mode: read from peripheral_inbox (writes from centrals)
-				messages, err := a.wire.ReadAndConsumeCharacteristicMessagesFromInbox("peripheral_inbox")
-				if err != nil {
-					continue
-				}
-
-				if len(messages) > 0 {
-					logger.Debug(fmt.Sprintf("%s Android", a.uuid[:8]), "📬 Peripheral inbox: received %d messages", len(messages))
-				}
-
-				// Process peripheral-mode operations - all messages are meant for us
-				for _, msg := range messages {
-					logger.Debug(fmt.Sprintf("%s Android", a.uuid[:8]), "📬 Processing message: op=%s, char=%s, from=%s", msg.Operation, msg.CharUUID[:8], msg.SenderUUID[:8])
-					// Forward to GATT server
-					if a.gattServer != nil {
-						a.gattServer.handleCharacteristicMessage(msg)
-					} else {
-						logger.Warn(fmt.Sprintf("%s Android", a.uuid[:8]), "⚠️  GATT server is nil, cannot process message!")
-					}
-				}
-			}
-		}
-	}()
 }
 
 // BluetoothGattServer matches Android's BluetoothGattServer class

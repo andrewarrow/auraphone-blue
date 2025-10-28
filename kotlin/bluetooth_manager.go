@@ -9,9 +9,9 @@ type BluetoothManager struct {
 	uuid    string
 }
 
-func NewBluetoothManager(uuid string) *BluetoothManager {
+func NewBluetoothManager(uuid string, sharedWire *wire.Wire) *BluetoothManager {
 	return &BluetoothManager{
-		Adapter: NewBluetoothAdapter(uuid),
+		Adapter: NewBluetoothAdapter(uuid, sharedWire),
 		uuid:    uuid,
 	}
 }
@@ -27,21 +27,24 @@ type BluetoothAdapter struct {
 	advertiser *BluetoothLeAdvertiser
 	uuid       string
 	deviceName string
+	wire       *wire.Wire
 }
 
-func NewBluetoothAdapter(uuid string) *BluetoothAdapter {
+func NewBluetoothAdapter(uuid string, sharedWire *wire.Wire) *BluetoothAdapter {
 	return &BluetoothAdapter{
-		scanner: NewBluetoothLeScanner(uuid),
+		scanner: NewBluetoothLeScanner(uuid, sharedWire),
 		uuid:    uuid,
+		wire:    sharedWire,
 	}
 }
 
 // NewBluetoothAdapterWithDeviceName creates an adapter with device name for advertising
-func NewBluetoothAdapterWithDeviceName(uuid string, deviceName string) *BluetoothAdapter {
+func NewBluetoothAdapterWithDeviceName(uuid string, deviceName string, sharedWire *wire.Wire) *BluetoothAdapter {
 	return &BluetoothAdapter{
-		scanner:    NewBluetoothLeScanner(uuid),
+		scanner:    NewBluetoothLeScanner(uuid, sharedWire),
 		uuid:       uuid,
 		deviceName: deviceName,
+		wire:       sharedWire,
 	}
 }
 
@@ -60,9 +63,9 @@ func (a *BluetoothAdapter) ShouldInitiateConnection(targetUUID string) bool {
 
 // GetBluetoothLeAdvertiser returns the advertiser for peripheral mode
 // Matches: bluetoothAdapter.getBluetoothLeAdvertiser()
-func (a *BluetoothAdapter) GetBluetoothLeAdvertiser(sharedWire *wire.Wire) *BluetoothLeAdvertiser {
+func (a *BluetoothAdapter) GetBluetoothLeAdvertiser() *BluetoothLeAdvertiser {
 	if a.advertiser == nil {
-		a.advertiser = NewBluetoothLeAdvertiser(a.uuid, a.deviceName, sharedWire)
+		a.advertiser = NewBluetoothLeAdvertiser(a.uuid, a.deviceName, a.wire)
 	}
 	return a.advertiser
 }
@@ -71,14 +74,14 @@ func (a *BluetoothAdapter) GetBluetoothLeAdvertiser(sharedWire *wire.Wire) *Blue
 // Matches: bluetoothAdapter.getRemoteDevice(address)
 // This allows connecting to devices by address without scanning (learned via gossip)
 // In real Android, this always succeeds even if device doesn't exist (connection will fail later)
-func (a *BluetoothAdapter) GetRemoteDevice(address string, sharedWire *wire.Wire) *BluetoothDevice {
+func (a *BluetoothAdapter) GetRemoteDevice(address string) *BluetoothDevice {
 	// Check if device exists (optional - real Android doesn't check this)
-	if !sharedWire.DeviceExists(address) {
+	if !a.wire.DeviceExists(address) {
 		return nil // Device not reachable
 	}
 
 	// Read advertising data to get device name if available
-	advData, err := sharedWire.ReadAdvertisingData(address)
+	advData, err := a.wire.ReadAdvertisingData(address)
 	deviceName := "Unknown Device"
 	if err == nil && advData.DeviceName != "" {
 		deviceName = advData.DeviceName
@@ -88,7 +91,7 @@ func (a *BluetoothAdapter) GetRemoteDevice(address string, sharedWire *wire.Wire
 		Name:    deviceName,
 		Address: address,
 	}
-	device.SetWire(sharedWire)
+	device.SetWire(a.wire)
 
 	return device
 }
@@ -100,23 +103,11 @@ type BluetoothLeScanner struct {
 	stopChan chan struct{}
 }
 
-func NewBluetoothLeScanner(uuid string) *BluetoothLeScanner {
-	w := wire.NewWire(uuid)
-
+func NewBluetoothLeScanner(uuid string, sharedWire *wire.Wire) *BluetoothLeScanner {
 	scanner := &BluetoothLeScanner{
 		uuid: uuid,
-		wire: w,
+		wire: sharedWire,
 	}
-
-	// Set up disconnect callback - will be used when connections are made
-	w.SetDisconnectCallback(func(deviceUUID string) {
-		// Connection was randomly dropped
-		// Callback will be triggered on individual GATT connections
-		if scanner.callback != nil {
-			// Note: We don't have direct access to the gatt object here
-			// The gatt's callback will need to be notified through wire state
-		}
-	})
 
 	return scanner
 }
