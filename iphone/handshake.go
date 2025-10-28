@@ -26,6 +26,7 @@ func (ip *IPhone) sendHandshake(peerUUID string) {
 		}
 	}
 	profileVersion := ip.profileVersion
+	peripheral := ip.connectedPeers[peerUUID]
 	ip.mu.RUnlock()
 
 	// Use protobuf HandshakeMessage
@@ -43,10 +44,19 @@ func (ip *IPhone) sendHandshake(peerUUID string) {
 		return
 	}
 
-	// Write to peer's AuraProtocolCharUUID
-	err = ip.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
-	if err != nil {
-		logger.Error(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to send handshake to %s: %v", shortHash(peerUUID), err)
+	// Determine if we're acting as Central or Peripheral for this connection
+	// If we have a CBPeripheral for this peer, we're Central. Otherwise, we're Peripheral.
+	var sendErr error
+	if peripheral != nil {
+		// We're Central - write to characteristic
+		sendErr = ip.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	} else {
+		// We're Peripheral - send notification (realistic BLE behavior)
+		sendErr = ip.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	}
+
+	if sendErr != nil {
+		logger.Error(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to send handshake to %s: %v", shortHash(peerUUID), sendErr)
 	} else {
 		logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "🤝 Sent handshake to %s (photo: %s)", shortHash(peerUUID), shortHash(ip.photoHash))
 	}

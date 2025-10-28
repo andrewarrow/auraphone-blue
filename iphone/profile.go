@@ -53,10 +53,23 @@ func (ip *IPhone) sendProfileMessage(peerUUID string) {
 		return
 	}
 
-	// Write to peer's AuraProtocolCharUUID
-	err = ip.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
-	if err != nil {
-		logger.Error(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to send profile to %s: %v", shortHash(peerUUID), err)
+	// Determine if we're acting as Central or Peripheral for this connection
+	ip.mu.RLock()
+	peripheral := ip.connectedPeers[peerUUID]
+	ip.mu.RUnlock()
+
+	// Send profile via appropriate method based on our role
+	var err2 error
+	if peripheral != nil {
+		// We're Central - write to characteristic
+		err2 = ip.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	} else {
+		// We're Peripheral - send notification (realistic BLE behavior)
+		err2 = ip.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	}
+
+	if err2 != nil {
+		logger.Error(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to send profile to %s: %v", shortHash(peerUUID), err2)
 	} else {
 		logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "📋 Sent profile to %s", shortHash(peerUUID))
 	}

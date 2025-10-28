@@ -248,23 +248,10 @@ func (ip *IPhone) handleIncomingCentralConnection(peerUUID string) {
 		}
 	}
 
-	// Create CBPeripheral object for the Central that connected to us
-	// This allows us to make requests back to them
-	peripheral := swift.NewCBPeripheralFromConnection(peerUUID, deviceName, ip.wire)
+	// Note: In real BLE, when a Central connects to us (we're Peripheral), we CANNOT
+	// create a CBPeripheral object to discover their services. We can only send
+	// notifications back on our own characteristics (which they've subscribed to).
+	// This is the proper BLE behavior - Peripherals respond via notifications, not writes.
 
-	ip.connectedPeers[peerUUID] = peripheral
-
-	// Register with central manager so notifications are routed correctly
-	// This is critical for bidirectional communication: even though we're Peripheral
-	// in the BLE connection, we can still receive notifications from the Central
-	ip.central.RegisterReversePeripheral(peripheral)
-
-	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🔌 Central %s connected (created reverse peripheral object)", shortHash(peerUUID))
-
-	// Discover services immediately so we can request photos from them later
-	// This is done asynchronously to avoid blocking
-	go func() {
-		peripheral.DiscoverServices([]string{phone.AuraServiceUUID})
-		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "✅ Services discovered on reverse peripheral %s", shortHash(peerUUID))
-	}()
+	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🔌 Central %s connected (acting as Peripheral)", shortHash(peerUUID))
 }

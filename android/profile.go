@@ -53,10 +53,23 @@ func (a *Android) sendProfileMessage(peerUUID string) {
 		return
 	}
 
-	// Write to peer's AuraProtocolCharUUID
-	err = a.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
-	if err != nil {
-		logger.Error(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to send profile to %s: %v", shortHash(peerUUID), err)
+	// Determine if we're acting as Central or Peripheral for this connection
+	a.mu.RLock()
+	gatt := a.connectedGatts[peerUUID]
+	a.mu.RUnlock()
+
+	// Send profile via appropriate method based on our role
+	var err2 error
+	if gatt != nil {
+		// We're Central - write to characteristic
+		err2 = a.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	} else {
+		// We're Peripheral - send notification
+		err2 = a.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	}
+
+	if err2 != nil {
+		logger.Error(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to send profile to %s: %v", shortHash(peerUUID), err2)
 	} else {
 		logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📋 Sent profile to %s", shortHash(peerUUID))
 	}

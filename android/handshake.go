@@ -103,14 +103,15 @@ func (a *Android) sendHandshakeViaWire(peerUUID string) {
 		return
 	}
 
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Calling wire.WriteCharacteristic")
+	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Calling wire.NotifyCharacteristic (acting as Peripheral)")
 
-	// Write directly to wire
-	err = a.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	// Send notification via wire (Peripherals send notifications, not writes)
+	// This is the realistic BLE behavior: when we're Peripheral, we can only respond via notifications
+	err = a.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
 	if err != nil {
-		logger.Error(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to send handshake to %s: %v", shortHash(peerUUID), err)
+		logger.Error(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to send handshake notification to %s: %v", shortHash(peerUUID), err)
 	} else {
-		logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🤝 Sent handshake to %s (photo: %s)", shortHash(peerUUID), shortHash(a.photoHash))
+		logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🤝 Sent handshake via notification to %s (photo: %s)", shortHash(peerUUID), shortHash(a.photoHash))
 	}
 
 	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 sendHandshakeViaWire completed for peer %s", shortHash(peerUUID))

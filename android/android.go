@@ -283,28 +283,10 @@ func (a *Android) handleIncomingCentralConnection(peerUUID string) {
 		}
 	}
 
-	// Create BluetoothDevice for the Central that connected to us
-	device := &kotlin.BluetoothDevice{
-		Name:    deviceName,
-		Address: peerUUID,
-	}
+	// Note: In real BLE, when a Central connects to us (we're Peripheral), we CANNOT
+	// create a reverse GATT client to discover their services. We can only send
+	// notifications back on our own characteristics (which they've subscribed to).
+	// This is the proper BLE behavior - Peripherals respond via notifications, not writes.
 
-	// Create BluetoothGatt object for the Central that connected to us
-	// This allows us to make requests back to them
-	gatt := kotlin.NewBluetoothGattFromConnection(device, a, a.wire)
-
-	a.connectedGatts[peerUUID] = gatt
-
-	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔌 Central %s connected (created reverse GATT client)", shortHash(peerUUID))
-
-	// Discover services immediately so we can request photos from them later
-	// This is done asynchronously to avoid blocking
-	go func() {
-		success := gatt.DiscoverServices()
-		if success {
-			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Services discovered on reverse GATT client %s", shortHash(peerUUID))
-		} else {
-			logger.Warn(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "⚠️  Failed to discover services on reverse GATT client %s", shortHash(peerUUID))
-		}
-	}()
+	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔌 Central %s connected (acting as Peripheral)", shortHash(peerUUID))
 }
