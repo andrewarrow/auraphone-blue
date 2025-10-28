@@ -11,14 +11,9 @@ import (
 	"github.com/user/auraphone-blue/phone"
 )
 
-// TestBasicDiscoveryNoProfile tests that one iPhone and one Android can discover each other
-// and exchange handshakes WITHOUT profile data (since profile is not set).
-// This test isolates BLE behavior from GUI logic.
-func TestBasicDiscoveryNoProfile(t *testing.T) {
-	// Hardware UUIDs for test devices
-	iphoneUUID := "11111111-1111-1111-1111-111111111111"
-	androidUUID := "22222222-2222-2222-2222-222222222222"
-
+// testBasicDiscoveryNoProfile is the shared test logic for handshake verification.
+// It creates one iPhone and one Android, verifies bidirectional discovery and handshake exchange.
+func testBasicDiscoveryNoProfile(t *testing.T, iphoneUUID, androidUUID string) {
 	// Clean up data directories from previous runs to ensure fresh state
 	dataDir := phone.GetDataDir()
 	iphoneDataDir := filepath.Join(dataDir, iphoneUUID)
@@ -151,4 +146,20 @@ func TestBasicDiscoveryNoProfile(t *testing.T) {
 	droid.Stop()
 
 	t.Logf("✅ Test passed: Basic discovery without profile data works correctly")
+}
+
+// TestBasicDiscoveryNoProfileAndroidCentral tests handshake exchange when Android acts as Central.
+// Android UUID (222...) > iPhone UUID (111...), so Android initiates the connection.
+func TestBasicDiscoveryNoProfileAndroidCentral(t *testing.T) {
+	iphoneUUID := "11111111-1111-1111-1111-111111111111"  // Lower UUID
+	androidUUID := "22222222-2222-2222-2222-222222222222" // Higher UUID → acts as Central
+	testBasicDiscoveryNoProfile(t, iphoneUUID, androidUUID)
+}
+
+// TestBasicDiscoveryNoProfileAndroidPeripheral tests handshake exchange when Android acts as Peripheral.
+// iPhone UUID (222...) > Android UUID (111...), so iPhone initiates the connection.
+func TestBasicDiscoveryNoProfileAndroidPeripheral(t *testing.T) {
+	androidUUID := "11111111-1111-1111-1111-111111111111" // Lower UUID
+	iphoneUUID := "22222222-2222-2222-2222-222222222222"  // Higher UUID → acts as Central
+	testBasicDiscoveryNoProfile(t, iphoneUUID, androidUUID)
 }
