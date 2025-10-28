@@ -57,9 +57,10 @@ func (ip *IPhone) sendGossipToConnected() {
 	// Build gossip message with our current mesh view
 	ip.mu.RLock()
 	photoHash := ip.photoHash
+	profileVersion := ip.profileVersion
 	ip.mu.RUnlock()
 
-	gossipMsg := ip.meshView.BuildGossipMessage(photoHash)
+	gossipMsg := ip.meshView.BuildGossipMessage(photoHash, profileVersion)
 
 	// Send to all connected peers
 	data, err := proto.Marshal(gossipMsg)
@@ -117,6 +118,21 @@ func (ip *IPhone) handleGossipMessage(peerUUID string, data []byte) {
 
 				ip.meshView.MarkPhotoRequested(device.DeviceID)
 				go ip.requestAndReceivePhoto(peerUUID, device.PhotoHash, device.DeviceID)
+			}
+		}
+	}
+
+	// Check for profiles we need to update
+	outdatedProfiles := ip.meshView.GetDevicesWithOutdatedProfiles()
+	for _, device := range outdatedProfiles {
+		// Only request from directly connected devices
+		if peerUUID, exists := ip.identityManager.GetHardwareUUID(device.DeviceID); exists {
+			if ip.meshView.IsDeviceConnected(device.DeviceID) {
+				logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+					"📋 Requesting updated profile v%d for %s (learned via gossip)",
+					device.ProfileVersion, shortHash(device.DeviceID))
+
+				go ip.sendProfileRequest(peerUUID, device.DeviceID)
 			}
 		}
 	}

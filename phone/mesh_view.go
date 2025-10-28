@@ -195,6 +195,41 @@ func (mv *MeshView) GetMissingPhotos() []*MeshDeviceState {
 	return missing
 }
 
+// GetDevicesWithOutdatedProfiles returns devices whose cached profile version is older than the mesh view version
+func (mv *MeshView) GetDevicesWithOutdatedProfiles() []*MeshDeviceState {
+	mv.mu.RLock()
+	defer mv.mu.RUnlock()
+
+	outdated := []*MeshDeviceState{}
+	cacheManager := NewDeviceCacheManager(mv.ourHardwareUUID)
+
+	for deviceID, device := range mv.devices {
+		// Skip ourselves
+		if deviceID == mv.ourDeviceID {
+			continue
+		}
+
+		// Load cached profile metadata
+		cachedMetadata, err := cacheManager.LoadDeviceMetadata(deviceID)
+		if err != nil || cachedMetadata == nil {
+			// No cached profile, so we need to request it
+			if device.ProfileVersion > 0 {
+				deviceCopy := *device
+				outdated = append(outdated, &deviceCopy)
+			}
+			continue
+		}
+
+		// Check if mesh view has a newer version than our cache
+		if device.ProfileVersion > cachedMetadata.ProfileVersion {
+			deviceCopy := *device
+			outdated = append(outdated, &deviceCopy)
+		}
+	}
+
+	return outdated
+}
+
 // MarkPhotoRequested marks that we've requested a photo from a device
 func (mv *MeshView) MarkPhotoRequested(deviceID string) {
 	mv.mu.Lock()
@@ -225,7 +260,7 @@ func (mv *MeshView) ShouldGossip() bool {
 }
 
 // BuildGossipMessage creates a gossip message with our complete mesh view
-func (mv *MeshView) BuildGossipMessage(ourPhotoHash string) *pb.GossipMessage {
+func (mv *MeshView) BuildGossipMessage(ourPhotoHash string, ourProfileVersion int32) *pb.GossipMessage {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
 
@@ -242,7 +277,7 @@ func (mv *MeshView) BuildGossipMessage(ourPhotoHash string) *pb.GossipMessage {
 		PhotoHash:         ourPhotoHashBytes,
 		LastSeenTimestamp: time.Now().Unix(),
 		FirstName:         mv.ourFirstName,
-		ProfileVersion:    1,
+		ProfileVersion:    ourProfileVersion,
 	})
 
 	// Add all other known devices
