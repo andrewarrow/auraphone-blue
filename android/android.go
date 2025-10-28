@@ -203,9 +203,12 @@ func (a *Android) startScanning() {
 // handleGATTMessage routes incoming GATT messages to the appropriate handler
 // This is the central message routing point - ALL messages come through here
 func (a *Android) handleGATTMessage(peerUUID string, msg *wire.GATTMessage) {
+	logger.Trace(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📬 GATT message from %s: type=%s, op=%s, char=%s",
+		shortHash(peerUUID), msg.Type, msg.Operation, shortHash(msg.CharacteristicUUID))
+
 	// Route to appropriate handler based on message type
-	// For bidirectional communication, we try both handlers
-	handled := false
+	// For bidirectional communication, we try BOTH handlers
+	// Don't use 'handled' flag - both should see the message
 
 	// Try GATT client (handles notifications from peripherals we're connected to)
 	a.mu.RLock()
@@ -214,11 +217,10 @@ func (a *Android) handleGATTMessage(peerUUID string, msg *wire.GATTMessage) {
 
 	if exists && gatt != nil {
 		gatt.HandleGATTMessage(msg)
-		handled = true
 	}
 
 	// Try GATT server (handles requests from centrals connecting to us)
-	if !handled && a.advertiser != nil {
+	if a.advertiser != nil {
 		a.advertiser.HandleGATTMessage(msg)
 	}
 }
