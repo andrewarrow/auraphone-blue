@@ -17,13 +17,10 @@ func (a *Android) broadcastProfileUpdate() {
 	for k, v := range a.profile {
 		profile[k] = v
 	}
-
-	// Get list of connected peer UUIDs
-	peerUUIDs := make([]string, 0, len(a.connectedGatts))
-	for uuid := range a.connectedGatts {
-		peerUUIDs = append(peerUUIDs, uuid)
-	}
 	a.mu.RUnlock()
+
+	// Get ALL connected peers (both Central and Peripheral connections)
+	peerUUIDs := a.wire.GetConnectedPeers()
 
 	if len(peerUUIDs) == 0 {
 		logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📋 No connected peers to broadcast profile update")
@@ -69,27 +66,26 @@ func (a *Android) sendProfileUpdate(peerUUID string, deviceID string, profile ma
 		return
 	}
 
-	// Send via profile characteristic
+	// Determine if we're acting as Central or Peripheral for this connection
 	a.mu.RLock()
-	gatt, exists := a.connectedGatts[peerUUID]
+	gatt := a.connectedGatts[peerUUID]
 	a.mu.RUnlock()
 
-	if !exists {
-		logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Peer %s disconnected before profile send", shortHash(peerUUID))
-		return
+	// Send profile via appropriate method based on our role
+	var err2 error
+	if gatt != nil {
+		// We're Central - write to characteristic
+		err2 = a.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	} else {
+		// We're Peripheral - send notification (realistic BLE behavior)
+		err2 = a.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
 	}
 
-	// Find profile characteristic
-	char := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProfileCharUUID)
-	if char == nil {
-		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Profile characteristic not found for peer %s", shortHash(peerUUID))
-		return
+	if err2 != nil {
+		logger.Error(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to send profile update to %s: %v", shortHash(peerUUID), err2)
+	} else {
+		logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📤 Sent profile update to %s (%d bytes)", shortHash(peerUUID), len(data))
 	}
-
-	// Write profile data
-	char.Value = data
-	gatt.WriteCharacteristic(char)
-	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📤 Sent profile update to %s (%d bytes)", shortHash(peerUUID), len(data))
 }
 
 // requestProfileUpdate requests profile data from a peer with newer version

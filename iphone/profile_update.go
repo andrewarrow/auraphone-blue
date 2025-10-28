@@ -17,13 +17,10 @@ func (ip *IPhone) broadcastProfileUpdate() {
 	for k, v := range ip.profile {
 		profile[k] = v
 	}
-
-	// Get list of connected peer UUIDs
-	peerUUIDs := make([]string, 0, len(ip.connectedPeers))
-	for uuid := range ip.connectedPeers {
-		peerUUIDs = append(peerUUIDs, uuid)
-	}
 	ip.mu.RUnlock()
+
+	// Get ALL connected peers (both Central and Peripheral connections)
+	peerUUIDs := ip.wire.GetConnectedPeers()
 
 	if len(peerUUIDs) == 0 {
 		logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "📋 No connected peers to broadcast profile update")
@@ -69,31 +66,26 @@ func (ip *IPhone) sendProfileUpdate(peerUUID string, deviceID string, profile ma
 		return
 	}
 
-	// Send via profile characteristic
+	// Determine if we're acting as Central or Peripheral for this connection
 	ip.mu.RLock()
-	peripheral, exists := ip.connectedPeers[peerUUID]
+	peripheral := ip.connectedPeers[peerUUID]
 	ip.mu.RUnlock()
 
-	if !exists {
-		logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Peer %s disconnected before profile send", shortHash(peerUUID))
-		return
+	// Send profile via appropriate method based on our role
+	var err2 error
+	if peripheral != nil {
+		// We're Central - write to characteristic
+		err2 = ip.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	} else {
+		// We're Peripheral - send notification (realistic BLE behavior)
+		err2 = ip.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
 	}
 
-	// Find profile characteristic
-	for _, service := range peripheral.Services {
-		if service.UUID == phone.AuraServiceUUID {
-			for _, char := range service.Characteristics {
-				if char.UUID == phone.AuraProfileCharUUID {
-					// Write profile data
-					peripheral.WriteValue(data, char, 0) // CBCharacteristicWriteWithResponse
-					logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "📤 Sent profile update to %s (%d bytes)", shortHash(peerUUID), len(data))
-					return
-				}
-			}
-		}
+	if err2 != nil {
+		logger.Error(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to send profile update to %s: %v", shortHash(peerUUID), err2)
+	} else {
+		logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "📤 Sent profile update to %s (%d bytes)", shortHash(peerUUID), len(data))
 	}
-
-	logger.Warn(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Profile characteristic not found for peer %s", shortHash(peerUUID))
 }
 
 // requestProfileUpdate requests profile data from a peer with newer version
