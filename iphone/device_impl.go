@@ -77,11 +77,22 @@ func (ip *IPhone) UpdateLocalProfile(profile map[string]string) error {
 
 	// Check if any fields actually changed
 	changed := false
+	firstNameChanged := false
 	for k, v := range profile {
 		if ip.profile[k] != v {
 			changed = true
+			if k == "first_name" {
+				firstNameChanged = true
+			}
 		}
 		ip.profile[k] = v
+	}
+
+	// Update firstName field if first_name changed
+	if firstNameChanged && profile["first_name"] != "" {
+		ip.firstName = profile["first_name"]
+		// Update mesh view so gossip messages include the new firstName
+		ip.meshView.SetOurFirstName(ip.firstName)
 	}
 
 	// Increment version if profile changed

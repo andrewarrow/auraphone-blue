@@ -58,11 +58,22 @@ func (a *Android) UpdateLocalProfile(profile map[string]string) error {
 
 	// Check if any fields actually changed
 	changed := false
+	firstNameChanged := false
 	for k, v := range profile {
 		if a.profile[k] != v {
 			changed = true
+			if k == "first_name" {
+				firstNameChanged = true
+			}
 		}
 		a.profile[k] = v
+	}
+
+	// Update firstName field if first_name changed
+	if firstNameChanged && profile["first_name"] != "" {
+		a.firstName = profile["first_name"]
+		// Update mesh view so gossip messages include the new firstName
+		a.meshView.SetOurFirstName(a.firstName)
 	}
 
 	// Increment version if profile changed
