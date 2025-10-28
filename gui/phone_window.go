@@ -472,18 +472,37 @@ func (pw *PhoneWindow) buildProfileTab(bg *canvas.Rectangle) fyne.CanvasObject {
 		initialValues[k] = v
 	}
 
-	// Create profile form fields
+	// Debug: log what profile values were loaded
+	prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+	logger.Debug(prefix, "🔍 Profile tab loaded with values:")
+	logger.Debug(prefix, "   first_name='%s'", initialValues["first_name"])
+	logger.Debug(prefix, "   last_name='%s'", initialValues["last_name"])
+	logger.Debug(prefix, "   tagline='%s'", initialValues["tagline"])
+
+	// Create profile form fields with change tracking
 	firstNameEntry := widget.NewEntry()
 	firstNameEntry.SetPlaceHolder("First Name")
 	firstNameEntry.SetText(profile["first_name"])
+	firstNameEntry.OnChanged = func(newText string) {
+		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+		logger.Debug(prefix, "✏️  first_name OnChanged: '%s' → '%s'", initialValues["first_name"], newText)
+	}
 
 	lastNameEntry := widget.NewEntry()
 	lastNameEntry.SetPlaceHolder("Last Name")
 	lastNameEntry.SetText(profile["last_name"])
+	lastNameEntry.OnChanged = func(newText string) {
+		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+		logger.Debug(prefix, "✏️  last_name OnChanged: '%s' → '%s'", initialValues["last_name"], newText)
+	}
 
 	taglineEntry := widget.NewEntry()
 	taglineEntry.SetPlaceHolder("Tagline")
 	taglineEntry.SetText(profile["tagline"])
+	taglineEntry.OnChanged = func(newText string) {
+		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+		logger.Debug(prefix, "✏️  tagline OnChanged: '%s' → '%s'", initialValues["tagline"], newText)
+	}
 
 	// Contact method entries
 	instaEntry := widget.NewEntry()
@@ -523,8 +542,12 @@ func (pw *PhoneWindow) buildProfileTab(bg *canvas.Rectangle) fyne.CanvasObject {
 	telegramEntry.SetText(profile["telegram"])
 
 	// Define save function to be reused by both button and OnSubmitted handlers
+	// This collects current values from ALL fields, logs changes, and saves
 	saveProfile := func() {
-		updatedProfile := map[string]string{
+		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+
+		// Collect current values from all entry widgets
+		currentValues := map[string]string{
 			"first_name": firstNameEntry.Text,
 			"last_name":  lastNameEntry.Text,
 			"tagline":    taglineEntry.Text,
@@ -538,39 +561,48 @@ func (pw *PhoneWindow) buildProfileTab(bg *canvas.Rectangle) fyne.CanvasObject {
 			"signal":     signalEntry.Text,
 			"telegram":   telegramEntry.Text,
 		}
-		if err := pw.phone.UpdateLocalProfile(updatedProfile); err != nil {
+
+		// Log all changes
+		hasChanges := false
+		for fieldName, newValue := range currentValues {
+			oldValue := initialValues[fieldName]
+			if oldValue != newValue {
+				logger.Info(prefix, "📝 Field '%s' changed: '%s' → '%s'", fieldName, oldValue, newValue)
+				initialValues[fieldName] = newValue
+				hasChanges = true
+			}
+		}
+
+		if !hasChanges {
+			logger.Debug(prefix, "💾 Save triggered but no fields changed")
+		}
+
+		// Save to phone
+		if err := pw.phone.UpdateLocalProfile(currentValues); err != nil {
 			fmt.Printf("Failed to update profile: %v\n", err)
 		} else {
 			fmt.Printf("Profile updated successfully\n")
 		}
 	}
 
-	// Helper to create OnSubmitted handler with logging
-	makeOnSubmitted := func(fieldName string, entry *widget.Entry) func(string) {
-		return func(string) {
-			oldValue := initialValues[fieldName]
-			newValue := entry.Text
-			prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
-			logger.Info(prefix, "📝 Field '%s' changed: '%s' → '%s'", fieldName, oldValue, newValue)
-			// Update initialValues for next edit
-			initialValues[fieldName] = newValue
-			saveProfile()
-		}
+	// Simple OnSubmitted handler that just triggers save (which logs all changes)
+	onSubmitAnyField := func(string) {
+		saveProfile()
 	}
 
-	// Add OnSubmitted handlers to all text fields to save on Return key
-	firstNameEntry.OnSubmitted = makeOnSubmitted("first_name", firstNameEntry)
-	lastNameEntry.OnSubmitted = makeOnSubmitted("last_name", lastNameEntry)
-	taglineEntry.OnSubmitted = makeOnSubmitted("tagline", taglineEntry)
-	instaEntry.OnSubmitted = makeOnSubmitted("insta", instaEntry)
-	linkedinEntry.OnSubmitted = makeOnSubmitted("linkedin", linkedinEntry)
-	youtubeEntry.OnSubmitted = makeOnSubmitted("youtube", youtubeEntry)
-	tiktokEntry.OnSubmitted = makeOnSubmitted("tiktok", tiktokEntry)
-	gmailEntry.OnSubmitted = makeOnSubmitted("gmail", gmailEntry)
-	imessageEntry.OnSubmitted = makeOnSubmitted("imessage", imessageEntry)
-	whatsappEntry.OnSubmitted = makeOnSubmitted("whatsapp", whatsappEntry)
-	signalEntry.OnSubmitted = makeOnSubmitted("signal", signalEntry)
-	telegramEntry.OnSubmitted = makeOnSubmitted("telegram", telegramEntry)
+	// Add OnSubmitted handlers to all text fields - pressing Return in ANY field saves ALL changes
+	firstNameEntry.OnSubmitted = onSubmitAnyField
+	lastNameEntry.OnSubmitted = onSubmitAnyField
+	taglineEntry.OnSubmitted = onSubmitAnyField
+	instaEntry.OnSubmitted = onSubmitAnyField
+	linkedinEntry.OnSubmitted = onSubmitAnyField
+	youtubeEntry.OnSubmitted = onSubmitAnyField
+	tiktokEntry.OnSubmitted = onSubmitAnyField
+	gmailEntry.OnSubmitted = onSubmitAnyField
+	imessageEntry.OnSubmitted = onSubmitAnyField
+	whatsappEntry.OnSubmitted = onSubmitAnyField
+	signalEntry.OnSubmitted = onSubmitAnyField
+	telegramEntry.OnSubmitted = onSubmitAnyField
 
 	// Save button
 	saveButton := widget.NewButton("Save Profile", saveProfile)
