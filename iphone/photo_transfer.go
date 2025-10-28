@@ -199,6 +199,11 @@ func (ip *IPhone) sendPhotoChunks(peerUUID string) {
 		photoHashBytes = append(photoHashBytes, b)
 	}
 
+	// Determine our role for this connection to use the correct BLE method
+	ip.mu.RLock()
+	_, isCentral := ip.connectedPeers[peerUUID]
+	ip.mu.RUnlock()
+
 	// Send each chunk
 	for i, chunk := range chunks {
 		chunkMsg := &pb.PhotoChunkMessage{
@@ -216,8 +221,17 @@ func (ip *IPhone) sendPhotoChunks(peerUUID string) {
 			continue
 		}
 
-		// Send via notification
-		err = ip.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraPhotoCharUUID, data)
+		// Use correct BLE method based on our role:
+		// - Central writes to Peripheral's characteristics
+		// - Peripheral sends notifications to Central
+		if isCentral {
+			// We're Central - write to their characteristic
+			err = ip.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraPhotoCharUUID, data)
+		} else {
+			// We're Peripheral - send notification
+			err = ip.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraPhotoCharUUID, data)
+		}
+
 		if err != nil {
 			logger.Error(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to send chunk %d to %s: %v", i, shortHash(peerUUID), err)
 		} else {

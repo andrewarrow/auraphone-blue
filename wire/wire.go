@@ -437,8 +437,12 @@ func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan ch
 		err = json.Unmarshal(msgData, &msg)
 		if err != nil {
 			// Invalid message, skip it
+			logger.Warn(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "❌ Failed to unmarshal GATT message from %s: %v", peerUUID[:8], err)
 			continue
 		}
+
+		logger.Debug(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "📥 Received GATT message from %s: op=%s, len=%d bytes",
+			peerUUID[:8], msg.Operation, len(msgData))
 
 		// Track message received in health monitor
 		socketType := string(connection.role)
@@ -455,7 +459,10 @@ func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan ch
 		w.handlerMu.RUnlock()
 
 		if handler != nil {
+			logger.Debug(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "   ➡️  Calling GATT handler for message from %s", peerUUID[:8])
 			handler(peerUUID, &msg)
+		} else {
+			logger.Warn(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "⚠️  No GATT handler registered for message from %s", peerUUID[:8])
 		}
 	}
 }
@@ -478,8 +485,12 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 	w.mu.RUnlock()
 
 	if !exists {
+		logger.Warn(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "❌ SendGATTMessage: not connected to %s", peerUUID[:8])
 		return fmt.Errorf("not connected to %s", peerUUID)
 	}
+
+	logger.Debug(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "📡 SendGATTMessage to %s: op=%s, len=%d bytes",
+		peerUUID[:8], msg.Operation, len(data))
 
 	// Lock for thread-safe writes
 	connection.sendMutex.Lock()

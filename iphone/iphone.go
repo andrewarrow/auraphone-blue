@@ -193,7 +193,7 @@ func (ip *IPhone) startScanning() {
 // handleGATTMessage is the master dispatcher for ALL GATT messages
 // This is called from the wire layer for every incoming message
 func (ip *IPhone) handleGATTMessage(peerUUID string, msg *wire.GATTMessage) {
-	logger.Trace(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📬 GATT message from %s: type=%s, op=%s, char=%s",
+	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📬 GATT message from %s: type=%s, op=%s, char=%s",
 		shortHash(peerUUID), msg.Type, msg.Operation, shortHash(msg.CharacteristicUUID))
 
 	// Route to appropriate handler based on message type
@@ -201,20 +201,24 @@ func (ip *IPhone) handleGATTMessage(peerUUID string, msg *wire.GATTMessage) {
 
 	// Try central manager (handles notifications from peripherals we're connected to)
 	if ip.central != nil {
+		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "   ➡️  Trying central manager")
 		if ip.central.HandleGATTMessage(peerUUID, msg) {
+			logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "   ✅ Central manager handled it")
 			handled = true
 		}
 	}
 
 	// Try peripheral manager (handles requests from centrals connecting to us)
 	if !handled && ip.peripheral != nil {
+		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "   ➡️  Trying peripheral manager")
 		if ip.peripheral.HandleGATTMessage(peerUUID, msg) {
+			logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "   ✅ Peripheral manager handled it")
 			handled = true
 		}
 	}
 
 	if !handled {
-		logger.Trace(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "⚠️  Unhandled GATT message: %s", msg.Type)
+		logger.Warn(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "⚠️  Unhandled GATT message: %s", msg.Type)
 	}
 }
 
