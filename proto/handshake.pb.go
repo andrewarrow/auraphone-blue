@@ -319,7 +319,6 @@ type DeviceState struct {
 	FirstName          string                 `protobuf:"bytes,4,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`                              // Cached first name
 	ProfileVersion     int32                  `protobuf:"varint,5,opt,name=profile_version,json=profileVersion,proto3" json:"profile_version,omitempty"`              // Profile version number, increments on ANY profile change
 	ProfileSummaryHash []byte                 `protobuf:"bytes,6,opt,name=profile_summary_hash,json=profileSummaryHash,proto3" json:"profile_summary_hash,omitempty"` // SHA-256 hash of all profile fields for change detection
-	HardwareUuid       string                 `protobuf:"bytes,7,opt,name=hardware_uuid,json=hardwareUuid,proto3" json:"hardware_uuid,omitempty"`                     // Hardware UUID (BLE MAC address equivalent) for connection
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -394,13 +393,6 @@ func (x *DeviceState) GetProfileSummaryHash() []byte {
 		return x.ProfileSummaryHash
 	}
 	return nil
-}
-
-func (x *DeviceState) GetHardwareUuid() string {
-	if x != nil {
-		return x.HardwareUuid
-	}
-	return ""
 }
 
 // Gossip message - exchanged periodically between neighbors
