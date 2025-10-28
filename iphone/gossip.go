@@ -118,6 +118,11 @@ func (ip *IPhone) handleGossipMessage(peerUUID string, data []byte) {
 			len(newDevices), shortHash(gossipMsg.SenderDeviceId))
 	}
 
+	// Persist mesh view to disk after gossip merge
+	if err := ip.meshView.SaveToDisk(); err != nil {
+		logger.Warn(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to save mesh view: %v", err)
+	}
+
 	// Check for photos we need to request (MULTI-HOP ROUTING)
 	missingPhotos := ip.meshView.GetMissingPhotos()
 	for _, device := range missingPhotos {

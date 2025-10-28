@@ -106,6 +106,16 @@ func (ip *IPhone) handleProfileMessage(peerUUID string, profileMsg *pb.ProfileMe
 		logger.Warn(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to save profile for %s: %v", profileMsg.DeviceId, err)
 	}
 
+	// Update mesh view with new profile info
+	photoHashHex := "" // We don't have photo hash from profile message, leave empty to preserve existing
+	if ip.meshView != nil {
+		ip.meshView.UpdateDevice(profileMsg.DeviceId, photoHashHex, profileMsg.FirstName, profileMsg.ProfileVersion)
+		// Persist mesh view to disk
+		if err := ip.meshView.SaveToDisk(); err != nil {
+			logger.Warn(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to save mesh view: %v", err)
+		}
+	}
+
 	// Notify GUI of profile update
 	ip.mu.RLock()
 	callback := ip.callback

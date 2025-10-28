@@ -182,6 +182,11 @@ func (ip *IPhone) handleHandshakeProto(pbHandshake *pb.HandshakeMessage, peerUUI
 	ip.meshView.UpdateDevice(pbHandshake.DeviceId, photoHashHex, pbHandshake.FirstName, pbHandshake.ProfileVersion)
 	ip.meshView.MarkDeviceConnected(pbHandshake.DeviceId)
 
+	// Persist mesh view to disk after handshake
+	if err := ip.meshView.SaveToDisk(); err != nil {
+		logger.Warn(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Failed to save mesh view: %v", err)
+	}
+
 	ip.mu.Lock()
 	alreadyHandshaked := ip.handshaked[peerUUID] != nil
 

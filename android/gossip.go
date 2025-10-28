@@ -111,6 +111,11 @@ func (a *Android) handleGossipMessage(peerUUID string, gossipMsg *pb.GossipMessa
 			len(newDevices), shortHash(gossipMsg.SenderDeviceId))
 	}
 
+	// Persist mesh view to disk after gossip merge
+	if err := a.meshView.SaveToDisk(); err != nil {
+		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to save mesh view: %v", err)
+	}
+
 	// Check for photos we need to request (MULTI-HOP ROUTING)
 	missingPhotos := a.meshView.GetMissingPhotos()
 	for _, device := range missingPhotos {

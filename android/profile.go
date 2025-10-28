@@ -111,6 +111,16 @@ func (a *Android) handleProfileMessage(peerUUID string, profileMsg *pb.ProfileMe
 		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to save profile for %s: %v", profileMsg.DeviceId, err)
 	}
 
+	// Update mesh view with new profile info
+	photoHashHex := "" // We don't have photo hash from profile message, leave empty to preserve existing
+	if a.meshView != nil {
+		a.meshView.UpdateDevice(profileMsg.DeviceId, photoHashHex, profileMsg.FirstName, profileMsg.ProfileVersion)
+		// Persist mesh view to disk
+		if err := a.meshView.SaveToDisk(); err != nil {
+			logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to save mesh view: %v", err)
+		}
+	}
+
 	// Notify GUI of profile update
 	a.mu.RLock()
 	callback := a.callback

@@ -177,19 +177,23 @@ func (mv *MeshView) UpdateDevice(deviceID, photoHashHex, firstName string, profi
 			deviceID[:8], firstName, shortHash(photoHashHex, 8))
 	} else {
 		// Update existing device
-		photoChanged := device.PhotoHash != photoHashHex
-		if photoChanged {
-			logger.Debug(fmt.Sprintf("%s GOSSIP", mv.ourDeviceID[:8]),
-				"📸 Device %s updated photo: %s → %s",
-				deviceID[:8], shortHash(device.PhotoHash, 8), shortHash(photoHashHex, 8))
-			device.PhotoRequestSent = false // Reset flag for new photo
+		// Only update photo hash if provided (non-empty)
+		if photoHashHex != "" {
+			photoChanged := device.PhotoHash != photoHashHex
+			if photoChanged {
+				logger.Debug(fmt.Sprintf("%s GOSSIP", mv.ourDeviceID[:8]),
+					"📸 Device %s updated photo: %s → %s",
+					deviceID[:8], shortHash(device.PhotoHash, 8), shortHash(photoHashHex, 8))
+				device.PhotoRequestSent = false // Reset flag for new photo
+			}
+			device.PhotoHash = photoHashHex
+			device.HavePhoto = mv.photoCache != nil && mv.photoCache.HasPhoto(photoHashHex)
 		}
 
-		device.PhotoHash = photoHashHex
+		// Always update name and version
 		device.FirstName = firstName
 		device.ProfileVersion = profileVersion
 		device.LastSeenTime = now
-		device.HavePhoto = mv.photoCache != nil && mv.photoCache.HasPhoto(photoHashHex)
 	}
 }
 

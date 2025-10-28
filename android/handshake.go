@@ -253,6 +253,11 @@ func (a *Android) handleHandshake(peerUUID string, pbHandshake *pb.HandshakeMess
 	a.meshView.MarkDeviceConnected(pbHandshake.DeviceId)
 	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 [STEP 4] Device marked as connected")
 
+	// Persist mesh view to disk after handshake
+	if err := a.meshView.SaveToDisk(); err != nil {
+		logger.Warn(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Failed to save mesh view: %v", err)
+	}
+
 	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Acquiring mutex to update handshaked map")
 	a.mu.Lock()
 	alreadyHandshaked := a.handshaked[peerUUID] != nil
