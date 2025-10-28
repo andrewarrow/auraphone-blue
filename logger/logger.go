@@ -23,7 +23,7 @@ const (
 )
 
 var (
-	currentLevel LogLevel = DEBUG
+	currentLevel LogLevel = TRACE
 	mu           sync.RWMutex
 )
 

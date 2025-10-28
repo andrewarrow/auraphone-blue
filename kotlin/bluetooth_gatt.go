@@ -252,7 +252,7 @@ func (g *BluetoothGatt) SetCharacteristicNotification(characteristic *BluetoothG
 // This replaces the old inbox polling mechanism with direct message delivery
 func (g *BluetoothGatt) HandleGATTMessage(msg *wire.GATTMessage) {
 	// Find the characteristic this message is for
-	char := g.GetCharacteristic(msg.ServiceUUID, msg.CharUUID)
+	char := g.GetCharacteristic(msg.ServiceUUID, msg.CharacteristicUUID)
 	if char == nil {
 		return
 	}

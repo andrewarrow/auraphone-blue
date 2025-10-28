@@ -428,7 +428,7 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 	for _, service := range s.services {
 		if service.UUID == msg.ServiceUUID {
 			for _, char := range service.Characteristics {
-				if char.UUID == msg.CharUUID {
+				if char.UUID == msg.CharacteristicUUID {
 					targetChar = char
 					break
 				}
@@ -440,7 +440,7 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 	}
 
 	if targetChar == nil {
-		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Received request for unknown characteristic %s", msg.CharUUID)
+		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Received request for unknown characteristic %s (service: %s, op: %s)", msg.CharacteristicUUID, msg.ServiceUUID, msg.Operation)
 		return
 	}
 
@@ -478,6 +478,32 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 			// Update characteristic value
 			targetChar.Value = msg.Data
 		}
+
+	case "subscribe":
+		// Central is subscribing to notifications
+		// In real BLE, this would write to the CCCD descriptor
+		// For now, just log it - the subscription tracking happens in the wire layer
+		centralID := device.Address
+		if len(centralID) > 8 {
+			centralID = centralID[:8]
+		}
+		charID := targetChar.UUID
+		if len(charID) > 8 {
+			charID = charID[:8]
+		}
+		logger.Debug(fmt.Sprintf("%s Android", s.uuid[:8]), "📲 Central %s subscribed to characteristic %s", centralID, charID)
+
+	case "unsubscribe":
+		// Central is unsubscribing from notifications
+		centralID := device.Address
+		if len(centralID) > 8 {
+			centralID = centralID[:8]
+		}
+		charID := targetChar.UUID
+		if len(charID) > 8 {
+			charID = charID[:8]
+		}
+		logger.Debug(fmt.Sprintf("%s Android", s.uuid[:8]), "📲 Central %s unsubscribed from characteristic %s", centralID, charID)
 	}
 }
 

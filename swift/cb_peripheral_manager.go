@@ -406,7 +406,7 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 	for _, service := range pm.services {
 		if service.UUID == msg.ServiceUUID {
 			for _, char := range service.Characteristics {
-				if char.UUID == msg.CharUUID {
+				if char.UUID == msg.CharacteristicUUID {
 					targetChar = char
 					break
 				}
@@ -418,7 +418,7 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 	}
 
 	if targetChar == nil {
-		logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "⚠️  Received request for unknown characteristic %s", msg.CharUUID)
+		logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "⚠️  Received request for unknown characteristic %s (service: %s, op: %s)", msg.CharacteristicUUID, msg.ServiceUUID, msg.Operation)
 		return
 	}
 

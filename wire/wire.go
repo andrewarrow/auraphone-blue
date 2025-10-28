@@ -460,6 +460,11 @@ func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan ch
 
 // SendGATTMessage sends a GATT message to a peer
 func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
+	// Set sender UUID if not already set
+	if msg.SenderUUID == "" {
+		msg.SenderUUID = w.hardwareUUID
+	}
+
 	// Marshal message to JSON
 	data, err := json.Marshal(msg)
 	if err != nil {

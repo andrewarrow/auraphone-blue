@@ -14,10 +14,10 @@ import (
 
 func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	// Check if already discovered
 	if _, exists := a.discovered[result.Device.Address]; exists {
+		a.mu.Unlock()
 		return
 	}
 
@@ -30,6 +30,10 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 		RSSI:         float64(result.Rssi),
 	}
 	a.discovered[result.Device.Address] = device
+
+	// Unlock BEFORE calling callback and connectToDevice to avoid deadlock
+	// (callbacks may trigger other operations that need the mutex)
+	a.mu.Unlock()
 
 	// Call callback
 	if a.callback != nil {

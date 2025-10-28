@@ -22,7 +22,7 @@ import (
 // This is a regression test for the bug where duplicate handshakes caused
 // multiple photo subscriptions, leading to interleaved chunks and corrupted images.
 func TestDuplicateHandshakesNoPhotoCorruption(t *testing.T) {
-	logger.SetLevel(logger.ERROR) // Reduce noise in tests
+	logger.SetLevel(logger.DEBUG) // Enable debug to find hang
 
 	// Create two test devices
 	uuidA := "test-device-a"
@@ -109,15 +109,20 @@ func TestDuplicateHandshakesNoPhotoCorruption(t *testing.T) {
 	// *** KEY TEST: Send handshakes MULTIPLE times to simulate real scenario ***
 	// In real BLE, handshakes can arrive 2-3 times due to bidirectional exchange
 	for i := 0; i < 3; i++ {
-		t.Logf("Sending handshake round %d", i+1)
+		t.Logf("======== Sending handshake round %d ========", i+1)
 
 		// Device A receives handshake from B
+		t.Logf("Calling deviceA.handleHandshake(uuidB=%s, handshakeB)", uuidB[:8])
 		deviceA.handleHandshake(uuidB, handshakeB)
+		t.Logf("deviceA.handleHandshake returned")
 
 		// Device B receives handshake from A
+		t.Logf("Calling deviceB.handleHandshake(uuidA=%s, handshakeA)", uuidA[:8])
 		deviceB.handleHandshake(uuidA, handshakeA)
+		t.Logf("deviceB.handleHandshake returned")
 
 		// Small delay to allow async operations
+		t.Logf("Sleeping 100ms...")
 		time.Sleep(100 * time.Millisecond)
 	}
 
