@@ -65,6 +65,12 @@ func NewIdentityManager(ourHardwareUUID, ourDeviceID, dataDir string) *IdentityM
 
 // RegisterDevice adds or updates a hardware UUID <-> device ID mapping
 // Called after handshake when we learn a peer's device ID
+//
+// Handles two real-world scenarios:
+// 1. iOS UUID rotation: Same DeviceID reconnects with new hardware UUID
+//    - Remove old hardwareUUID → DeviceID mapping before adding new one
+// 2. Android device reuse: Same hardware UUID reconnects with new DeviceID (factory reset/new owner)
+//    - Remove old DeviceID → hardwareUUID mapping before adding new one
 func (im *IdentityManager) RegisterDevice(hardwareUUID, deviceID string) {
 	if hardwareUUID == "" || deviceID == "" {
 		return
@@ -73,7 +79,24 @@ func (im *IdentityManager) RegisterDevice(hardwareUUID, deviceID string) {
 	im.mu.Lock()
 	defer im.mu.Unlock()
 
-	// Update bidirectional mapping
+	// Check if this hardwareUUID was previously mapped to a DIFFERENT deviceID
+	// (Android device reuse: same hardware, new owner/factory reset)
+	if oldDeviceID, exists := im.hardwareToDevice[hardwareUUID]; exists && oldDeviceID != deviceID {
+		// Remove stale reverse mapping
+		delete(im.deviceToHardware, oldDeviceID)
+	}
+
+	// Check if this deviceID was previously mapped to a DIFFERENT hardwareUUID
+	// (iOS privacy: same device, rotated BLE UUID)
+	if oldHardwareUUID, exists := im.deviceToHardware[deviceID]; exists && oldHardwareUUID != hardwareUUID {
+		// Remove stale reverse mapping
+		delete(im.hardwareToDevice, oldHardwareUUID)
+
+		// Also clean up connection state for the old UUID (it's no longer valid)
+		delete(im.connectedDevices, oldHardwareUUID)
+	}
+
+	// Now add/update the bidirectional mapping
 	im.hardwareToDevice[hardwareUUID] = deviceID
 	im.deviceToHardware[deviceID] = hardwareUUID
 }

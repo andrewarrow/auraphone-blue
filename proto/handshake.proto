@@ -44,14 +44,16 @@ message PhotoCompletionAck {
 // =================================================================
 
 // Single device's state in the mesh (photo + profile)
+// NOTE: hardware_uuid is NOT included - it's ephemeral and changes frequently
+// (iOS rotates for privacy, Android changes on factory reset/new owner)
+// Hardware UUIDs are discovered via BLE scanning, not gossip
 message DeviceState {
-  string device_id = 1;           // Logical base36 ID
+  string device_id = 1;           // Logical base36 ID (stable identity)
   bytes photo_hash = 2;           // SHA-256 hash (32 bytes) of their current photo
   int64 last_seen_timestamp = 3;  // Unix timestamp when this state was last observed
   string first_name = 4;          // Cached first name
   int32 profile_version = 5;      // Profile version number, increments on ANY profile change
   bytes profile_summary_hash = 6; // SHA-256 hash of all profile fields for change detection
-  string hardware_uuid = 7;       // Hardware UUID (BLE MAC address equivalent) for connection
 }
 
 // Gossip message - exchanged periodically between neighbors

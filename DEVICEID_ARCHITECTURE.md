@@ -240,6 +240,113 @@ func SendPhotoRequest(targetDeviceID string) error {
 
 ---
 
+## Real-World Scenarios: UUID/DeviceID Changes
+
+### Scenario 1: iOS Privacy UUID Rotation
+
+**What happens:**
+iOS periodically rotates hardware UUIDs for privacy (similar to MAC address randomization).
+
+**Example:**
+1. First connection: iPhone connects with UUID `12D90340-F045-495D-938E-28B6F3E2FE80`
+2. Handshake completes: DeviceID `ABCD1234` is exchanged
+3. IdentityManager registers: `12D90340... → ABCD1234`, `ABCD1234 → 12D90340...`
+4. Connection drops
+5. iOS rotates UUID to `B4698CEC-8C31-40FE-B536-1C0710BBCDCE`
+6. iPhone reconnects with new UUID `B4698CEC...`
+7. Handshake completes: Same DeviceID `ABCD1234` is sent again
+
+**How RegisterDevice() handles it:**
+```go
+// DeviceID ABCD1234 is already mapped to old UUID 12D90340...
+// New mapping: B4698CEC... → ABCD1234
+if oldHardwareUUID, exists := im.deviceToHardware["ABCD1234"]; exists {
+    // oldHardwareUUID = "12D90340..."
+    // Remove stale mapping: 12D90340... → ABCD1234
+    delete(im.hardwareToDevice, oldHardwareUUID)
+    // Also clean up connection state for old UUID
+    delete(im.connectedDevices, oldHardwareUUID)
+}
+
+// Add new mapping
+im.hardwareToDevice["B4698CEC..."] = "ABCD1234"
+im.deviceToHardware["ABCD1234"] = "B4698CEC..."
+```
+
+**Result:** Same logical device (ABCD1234) now mapped to new hardware UUID. Old UUID cleaned up.
+
+---
+
+### Scenario 2: Android Device Reuse (Factory Reset or New Owner)
+
+**What happens:**
+User factory resets their phone or sells it to someone new. Hardware UUID stays the same, but new owner gets a new DeviceID.
+
+**Example:**
+1. First owner connects: UUID `F09FFFB7-FEC6-402A-AC0C-FB06425E2670`
+2. Handshake: DeviceID `ABCD1234`
+3. IdentityManager registers: `F09FFFB7... → ABCD1234`, `ABCD1234 → F09FFFB7...`
+4. Phone is factory reset and sold to new owner
+5. New owner installs app, gets new DeviceID `ABCD1235`
+6. Phone reconnects with same UUID `F09FFFB7...`
+7. Handshake: New DeviceID `ABCD1235` is sent
+
+**How RegisterDevice() handles it:**
+```go
+// Hardware UUID F09FFFB7... is already mapped to old DeviceID ABCD1234
+// New mapping: F09FFFB7... → ABCD1235
+if oldDeviceID, exists := im.hardwareToDevice["F09FFFB7..."]; exists {
+    // oldDeviceID = "ABCD1234"
+    // Remove stale reverse mapping: ABCD1234 → F09FFFB7...
+    delete(im.deviceToHardware, oldDeviceID)
+}
+
+// Add new mapping
+im.hardwareToDevice["F09FFFB7..."] = "ABCD1235"
+im.deviceToHardware["ABCD1235"] = "F09FFFB7..."
+```
+
+**Result:** Same hardware (F09FFFB7...) now mapped to new logical device. Old DeviceID cleaned up.
+
+---
+
+### Why Gossip Must NOT Include Hardware UUIDs
+
+**The Problem:**
+If gossip messages contain hardware UUIDs, they become stale immediately:
+
+```protobuf
+// ❌ BAD: Hardware UUID becomes outdated
+message DeviceState {
+  string device_id = 1;
+  string hardware_uuid = 7;  // This is ephemeral!
+}
+```
+
+**What goes wrong:**
+1. Device A gossips: "ABCD1234 is at UUID 12D90340..."
+2. Gossip spreads to devices B, C, D (takes 5-15 seconds)
+3. Meanwhile, iOS rotates UUID to B4698CEC...
+4. Device D tries to connect to 12D90340... → **fails, UUID doesn't exist**
+
+**The Solution:**
+```protobuf
+// ✅ GOOD: Only stable DeviceID in gossip
+message DeviceState {
+  string device_id = 1;  // Stable identity
+  // hardware_uuid removed - discovered via BLE scanning
+}
+```
+
+**Connection Flow:**
+1. Learn about DeviceID `ABCD1234` via gossip (or direct encounter)
+2. BLE scan discovers nearby devices by current hardware UUID
+3. Connect to hardware UUID and handshake
+4. Handshake reveals DeviceID → IdentityManager maps them
+5. Now we can send/receive using DeviceID (looks up current hardware UUID)
+
+---
+
 ## Benefits of This Architecture
 
 1. **No race conditions** - Hardware UUID available immediately, DeviceID after handshake
@@ -247,6 +354,8 @@ func SendPhotoRequest(targetDeviceID string) error {
 3. **Persistent across restarts** - Mappings saved to disk
 4. **Single source of truth** - IdentityManager is the ONLY place with mappings
 5. **Connection tracking** - By hardware UUID (wire layer), mapped to DeviceID (app layer)
+6. **Handles UUID rotation** - iOS privacy UUID changes handled transparently
+7. **Handles device reuse** - Android factory reset/new owner scenarios supported
 
 ---
 
