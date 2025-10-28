@@ -113,21 +113,21 @@ func (a *Android) sendHandshakeViaWire(peerUUID string) {
 }
 
 func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
-	// Try to parse as HandshakeMessage first
-	var pbHandshake pb.HandshakeMessage
-	err := proto.Unmarshal(data, &pbHandshake)
-	if err == nil && pbHandshake.DeviceId != "" {
-		// It's a handshake
-		a.handleHandshake(peerUUID, &pbHandshake)
+	// Try to parse as GossipMessage first (check for MeshView field to distinguish from handshake)
+	var pbGossip pb.GossipMessage
+	err := proto.Unmarshal(data, &pbGossip)
+	if err == nil && len(pbGossip.MeshView) > 0 {
+		// It's a gossip message
+		a.handleGossipMessage(peerUUID, &pbGossip)
 		return
 	}
 
-	// Try to parse as GossipMessage
-	var pbGossip pb.GossipMessage
-	err = proto.Unmarshal(data, &pbGossip)
-	if err == nil && pbGossip.SenderDeviceId != "" {
-		// It's a gossip message
-		a.handleGossipMessage(peerUUID, &pbGossip)
+	// Try to parse as HandshakeMessage
+	var pbHandshake pb.HandshakeMessage
+	err = proto.Unmarshal(data, &pbHandshake)
+	if err == nil && pbHandshake.DeviceId != "" {
+		// It's a handshake
+		a.handleHandshake(peerUUID, &pbHandshake)
 		return
 	}
 

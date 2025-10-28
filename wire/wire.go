@@ -832,6 +832,7 @@ func (w *Wire) WriteAdvertisingData(data *AdvertisingData) error {
 func (w *Wire) NotifyCharacteristic(peerUUID, serviceUUID, charUUID string, data []byte) error {
 	msg := &GATTMessage{
 		Type:               "gatt_notification",
+		Operation:          "notify",
 		ServiceUUID:        serviceUUID,
 		CharacteristicUUID: charUUID,
 		Data:               data,
