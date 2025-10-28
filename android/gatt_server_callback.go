@@ -12,7 +12,13 @@ import (
 // BluetoothGattServerCallback Implementation (Peripheral role - others connect to us)
 // ============================================================================
 
-func (a *Android) OnConnectionStateChange(device *kotlin.BluetoothDevice, status int, newState int) {
+// androidGattServerCallback wraps Android to implement BluetoothGattServerCallback
+type androidGattServerCallback struct {
+	android *Android
+}
+
+func (cb *androidGattServerCallback) OnConnectionStateChange(device *kotlin.BluetoothDevice, status int, newState int) {
+	a := cb.android
 	peerUUID := device.Address
 
 	switch newState {
@@ -35,7 +41,8 @@ func (a *Android) OnConnectionStateChange(device *kotlin.BluetoothDevice, status
 	}
 }
 
-func (a *Android) OnCharacteristicReadRequest(device *kotlin.BluetoothDevice, requestId int, offset int, characteristic *kotlin.BluetoothGattCharacteristic) {
+func (cb *androidGattServerCallback) OnCharacteristicReadRequest(device *kotlin.BluetoothDevice, requestId int, offset int, characteristic *kotlin.BluetoothGattCharacteristic) {
+	a := cb.android
 	peerUUID := device.Address
 
 	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📖 Read request from %s for char %s", shortHash(peerUUID), shortHash(characteristic.UUID))
@@ -44,7 +51,8 @@ func (a *Android) OnCharacteristicReadRequest(device *kotlin.BluetoothDevice, re
 	a.gattServer.SendResponse(device, requestId, kotlin.GATT_SUCCESS, offset, []byte{})
 }
 
-func (a *Android) OnCharacteristicWriteRequest(device *kotlin.BluetoothDevice, requestId int, characteristic *kotlin.BluetoothGattCharacteristic, preparedWrite bool, responseNeeded bool, offset int, value []byte) {
+func (cb *androidGattServerCallback) OnCharacteristicWriteRequest(device *kotlin.BluetoothDevice, requestId int, characteristic *kotlin.BluetoothGattCharacteristic, preparedWrite bool, responseNeeded bool, offset int, value []byte) {
+	a := cb.android
 	peerUUID := device.Address
 
 	// Route based on characteristic UUID
@@ -67,12 +75,14 @@ func (a *Android) OnCharacteristicWriteRequest(device *kotlin.BluetoothDevice, r
 	}
 }
 
-func (a *Android) OnDescriptorReadRequest(device *kotlin.BluetoothDevice, requestId int, offset int, descriptor *kotlin.BluetoothGattDescriptor) {
+func (cb *androidGattServerCallback) OnDescriptorReadRequest(device *kotlin.BluetoothDevice, requestId int, offset int, descriptor *kotlin.BluetoothGattDescriptor) {
+	a := cb.android
 	// Return empty response (descriptors not used in our protocol)
 	a.gattServer.SendResponse(device, requestId, kotlin.GATT_SUCCESS, offset, []byte{})
 }
 
-func (a *Android) OnDescriptorWriteRequest(device *kotlin.BluetoothDevice, requestId int, descriptor *kotlin.BluetoothGattDescriptor, preparedWrite bool, responseNeeded bool, offset int, value []byte) {
+func (cb *androidGattServerCallback) OnDescriptorWriteRequest(device *kotlin.BluetoothDevice, requestId int, descriptor *kotlin.BluetoothGattDescriptor, preparedWrite bool, responseNeeded bool, offset int, value []byte) {
+	a := cb.android
 	// CCCD descriptor writes happen when centrals subscribe to notifications
 	// We don't need to do anything special here - just acknowledge
 	if responseNeeded {

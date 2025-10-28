@@ -58,6 +58,7 @@ type AdvertiseData struct {
 // BluetoothLeAdvertiser matches Android's BluetoothLeAdvertiser class
 type BluetoothLeAdvertiser struct {
 	uuid            string
+	deviceName      string
 	wire            *wire.Wire
 	isAdvertising   bool
 	stopAdvertising chan struct{}
@@ -70,6 +71,7 @@ type BluetoothLeAdvertiser struct {
 func NewBluetoothLeAdvertiser(uuid string, deviceName string, sharedWire *wire.Wire) *BluetoothLeAdvertiser {
 	return &BluetoothLeAdvertiser{
 		uuid:          uuid,
+		deviceName:    deviceName,
 		wire:          sharedWire,
 		isAdvertising: false,
 	}
@@ -124,7 +126,7 @@ func (a *BluetoothLeAdvertiser) StartAdvertising(
 
 	// Include device name if requested
 	if advertiseData != nil && advertiseData.IncludeDeviceName {
-		wireAdvData.DeviceName = a.wire.GetDeviceName()
+		wireAdvData.DeviceName = a.deviceName
 	}
 
 	// Include TX power level if requested
@@ -458,7 +460,7 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 	}
 
 	// Generate request ID (timestamp-based)
-	requestId := int(msg.Timestamp & 0x7FFFFFFF)
+	requestId := int(time.Now().UnixNano() & 0x7FFFFFFF)
 
 	switch msg.Operation {
 	case "read":

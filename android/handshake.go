@@ -1,7 +1,6 @@
 package android
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/user/auraphone-blue/kotlin"

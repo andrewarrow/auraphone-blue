@@ -153,11 +153,11 @@ func (s *BluetoothLeScanner) StartScan(callback ScanCallback) {
 		device.SetWire(s.wire)
 
 		// Get realistic RSSI from wire layer
-		rssi := s.wire.GetRSSI()
+		rssi := s.wire.GetRSSI(deviceUUID)
 
 		s.callback.OnScanResult(0, &ScanResult{
 			Device:     device,
-			Rssi:       rssi,
+			Rssi:       int(rssi),
 			ScanRecord: scanRecord,
 		})
 	})

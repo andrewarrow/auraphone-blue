@@ -87,8 +87,9 @@ func (a *Android) Start() {
 	// Get scanner
 	a.scanner = adapter.GetBluetoothLeScanner()
 
-	// Create GATT server for peripheral mode
-	a.gattServer = a.manager.OpenGattServer(a, a.deviceName, a.wire)
+	// Create GATT server for peripheral mode (use wrapper to avoid method name collision)
+	serverCallback := &androidGattServerCallback{android: a}
+	a.gattServer = a.manager.OpenGattServer(serverCallback, a.deviceName, a.wire)
 
 	// Get advertiser (links with GATT server)
 	a.advertiser = adapter.GetBluetoothLeAdvertiser()
@@ -199,7 +200,10 @@ func (a *Android) startScanning() {
 // This is the central message routing point - ALL messages come through here
 func (a *Android) handleGATTMessage(peerUUID string, msg *wire.GATTMessage) {
 	// Determine if this is central mode (we initiated) or peripheral mode (they initiated)
-	role := a.wire.GetConnectionRole(peerUUID)
+	role, exists := a.wire.GetConnectionRole(peerUUID)
+	if !exists {
+		return // No connection
+	}
 
 	if role == wire.RoleCentral {
 		// Central mode - we initiated the connection

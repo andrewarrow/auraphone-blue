@@ -79,7 +79,7 @@ func (g *BluetoothGatt) DiscoverServices() bool {
 	// Service discovery is async in real Android - run in goroutine with realistic delay
 	go func() {
 		// Simulate realistic discovery delay (50-500ms)
-		delay := g.wire.GetSimulator().ServiceDiscoveryDelay()
+		delay := g.wire.GetSimulator().ServiceDiscoveryDelay
 		time.Sleep(delay)
 
 		// Read GATT table from remote device
