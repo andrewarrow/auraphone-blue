@@ -97,6 +97,13 @@ func (ip *IPhone) handleProtocolMessage(peerUUID string, data []byte) {
 		return
 	}
 
+	// Try to parse as PhotoRequestMessage (has RequesterDeviceId and PhotoHash)
+	var photoReq pb.PhotoRequestMessage
+	if proto.Unmarshal(data, &photoReq) == nil && photoReq.RequesterDeviceId != "" && len(photoReq.PhotoHash) > 0 {
+		ip.handlePhotoRequest(peerUUID, &photoReq)
+		return
+	}
+
 	logger.Warn(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "⚠️  Failed to parse protocol message from %s", shortHash(peerUUID))
 }
 

@@ -1,3 +1,9 @@
+# rules
+
+always do what is realistic for real BLE communication on ios and android.
+they each have their own rules and limits always go by that and never cheat.
+
+
 # how to read results from a run
 
 read ~/Documents/1.txt look at `ls -lR ~/.auraphone-blue-data/` gossip_audit.jsonl, socket_health.json, photo_timeline.jsonl, connection_events.jsonl, and test_report_* files. 

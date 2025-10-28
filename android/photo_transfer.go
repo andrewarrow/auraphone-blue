@@ -13,6 +13,62 @@ import (
 // Photo Transfer Logic
 // ============================================================================
 
+// handlePhotoRequest handles incoming photo request from a Peripheral (when we're Central)
+func (a *Android) handlePhotoRequest(peerUUID string, photoReq *pb.PhotoRequestMessage) {
+	photoHashHex := fmt.Sprintf("%x", photoReq.PhotoHash)
+	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📥 Received photo request from %s (hash: %s)",
+		shortHash(peerUUID), shortHash(photoHashHex))
+
+	// Verify they're requesting OUR photo
+	a.mu.RLock()
+	ourPhotoHash := a.photoHash
+	a.mu.RUnlock()
+
+	if photoHashHex != ourPhotoHash {
+		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+			"⚠️  Photo request mismatch: they want %s, we have %s",
+			shortHash(photoHashHex), shortHash(ourPhotoHash))
+		return
+	}
+
+	// Send our photo as Central via notification (Peripheral requested it)
+	// In real BLE, when Central receives a request notification from Peripheral,
+	// Central can send data back via characteristic writes OR notifications
+	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📤 Sending photo to %s in response to request", shortHash(peerUUID))
+	go a.sendPhotoChunks(peerUUID)
+}
+
+// sendPhotoRequest sends a photo request notification to a Central (when we're Peripheral)
+func (a *Android) sendPhotoRequest(peerUUID string, photoHash string, targetDeviceID string) {
+	// Build PhotoRequestMessage
+	photoHashBytes := []byte{}
+	for i := 0; i < len(photoHash); i += 2 {
+		var b byte
+		fmt.Sscanf(photoHash[i:i+2], "%02x", &b)
+		photoHashBytes = append(photoHashBytes, b)
+	}
+
+	photoReq := &pb.PhotoRequestMessage{
+		RequesterDeviceId: a.deviceID,
+		TargetDeviceId:    targetDeviceID,
+		PhotoHash:         photoHashBytes,
+	}
+
+	data, err := proto.Marshal(photoReq)
+	if err != nil {
+		logger.Error(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to marshal photo request: %v", err)
+		return
+	}
+
+	// Send as notification (Peripheral can send notifications to Central)
+	err = a.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	if err != nil {
+		logger.Error(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to send photo request to %s: %v", shortHash(peerUUID), err)
+	} else {
+		logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📤 Sent photo request to %s (hash: %s)", shortHash(peerUUID), shortHash(photoHash))
+	}
+}
+
 // requestAndReceivePhoto subscribes to photo characteristic to receive photo chunks
 func (a *Android) requestAndReceivePhoto(peerUUID string, photoHash string, deviceID string) {
 	// Reserve transfer slot immediately to prevent duplicate subscriptions
@@ -31,16 +87,18 @@ func (a *Android) requestAndReceivePhoto(peerUUID string, photoHash string, devi
 		}
 	}()
 
-	// Find GATT connection for this peer
+	// Determine our role for this connection
 	a.mu.RLock()
 	gatt, exists := a.connectedGatts[peerUUID]
 	a.mu.RUnlock()
 
 	if !exists {
-		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Cannot request photo: not connected to %s", shortHash(peerUUID))
-		a.mu.Lock()
-		delete(a.photoTransfers, peerUUID)
-		a.mu.Unlock()
+		// We're Peripheral - send photo request via notification (realistic BLE behavior)
+		// In real BLE, Peripherals can't initiate GATT reads, but they CAN send notifications
+		// to request data from the Central
+		logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📸 Requesting photo from %s via notification (we're Peripheral)", shortHash(peerUUID))
+		a.sendPhotoRequest(peerUUID, photoHash, deviceID)
+		// Photo will arrive via notification when Central responds
 		return
 	}
 
