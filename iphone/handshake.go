@@ -91,13 +91,22 @@ func (ip *IPhone) handleProtocolMessage(peerUUID string, data []byte) {
 
 	// Try to parse as ProfileRequestMessage (has RequesterDeviceId and ExpectedVersion)
 	// MUST check this BEFORE ProfileMessage because fields 1 and 2 overlap!
-	// ProfileMessage: device_id(1), first_name(2), last_name(3)...
+	// ProfileMessage: device_id(1), first_name(2), last_name(3), ..., profile_version(15)
 	// ProfileRequestMessage: requester_device_id(1), target_device_id(2), expected_version(3)
-	// Without checking ProfileRequestMessage first, target_device_id gets misread as first_name!
+	// Discriminator: ProfileRequestMessage has only 3 fields, ProfileMessage has 15 fields
+	// So we check that profile_version (field 15) is NOT set when parsing as ProfileRequestMessage
 	var profileReq pb.ProfileRequestMessage
 	if proto.Unmarshal(data, &profileReq) == nil && profileReq.RequesterDeviceId != "" && profileReq.TargetDeviceId != "" {
-		ip.handleProfileRequest(peerUUID, &profileReq)
-		return
+		// Also try parsing as ProfileMessage to check if it's actually a profile (has field 15)
+		var testProfile pb.ProfileMessage
+		if proto.Unmarshal(data, &testProfile) == nil && testProfile.ProfileVersion > 0 {
+			// It's actually a ProfileMessage, not a ProfileRequestMessage
+			// Fall through to ProfileMessage check below
+		} else {
+			// It's a real ProfileRequestMessage
+			ip.handleProfileRequest(peerUUID, &profileReq)
+			return
+		}
 	}
 
 	// Try to parse as ProfileMessage (has first_name, phone_number, or tagline fields)
