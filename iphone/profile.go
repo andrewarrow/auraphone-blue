@@ -21,6 +21,7 @@ func (ip *IPhone) sendProfileMessage(peerUUID string) {
 		profile[k] = v
 	}
 	deviceID := ip.deviceID
+	profileVersion := ip.profileVersion
 	ip.mu.RUnlock()
 
 	// Don't send ProfileMessage if profile is empty (no last_name set)
@@ -32,19 +33,20 @@ func (ip *IPhone) sendProfileMessage(peerUUID string) {
 
 	// Build ProfileMessage from map
 	profileMsg := &pb.ProfileMessage{
-		DeviceId:    deviceID,
-		LastName:    profile["last_name"],
-		PhoneNumber: profile["phone_number"],
-		Tagline:     profile["tagline"],
-		Insta:       profile["insta"],
-		Linkedin:    profile["linkedin"],
-		Youtube:     profile["youtube"],
-		Tiktok:      profile["tiktok"],
-		Gmail:       profile["gmail"],
-		Imessage:    profile["imessage"],
-		Whatsapp:    profile["whatsapp"],
-		Signal:      profile["signal"],
-		Telegram:    profile["telegram"],
+		DeviceId:       deviceID,
+		LastName:       profile["last_name"],
+		PhoneNumber:    profile["phone_number"],
+		Tagline:        profile["tagline"],
+		Insta:          profile["insta"],
+		Linkedin:       profile["linkedin"],
+		Youtube:        profile["youtube"],
+		Tiktok:         profile["tiktok"],
+		Gmail:          profile["gmail"],
+		Imessage:       profile["imessage"],
+		Whatsapp:       profile["whatsapp"],
+		Signal:         profile["signal"],
+		Telegram:       profile["telegram"],
+		ProfileVersion: profileVersion,
 	}
 
 	data, err := proto.Marshal(profileMsg)
@@ -77,22 +79,23 @@ func (ip *IPhone) sendProfileMessage(peerUUID string) {
 
 // handleProfileMessage receives and stores a profile from a peer
 func (ip *IPhone) handleProfileMessage(peerUUID string, profileMsg *pb.ProfileMessage) {
-	logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "📋 Received profile from %s (ID: %s, name: %s %s)",
-		shortHash(peerUUID), profileMsg.DeviceId, profileMsg.LastName, profileMsg.Tagline[:min(20, len(profileMsg.Tagline))])
+	logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "📋 Received profile v%d from %s (ID: %s, name: %s %s)",
+		profileMsg.ProfileVersion, shortHash(peerUUID), profileMsg.DeviceId, profileMsg.LastName, profileMsg.Tagline[:min(20, len(profileMsg.Tagline))])
 
 	// Store profile in DeviceCacheManager
 	metadata := &phone.DeviceMetadata{
-		LastName: profileMsg.LastName,
-		Tagline:  profileMsg.Tagline,
-		Insta:    profileMsg.Insta,
-		LinkedIn: profileMsg.Linkedin,
-		YouTube:  profileMsg.Youtube,
-		TikTok:   profileMsg.Tiktok,
-		Gmail:    profileMsg.Gmail,
-		IMessage: profileMsg.Imessage,
-		WhatsApp: profileMsg.Whatsapp,
-		Signal:   profileMsg.Signal,
-		Telegram: profileMsg.Telegram,
+		LastName:       profileMsg.LastName,
+		Tagline:        profileMsg.Tagline,
+		Insta:          profileMsg.Insta,
+		LinkedIn:       profileMsg.Linkedin,
+		YouTube:        profileMsg.Youtube,
+		TikTok:         profileMsg.Tiktok,
+		Gmail:          profileMsg.Gmail,
+		IMessage:       profileMsg.Imessage,
+		WhatsApp:       profileMsg.Whatsapp,
+		Signal:         profileMsg.Signal,
+		Telegram:       profileMsg.Telegram,
+		ProfileVersion: profileMsg.ProfileVersion,
 	}
 
 	// Save to disk

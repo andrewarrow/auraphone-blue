@@ -55,7 +55,6 @@ func (a *Android) GetLocalProfileMap() map[string]string {
 
 func (a *Android) UpdateLocalProfile(profile map[string]string) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	// Check if any fields actually changed
 	changed := false
@@ -72,6 +71,12 @@ func (a *Android) UpdateLocalProfile(profile map[string]string) error {
 		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📋 Profile updated, version now: %d", a.profileVersion)
 	}
 
-	// TODO: Step 8 - broadcast profile changes to connected peers
+	a.mu.Unlock()
+
+	// Broadcast profile changes to all connected peers
+	if changed {
+		a.broadcastProfileUpdate()
+	}
+
 	return nil
 }

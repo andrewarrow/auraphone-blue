@@ -303,5 +303,22 @@ func (a *Android) handleHandshake(peerUUID string, pbHandshake *pb.HandshakeMess
 		go a.requestAndReceivePhoto(peerUUID, photoHashHex, pbHandshake.DeviceId)
 	}
 
+	// Check if peer has newer profile version
+	// Load our cached profile version for this device
+	cacheManager := phone.NewDeviceCacheManager(a.hardwareUUID)
+	metadata, _ := cacheManager.LoadDeviceMetadata(pbHandshake.DeviceId)
+
+	cachedProfileVersion := int32(0)
+	if metadata != nil {
+		cachedProfileVersion = metadata.ProfileVersion
+	}
+
+	if pbHandshake.ProfileVersion > cachedProfileVersion {
+		logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+			"📋 Peer %s has newer profile v%d (we have v%d), requesting update",
+			shortHash(peerUUID), pbHandshake.ProfileVersion, cachedProfileVersion)
+		go a.requestProfileUpdate(peerUUID, pbHandshake.DeviceId, pbHandshake.ProfileVersion)
+	}
+
 	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 handleHandshake completed for peer %s", shortHash(peerUUID))
 }

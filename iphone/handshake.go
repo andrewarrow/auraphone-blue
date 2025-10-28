@@ -220,4 +220,21 @@ func (ip *IPhone) handleHandshakeProto(pbHandshake *pb.HandshakeMessage, peerUUI
 			shortHash(peerUUID), shortHash(photoHashHex))
 		go ip.requestAndReceivePhoto(peerUUID, photoHashHex, pbHandshake.DeviceId)
 	}
+
+	// Check if peer has newer profile version
+	// Load our cached profile version for this device
+	cacheManager := phone.NewDeviceCacheManager(ip.hardwareUUID)
+	metadata, _ := cacheManager.LoadDeviceMetadata(pbHandshake.DeviceId)
+
+	cachedProfileVersion := int32(0)
+	if metadata != nil {
+		cachedProfileVersion = metadata.ProfileVersion
+	}
+
+	if pbHandshake.ProfileVersion > cachedProfileVersion {
+		logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+			"📋 Peer %s has newer profile v%d (we have v%d), requesting update",
+			shortHash(peerUUID), pbHandshake.ProfileVersion, cachedProfileVersion)
+		go ip.requestProfileUpdate(peerUUID, pbHandshake.DeviceId, pbHandshake.ProfileVersion)
+	}
 }

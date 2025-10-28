@@ -74,7 +74,6 @@ func (ip *IPhone) GetLocalProfileMap() map[string]string {
 
 func (ip *IPhone) UpdateLocalProfile(profile map[string]string) error {
 	ip.mu.Lock()
-	defer ip.mu.Unlock()
 
 	// Check if any fields actually changed
 	changed := false
@@ -91,6 +90,12 @@ func (ip *IPhone) UpdateLocalProfile(profile map[string]string) error {
 		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📋 Profile updated, version now: %d", ip.profileVersion)
 	}
 
-	// TODO: Step 8 - broadcast profile changes to connected peers
+	ip.mu.Unlock()
+
+	// Broadcast profile changes to all connected peers
+	if changed {
+		ip.broadcastProfileUpdate()
+	}
+
 	return nil
 }

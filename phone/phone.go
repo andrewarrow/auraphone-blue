@@ -34,6 +34,10 @@ type Phone interface {
 
 // GetDataDir returns the data directory path
 func GetDataDir() string {
+	if envDir := os.Getenv("AURAPHONE_BLUE_DIR"); envDir != "" {
+		return envDir
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		panic(err)
@@ -58,18 +62,19 @@ func NewDeviceCacheManager(deviceUUID string) *DeviceCacheManager {
 
 // DeviceMetadata represents cached metadata about a device
 type DeviceMetadata struct {
-	FirstName string
-	LastName  string
-	Tagline   string
-	Insta     string
-	LinkedIn  string
-	YouTube   string
-	TikTok    string
-	Gmail     string
-	IMessage  string
-	WhatsApp  string
-	Signal    string
-	Telegram  string
+	FirstName      string
+	LastName       string
+	Tagline        string
+	Insta          string
+	LinkedIn       string
+	YouTube        string
+	TikTok         string
+	Gmail          string
+	IMessage       string
+	WhatsApp       string
+	Signal         string
+	Telegram       string
+	ProfileVersion int32 // Profile version number, increments on any profile change
 }
 
 // LoadDeviceMetadata loads metadata for a device
