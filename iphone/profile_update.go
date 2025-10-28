@@ -47,6 +47,7 @@ func (ip *IPhone) sendProfileUpdate(peerUUID string, deviceID string, profile ma
 	// Build ProfileMessage
 	profileMsg := &pb.ProfileMessage{
 		DeviceId:       deviceID,
+		FirstName:      profile["first_name"],
 		LastName:       profile["last_name"],
 		PhoneNumber:    profile["phone_number"],
 		Tagline:        profile["tagline"],

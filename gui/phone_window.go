@@ -466,6 +466,12 @@ func (pw *PhoneWindow) buildProfileTab(bg *canvas.Rectangle) fyne.CanvasObject {
 	// Get current profile data
 	profile := pw.phone.GetLocalProfileMap()
 
+	// Store initial values for logging
+	initialValues := make(map[string]string)
+	for k, v := range profile {
+		initialValues[k] = v
+	}
+
 	// Create profile form fields
 	firstNameEntry := widget.NewEntry()
 	firstNameEntry.SetPlaceHolder("First Name")
@@ -539,19 +545,32 @@ func (pw *PhoneWindow) buildProfileTab(bg *canvas.Rectangle) fyne.CanvasObject {
 		}
 	}
 
+	// Helper to create OnSubmitted handler with logging
+	makeOnSubmitted := func(fieldName string, entry *widget.Entry) func(string) {
+		return func(string) {
+			oldValue := initialValues[fieldName]
+			newValue := entry.Text
+			prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+			logger.Info(prefix, "📝 Field '%s' changed: '%s' → '%s'", fieldName, oldValue, newValue)
+			// Update initialValues for next edit
+			initialValues[fieldName] = newValue
+			saveProfile()
+		}
+	}
+
 	// Add OnSubmitted handlers to all text fields to save on Return key
-	firstNameEntry.OnSubmitted = func(string) { saveProfile() }
-	lastNameEntry.OnSubmitted = func(string) { saveProfile() }
-	taglineEntry.OnSubmitted = func(string) { saveProfile() }
-	instaEntry.OnSubmitted = func(string) { saveProfile() }
-	linkedinEntry.OnSubmitted = func(string) { saveProfile() }
-	youtubeEntry.OnSubmitted = func(string) { saveProfile() }
-	tiktokEntry.OnSubmitted = func(string) { saveProfile() }
-	gmailEntry.OnSubmitted = func(string) { saveProfile() }
-	imessageEntry.OnSubmitted = func(string) { saveProfile() }
-	whatsappEntry.OnSubmitted = func(string) { saveProfile() }
-	signalEntry.OnSubmitted = func(string) { saveProfile() }
-	telegramEntry.OnSubmitted = func(string) { saveProfile() }
+	firstNameEntry.OnSubmitted = makeOnSubmitted("first_name", firstNameEntry)
+	lastNameEntry.OnSubmitted = makeOnSubmitted("last_name", lastNameEntry)
+	taglineEntry.OnSubmitted = makeOnSubmitted("tagline", taglineEntry)
+	instaEntry.OnSubmitted = makeOnSubmitted("insta", instaEntry)
+	linkedinEntry.OnSubmitted = makeOnSubmitted("linkedin", linkedinEntry)
+	youtubeEntry.OnSubmitted = makeOnSubmitted("youtube", youtubeEntry)
+	tiktokEntry.OnSubmitted = makeOnSubmitted("tiktok", tiktokEntry)
+	gmailEntry.OnSubmitted = makeOnSubmitted("gmail", gmailEntry)
+	imessageEntry.OnSubmitted = makeOnSubmitted("imessage", imessageEntry)
+	whatsappEntry.OnSubmitted = makeOnSubmitted("whatsapp", whatsappEntry)
+	signalEntry.OnSubmitted = makeOnSubmitted("signal", signalEntry)
+	telegramEntry.OnSubmitted = makeOnSubmitted("telegram", telegramEntry)
 
 	// Save button
 	saveButton := widget.NewButton("Save Profile", saveProfile)
