@@ -31,14 +31,17 @@ func (a *Android) sendHandshake(peerUUID string, gatt *kotlin.BluetoothGatt) {
 	}
 	profileVersion := a.profileVersion
 	firstName := a.firstName  // Capture firstName while holding lock!
+	deviceID := a.deviceID    // Capture deviceID while holding lock!
 	a.mu.RUnlock()
+
+	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Captured values: firstName='%s', deviceID='%s'", firstName, deviceID)
 
 	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Marshaling handshake protobuf")
 
 	// Use protobuf HandshakeMessage
 	pbHandshake := &pb.HandshakeMessage{
-		DeviceId:        a.deviceID,
-		FirstName:       firstName,  // Use captured value
+		DeviceId:        deviceID,       // Use captured value
+		FirstName:       firstName,      // Use captured value
 		ProtocolVersion: 1,
 		TxPhotoHash:     photoHashBytes,  // Photo hash we're offering to send
 		ProfileVersion:  profileVersion, // Current profile version
@@ -86,14 +89,16 @@ func (a *Android) sendHandshakeViaWire(peerUUID string) {
 	}
 	profileVersion := a.profileVersion
 	firstName := a.firstName  // Capture firstName while holding lock!
+	deviceID := a.deviceID    // Capture deviceID while holding lock!
 	a.mu.RUnlock()
 
+	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Captured values: firstName='%s', deviceID='%s' (sendHandshakeViaWire)", firstName, deviceID)
 	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Marshaling handshake protobuf")
 
 	// Use protobuf HandshakeMessage
 	pbHandshake := &pb.HandshakeMessage{
-		DeviceId:        a.deviceID,
-		FirstName:       firstName,  // Use captured value
+		DeviceId:        deviceID,       // Use captured value
+		FirstName:       firstName,      // Use captured value
 		ProtocolVersion: 1,
 		TxPhotoHash:     photoHashBytes,  // Photo hash we're offering to send
 		ProfileVersion:  profileVersion, // Current profile version
