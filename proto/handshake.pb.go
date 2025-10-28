@@ -311,9 +311,12 @@ func (x *PhotoCompletionAck) GetSuccess() bool {
 }
 
 // Single device's state in the mesh (photo + profile)
+// NOTE: hardware_uuid is NOT included - it's ephemeral and changes frequently
+// (iOS rotates for privacy, Android changes on factory reset/new owner)
+// Hardware UUIDs are discovered via BLE scanning, not gossip
 type DeviceState struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
-	DeviceId           string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`                                 // Logical base36 ID
+	DeviceId           string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`                                 // Logical base36 ID (stable identity)
 	PhotoHash          []byte                 `protobuf:"bytes,2,opt,name=photo_hash,json=photoHash,proto3" json:"photo_hash,omitempty"`                              // SHA-256 hash (32 bytes) of their current photo
 	LastSeenTimestamp  int64                  `protobuf:"varint,3,opt,name=last_seen_timestamp,json=lastSeenTimestamp,proto3" json:"last_seen_timestamp,omitempty"`   // Unix timestamp when this state was last observed
 	FirstName          string                 `protobuf:"bytes,4,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`                              // Cached first name
@@ -816,7 +819,7 @@ const file_handshake_proto_rawDesc = "" +
 	"\x12PhotoCompletionAck\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12!\n" +
 	"\ftransfer_crc\x18\x02 \x01(\aR\vtransferCrc\x12\x18\n" +
-	"\asuccess\x18\x03 \x01(\bR\asuccess\"\x98\x02\n" +
+	"\asuccess\x18\x03 \x01(\bR\asuccess\"\xf3\x01\n" +
 	"\vDeviceState\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
@@ -825,8 +828,7 @@ const file_handshake_proto_rawDesc = "" +
 	"\n" +
 	"first_name\x18\x04 \x01(\tR\tfirstName\x12'\n" +
 	"\x0fprofile_version\x18\x05 \x01(\x05R\x0eprofileVersion\x120\n" +
-	"\x14profile_summary_hash\x18\x06 \x01(\fR\x12profileSummaryHash\x12#\n" +
-	"\rhardware_uuid\x18\a \x01(\tR\fhardwareUuid\"\xaf\x01\n" +
+	"\x14profile_summary_hash\x18\x06 \x01(\fR\x12profileSummaryHash\"\xaf\x01\n" +
 	"\rGossipMessage\x12(\n" +
 	"\x10sender_device_id\x18\x01 \x01(\tR\x0esenderDeviceId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x123\n" +
