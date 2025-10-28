@@ -288,4 +288,15 @@ func (a *Android) handleIncomingCentralConnection(peerUUID string) {
 	a.connectedGatts[peerUUID] = gatt
 
 	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔌 Central %s connected (created reverse GATT client)", shortHash(peerUUID))
+
+	// Discover services immediately so we can request photos from them later
+	// This is done asynchronously to avoid blocking
+	go func() {
+		success := gatt.DiscoverServices()
+		if success {
+			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Services discovered on reverse GATT client %s", shortHash(peerUUID))
+		} else {
+			logger.Warn(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "⚠️  Failed to discover services on reverse GATT client %s", shortHash(peerUUID))
+		}
+	}()
 }

@@ -259,4 +259,11 @@ func (ip *IPhone) handleIncomingCentralConnection(peerUUID string) {
 	ip.central.RegisterReversePeripheral(peripheral)
 
 	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🔌 Central %s connected (created reverse peripheral object)", shortHash(peerUUID))
+
+	// Discover services immediately so we can request photos from them later
+	// This is done asynchronously to avoid blocking
+	go func() {
+		peripheral.DiscoverServices([]string{phone.AuraServiceUUID})
+		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "✅ Services discovered on reverse peripheral %s", shortHash(peerUUID))
+	}()
 }
