@@ -96,14 +96,14 @@ func (ip *IPhone) handleHandshake(peerUUID string, data []byte) {
 	ip.handshaked[peerUUID] = &HandshakeMessage{
 		HardwareUUID: peerUUID,
 		DeviceID:     pbHandshake.DeviceId,
-		DeviceName:   fmt.Sprintf("iPhone (%s)", pbHandshake.FirstName),
+		DeviceName:   pbHandshake.FirstName,
 		FirstName:    pbHandshake.FirstName,
 	}
 
 	// Update discovered device with DeviceID, name, and photo hash
 	if device, exists := ip.discovered[peerUUID]; exists {
 		device.DeviceID = pbHandshake.DeviceId
-		device.Name = fmt.Sprintf("iPhone (%s)", pbHandshake.FirstName)
+		device.Name = pbHandshake.FirstName
 		device.PhotoHash = photoHashHex
 		ip.discovered[peerUUID] = device
 

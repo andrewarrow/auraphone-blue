@@ -19,8 +19,8 @@ func NewAndroid(hardwareUUID string) *Android {
 		panic(fmt.Sprintf("Failed to load/generate device ID: %v", err))
 	}
 
-	// Generate first name from device ID (first 4 chars for now, will be customizable later)
-	firstName := deviceID[:4]
+	// Default first name to platform name (will be customizable later in profile tab)
+	firstName := "Android"
 	deviceName := fmt.Sprintf("Android (%s)", firstName)
 
 	// Create identity manager (tracks all hardware UUID ↔ device ID mappings)
@@ -103,6 +103,9 @@ func (a *Android) Start() {
 
 	// Start scanning
 	a.startScanning()
+
+	// Set our firstName in mesh view so gossip messages include it
+	a.meshView.SetOurFirstName(a.firstName)
 
 	// Start gossip protocol timer (sends gossip every 5 seconds to connected peers)
 	a.startGossipTimer()

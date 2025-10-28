@@ -1,7 +1,3 @@
-# refactor
-
-we are in the middle of a refactor read PLAN.md ~/Documents/fix.txt and PLAN_IOS.md
-
 # how to read results from a run
 
 read ~/Documents/1.txt look at `ls -lR ~/.auraphone-blue-data/` gossip_audit.jsonl, socket_health.json, photo_timeline.jsonl, connection_events.jsonl, and test_report_* files. 

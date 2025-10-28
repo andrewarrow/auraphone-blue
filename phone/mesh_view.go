@@ -33,6 +33,7 @@ type MeshView struct {
 	// Our identity
 	ourDeviceID     string
 	ourHardwareUUID string
+	ourFirstName    string // Our firstName for gossip messages
 
 	// Mesh state: deviceID -> device state
 	devices map[string]*MeshDeviceState
@@ -62,8 +63,9 @@ type MeshView struct {
 // NewMeshView creates a new mesh view manager
 func NewMeshView(ourDeviceID, ourHardwareUUID, dataDir string, photoCache *PhotoCache) *MeshView {
 	mv := &MeshView{
-		ourDeviceID:      ourHardwareUUID,
+		ourDeviceID:      ourDeviceID,
 		ourHardwareUUID:  ourHardwareUUID,
+		ourFirstName:     "iPhone", // Default, will be updated via SetOurFirstName
 		devices:          make(map[string]*MeshDeviceState),
 		connectedDevices: make(map[string]bool),
 		gossipInterval:   5 * time.Second,
@@ -85,6 +87,13 @@ func (mv *MeshView) SetIdentityManager(im *IdentityManager) {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
 	mv.identityManager = im
+}
+
+// SetOurFirstName updates our firstName for gossip messages
+func (mv *MeshView) SetOurFirstName(firstName string) {
+	mv.mu.Lock()
+	defer mv.mu.Unlock()
+	mv.ourFirstName = firstName
 }
 
 // MarkDeviceConnected marks a device as currently connected
@@ -232,7 +241,7 @@ func (mv *MeshView) BuildGossipMessage(ourPhotoHash string) *pb.GossipMessage {
 		DeviceId:          mv.ourDeviceID,
 		PhotoHash:         ourPhotoHashBytes,
 		LastSeenTimestamp: time.Now().Unix(),
-		FirstName:         mv.ourDeviceID[:4], // Use first 4 chars of device ID
+		FirstName:         mv.ourFirstName,
 		ProfileVersion:    1,
 	})
 

@@ -187,21 +187,15 @@ func (a *Android) handleHandshake(peerUUID string, pbHandshake *pb.HandshakeMess
 	a.handshaked[peerUUID] = &HandshakeMessage{
 		HardwareUUID: peerUUID,
 		DeviceID:     pbHandshake.DeviceId,
-		DeviceName:   fmt.Sprintf("Android (%s)", pbHandshake.FirstName),
+		DeviceName:   pbHandshake.FirstName,
 		FirstName:    pbHandshake.FirstName,
 	}
 
 	// Update discovered device with DeviceID, name, and photo hash
 	var callbackDevice *phone.DiscoveredDevice
 	if device, exists := a.discovered[peerUUID]; exists {
-		// Detect platform from device name if possible (will be more accurate with future protocol changes)
-		platformName := device.Name
-		if platformName == "" || platformName == "Unknown Device" {
-			platformName = fmt.Sprintf("Device (%s)", pbHandshake.FirstName)
-		}
-
 		device.DeviceID = pbHandshake.DeviceId
-		device.Name = platformName
+		device.Name = pbHandshake.FirstName
 		device.PhotoHash = photoHashHex
 		a.discovered[peerUUID] = device
 
