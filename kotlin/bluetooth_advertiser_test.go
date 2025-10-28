@@ -77,7 +77,6 @@ func TestBluetoothLeAdvertiser_DirectMessageDelivery(t *testing.T) {
 		CharUUID:    phone.AuraProtocolCharUUID,
 		Data:        []byte("test write from central"),
 		SenderUUID:  "central-uuid",
-		Timestamp:   time.Now().UnixNano(),
 	}
 
 	// Deliver directly via HandleGATTMessage (no polling!)
