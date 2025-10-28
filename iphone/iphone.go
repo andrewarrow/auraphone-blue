@@ -175,7 +175,7 @@ func (ip *IPhone) setupGATTServices() {
 // startAdvertising begins BLE advertising
 func (ip *IPhone) startAdvertising() {
 	advData := map[string]interface{}{
-		"kCBAdvDataLocalName":    ip.deviceName,
+		"kCBAdvDataLocalName":    "AD-NAME-NOT-FOR-US",
 		"kCBAdvDataServiceUUIDs": []string{phone.AuraServiceUUID},
 	}
 

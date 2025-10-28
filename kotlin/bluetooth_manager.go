@@ -65,7 +65,8 @@ func (a *BluetoothAdapter) ShouldInitiateConnection(targetUUID string) bool {
 // Matches: bluetoothAdapter.getBluetoothLeAdvertiser()
 func (a *BluetoothAdapter) GetBluetoothLeAdvertiser() *BluetoothLeAdvertiser {
 	if a.advertiser == nil {
-		a.advertiser = NewBluetoothLeAdvertiser(a.uuid, a.deviceName, a.wire)
+		// Use placeholder name for advertising - not used for device identification
+		a.advertiser = NewBluetoothLeAdvertiser(a.uuid, "AD-NAME-NOT-FOR-US", a.wire)
 	}
 	return a.advertiser
 }
