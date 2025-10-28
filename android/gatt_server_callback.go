@@ -66,7 +66,8 @@ func (cb *androidGattServerCallback) OnCharacteristicWriteRequest(device *kotlin
 		a.handlePhotoChunk(peerUUID, value)
 
 	case phone.AuraProfileCharUUID:
-		// Profile data (not implemented yet)
+		// Profile updates - route through protocol handler for parsing
+		a.handleProtocolMessage(peerUUID, value)
 	}
 
 	// Send response if needed

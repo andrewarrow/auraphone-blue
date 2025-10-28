@@ -44,6 +44,9 @@ func (ip *IPhone) DidReceiveWriteRequests(peripheralManager *swift.CBPeripheralM
 		} else if request.Characteristic.UUID == phone.AuraPhotoCharUUID {
 			// Photo data
 			ip.handlePhotoData(request.Central.UUID, request.Value)
+		} else if request.Characteristic.UUID == phone.AuraProfileCharUUID {
+			// Profile updates - route through protocol handler for parsing
+			ip.handleProtocolMessage(request.Central.UUID, request.Value)
 		}
 	}
 
