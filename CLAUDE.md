@@ -3,6 +3,22 @@
 always do what is realistic for real BLE communication on ios and android.
 they each have their own rules and limits always go by that and never cheat.
 
+see these commits
+
+commit bf930d2753ccf043b2a43d1f90a307e894a2e2fc
+Author: aa <oneone@gmail.com>
+Date:   Tue Oct 28 10:08:56 2025 -0700
+
+    real Peripherals send notifications
+
+commit 95e913fd0a5fb353f715aacf41d5e711e9cfdb0d
+Author: aa <oneone@gmail.com>
+Date:   Tue Oct 28 10:03:34 2025 -0700
+
+    Single BLE Connection with Bidirectional Communication:
+
+an examples of fixing things that were not realistic BLE to realistic.
+
 
 # how to read results from a run
 
