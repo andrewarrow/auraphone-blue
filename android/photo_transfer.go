@@ -14,28 +14,42 @@ import (
 // ============================================================================
 
 // handlePhotoRequest handles incoming photo request from a Peripheral (when we're Central)
+// MULTI-HOP: Serves ANY cached photo, not just our own
 func (a *Android) handlePhotoRequest(peerUUID string, photoReq *pb.PhotoRequestMessage) {
 	photoHashHex := fmt.Sprintf("%x", photoReq.PhotoHash)
-	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📥 Received photo request from %s (hash: %s)",
-		shortHash(peerUUID), shortHash(photoHashHex))
+	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📥 Received photo request from %s (hash: %s, target: %s)",
+		shortHash(peerUUID), shortHash(photoHashHex), shortHash(photoReq.TargetDeviceId))
 
-	// Verify they're requesting OUR photo
+	// Check if we have this photo cached (MULTI-HOP: could be ours or someone else's)
+	if !a.photoCache.HasPhoto(photoHashHex) {
+		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+			"⚠️  Don't have requested photo %s in cache",
+			shortHash(photoHashHex))
+		return
+	}
+
+	// Load the photo from cache
+	photoData, err := a.photoCache.GetPhoto(photoHashHex)
+	if err != nil || len(photoData) == 0 {
+		logger.Error(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+			"Failed to load photo %s from cache: %v", shortHash(photoHashHex), err)
+		return
+	}
+
+	// Send the cached photo as Central via notification
+	// MULTI-HOP: We're acting as a relay node for this photo
 	a.mu.RLock()
 	ourPhotoHash := a.photoHash
 	a.mu.RUnlock()
 
-	if photoHashHex != ourPhotoHash {
-		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
-			"⚠️  Photo request mismatch: they want %s, we have %s",
-			shortHash(photoHashHex), shortHash(ourPhotoHash))
-		return
+	if photoHashHex == ourPhotoHash {
+		logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📤 Sending OUR photo to %s", shortHash(peerUUID))
+	} else {
+		logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔄 Multi-hop: Relaying photo %s to %s (for device %s)",
+			shortHash(photoHashHex), shortHash(peerUUID), shortHash(photoReq.TargetDeviceId))
 	}
 
-	// Send our photo as Central via notification (Peripheral requested it)
-	// In real BLE, when Central receives a request notification from Peripheral,
-	// Central can send data back via characteristic writes OR notifications
-	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📤 Sending photo to %s in response to request", shortHash(peerUUID))
-	go a.sendPhotoChunks(peerUUID)
+	go a.sendPhotoChunksWithData(peerUUID, photoData, photoHashHex, photoReq.TargetDeviceId)
 }
 
 // sendPhotoRequest sends a photo request notification to a Central (when we're Peripheral)
@@ -127,6 +141,7 @@ func (a *Android) requestAndReceivePhoto(peerUUID string, photoHash string, devi
 }
 
 // sendPhotoChunks sends photo chunks to a peer who subscribed
+// sendPhotoChunks sends OUR photo (convenience wrapper)
 func (a *Android) sendPhotoChunks(peerUUID string) {
 	a.mu.RLock()
 	photoData := a.photoData
@@ -134,6 +149,11 @@ func (a *Android) sendPhotoChunks(peerUUID string) {
 	deviceID := a.deviceID
 	a.mu.RUnlock()
 
+	a.sendPhotoChunksWithData(peerUUID, photoData, photoHash, deviceID)
+}
+
+// sendPhotoChunksWithData sends ANY photo (for multi-hop relay)
+func (a *Android) sendPhotoChunksWithData(peerUUID string, photoData []byte, photoHash string, sourceDeviceID string) {
 	if len(photoData) == 0 {
 		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "No photo to send to %s", shortHash(peerUUID))
 		return
@@ -143,8 +163,8 @@ func (a *Android) sendPhotoChunks(peerUUID string) {
 	chunks := a.photoChunker.ChunkPhoto(photoData)
 	totalChunks := len(chunks)
 
-	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📤 Sending %d photo chunks to %s (hash: %s)",
-		totalChunks, shortHash(peerUUID), shortHash(photoHash))
+	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📤 Sending %d photo chunks to %s (hash: %s, source: %s)",
+		totalChunks, shortHash(peerUUID), shortHash(photoHash), shortHash(sourceDeviceID))
 
 	// Convert photo hash hex to bytes
 	photoHashBytes := []byte{}
@@ -162,8 +182,8 @@ func (a *Android) sendPhotoChunks(peerUUID string) {
 	// Send each chunk
 	for i, chunk := range chunks {
 		chunkMsg := &pb.PhotoChunkMessage{
-			SenderDeviceId: deviceID,
-			TargetDeviceId: "", // Will be filled by receiver
+			SenderDeviceId: sourceDeviceID, // Original owner, not us (we might be relaying)
+			TargetDeviceId: "",             // Will be filled by receiver
 			PhotoHash:      photoHashBytes,
 			ChunkIndex:     int32(i),
 			TotalChunks:    int32(totalChunks),
@@ -262,4 +282,3 @@ func (a *Android) handlePhotoChunk(peerUUID string, data []byte) {
 		}
 	}
 }
-

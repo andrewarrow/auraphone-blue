@@ -24,6 +24,15 @@ type MeshDeviceState struct {
 	ProfileVersion   int32     `json:"profile_version"`    // profile version number
 }
 
+// NeighborDataState tracks what data a directly connected neighbor has
+type NeighborDataState struct {
+	DeviceID       string            // The neighbor's device ID
+	HardwareUUID   string            // The neighbor's hardware UUID
+	PhotoHashes    map[string]bool   // Which photo hashes this neighbor has (hash -> true)
+	ProfileVersions map[string]int32 // Which device profiles this neighbor has (deviceID -> version)
+	LastUpdated    time.Time         // When we last updated this info
+}
+
 // MeshView manages the gossip protocol mesh view
 // Tracks which devices exist and what photos they have
 // This is SHARED CODE used by both iPhone and Android
@@ -40,6 +49,10 @@ type MeshView struct {
 
 	// Connection state: which devices we're actually connected to right now
 	connectedDevices map[string]bool // deviceID -> is connected
+
+	// Neighbor data tracking (for multi-hop routing)
+	// Maps hardwareUUID -> what data that neighbor has
+	neighbors map[string]*NeighborDataState
 
 	// Gossip state
 	gossipRound    int32
@@ -68,6 +81,7 @@ func NewMeshView(ourDeviceID, ourHardwareUUID, dataDir string, photoCache *Photo
 		ourFirstName:     "iPhone", // Default, will be updated via SetOurFirstName
 		devices:          make(map[string]*MeshDeviceState),
 		connectedDevices: make(map[string]bool),
+		neighbors:        make(map[string]*NeighborDataState),
 		gossipInterval:   5 * time.Second,
 		photoCache:       photoCache,
 		dataDir:          dataDir,
@@ -354,6 +368,83 @@ func (mv *MeshView) MergeGossip(gossipMsg *pb.GossipMessage) []string {
 	mv.logGossipAudit("received", gossipMsg.SenderDeviceId, len(gossipMsg.MeshView), len(newDevices))
 
 	return newDevices
+}
+
+// UpdateNeighborData updates what data we know a neighbor has (called when receiving gossip)
+func (mv *MeshView) UpdateNeighborData(neighborDeviceID, neighborHardwareUUID string, gossipMsg *pb.GossipMessage) {
+	mv.mu.Lock()
+	defer mv.mu.Unlock()
+
+	// Get or create neighbor state
+	neighbor, exists := mv.neighbors[neighborHardwareUUID]
+	if !exists {
+		neighbor = &NeighborDataState{
+			DeviceID:        neighborDeviceID,
+			HardwareUUID:    neighborHardwareUUID,
+			PhotoHashes:     make(map[string]bool),
+			ProfileVersions: make(map[string]int32),
+		}
+		mv.neighbors[neighborHardwareUUID] = neighbor
+	}
+
+	neighbor.LastUpdated = time.Now()
+
+	// Update what photos/profiles this neighbor has based on their gossip
+	for _, deviceState := range gossipMsg.MeshView {
+		photoHashHex := bytesToHex(deviceState.PhotoHash)
+
+		// This neighbor knows about this device and likely has their photo
+		if photoHashHex != "" {
+			neighbor.PhotoHashes[photoHashHex] = true
+		}
+
+		// Track profile versions the neighbor has
+		if deviceState.ProfileVersion > 0 {
+			neighbor.ProfileVersions[deviceState.DeviceId] = deviceState.ProfileVersion
+		}
+	}
+}
+
+// FindNeighborsWithPhoto returns list of connected neighbors who have a specific photo
+func (mv *MeshView) FindNeighborsWithPhoto(photoHash string) []string {
+	mv.mu.RLock()
+	defer mv.mu.RUnlock()
+
+	neighborsWithPhoto := []string{}
+	for hardwareUUID, neighbor := range mv.neighbors {
+		// Check if this neighbor is currently connected
+		if _, connected := mv.connectedDevices[neighbor.DeviceID]; !connected {
+			continue
+		}
+
+		// Check if neighbor has this photo
+		if neighbor.PhotoHashes[photoHash] {
+			neighborsWithPhoto = append(neighborsWithPhoto, hardwareUUID)
+		}
+	}
+
+	return neighborsWithPhoto
+}
+
+// FindNeighborsWithProfile returns list of connected neighbors who have a specific profile version
+func (mv *MeshView) FindNeighborsWithProfile(targetDeviceID string, minVersion int32) []string {
+	mv.mu.RLock()
+	defer mv.mu.RUnlock()
+
+	neighborsWithProfile := []string{}
+	for hardwareUUID, neighbor := range mv.neighbors {
+		// Check if this neighbor is currently connected
+		if _, connected := mv.connectedDevices[neighbor.DeviceID]; !connected {
+			continue
+		}
+
+		// Check if neighbor has this profile with sufficient version
+		if version, exists := neighbor.ProfileVersions[targetDeviceID]; exists && version >= minVersion {
+			neighborsWithProfile = append(neighborsWithProfile, hardwareUUID)
+		}
+	}
+
+	return neighborsWithProfile
 }
 
 // GetAllDevices returns all known devices in the mesh

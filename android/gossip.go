@@ -89,6 +89,9 @@ func (a *Android) sendGossipToConnected() {
 
 // handleGossipMessage processes incoming gossip from a peer
 func (a *Android) handleGossipMessage(peerUUID string, gossipMsg *pb.GossipMessage) {
+	// Update what data this neighbor has (for multi-hop routing)
+	a.meshView.UpdateNeighborData(gossipMsg.SenderDeviceId, peerUUID, gossipMsg)
+
 	// Merge gossip into our mesh view
 	newDevices := a.meshView.MergeGossip(gossipMsg)
 
@@ -98,34 +101,60 @@ func (a *Android) handleGossipMessage(peerUUID string, gossipMsg *pb.GossipMessa
 			len(newDevices), shortHash(gossipMsg.SenderDeviceId))
 	}
 
-	// Check for photos we need to request
+	// Check for photos we need to request (MULTI-HOP ROUTING)
 	missingPhotos := a.meshView.GetMissingPhotos()
 	for _, device := range missingPhotos {
-		// Only request from directly connected devices for now
-		// TODO: Multi-hop photo routing via gossip
-		if peerUUID, exists := a.identityManager.GetHardwareUUID(device.DeviceID); exists {
-			if a.meshView.IsDeviceConnected(device.DeviceID) {
-				logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
-					"📸 Requesting photo %s from %s (learned via gossip)",
-					shortHash(device.PhotoHash), shortHash(device.DeviceID))
+		// Find ANY connected neighbor who has this photo
+		neighborsWithPhoto := a.meshView.FindNeighborsWithPhoto(device.PhotoHash)
 
-				a.meshView.MarkPhotoRequested(device.DeviceID)
-				go a.requestAndReceivePhoto(peerUUID, device.PhotoHash, device.DeviceID)
+		if len(neighborsWithPhoto) > 0 {
+			// Request from the first neighbor who has it (could be owner or relay)
+			neighborUUID := neighborsWithPhoto[0]
+			logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+				"📸 Multi-hop: Requesting photo %s from neighbor %s (for device %s)",
+				shortHash(device.PhotoHash), shortHash(neighborUUID), shortHash(device.DeviceID))
+
+			a.meshView.MarkPhotoRequested(device.DeviceID)
+			go a.requestAndReceivePhoto(neighborUUID, device.PhotoHash, device.DeviceID)
+		} else {
+			// Fallback: Try direct connection to owner if available
+			if peerUUID, exists := a.identityManager.GetHardwareUUID(device.DeviceID); exists {
+				if a.meshView.IsDeviceConnected(device.DeviceID) {
+					logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+						"📸 Direct: Requesting photo %s from owner %s",
+						shortHash(device.PhotoHash), shortHash(device.DeviceID))
+
+					a.meshView.MarkPhotoRequested(device.DeviceID)
+					go a.requestAndReceivePhoto(peerUUID, device.PhotoHash, device.DeviceID)
+				}
 			}
 		}
 	}
 
-	// Check for profiles we need to update
+	// Check for profiles we need to update (MULTI-HOP ROUTING)
 	outdatedProfiles := a.meshView.GetDevicesWithOutdatedProfiles()
 	for _, device := range outdatedProfiles {
-		// Only request from directly connected devices
-		if peerUUID, exists := a.identityManager.GetHardwareUUID(device.DeviceID); exists {
-			if a.meshView.IsDeviceConnected(device.DeviceID) {
-				logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
-					"📋 Requesting updated profile v%d for %s (learned via gossip)",
-					device.ProfileVersion, shortHash(device.DeviceID))
+		// Find ANY connected neighbor who has this profile version
+		neighborsWithProfile := a.meshView.FindNeighborsWithProfile(device.DeviceID, device.ProfileVersion)
 
-				go a.sendProfileRequest(peerUUID, device.DeviceID)
+		if len(neighborsWithProfile) > 0 {
+			// Request from the first neighbor who has it (could be owner or relay)
+			neighborUUID := neighborsWithProfile[0]
+			logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+				"📋 Multi-hop: Requesting profile v%d for %s from neighbor %s",
+				device.ProfileVersion, shortHash(device.DeviceID), shortHash(neighborUUID))
+
+			go a.sendProfileRequest(neighborUUID, device.DeviceID)
+		} else {
+			// Fallback: Try direct connection to owner if available
+			if peerUUID, exists := a.identityManager.GetHardwareUUID(device.DeviceID); exists {
+				if a.meshView.IsDeviceConnected(device.DeviceID) {
+					logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+						"📋 Direct: Requesting profile v%d from owner %s",
+						device.ProfileVersion, shortHash(device.DeviceID))
+
+					go a.sendProfileRequest(peerUUID, device.DeviceID)
+				}
 			}
 		}
 	}

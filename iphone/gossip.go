@@ -96,6 +96,9 @@ func (ip *IPhone) handleGossipMessage(peerUUID string, data []byte) {
 		return
 	}
 
+	// Update what data this neighbor has (for multi-hop routing)
+	ip.meshView.UpdateNeighborData(gossipMsg.SenderDeviceId, peerUUID, &gossipMsg)
+
 	// Merge gossip into our mesh view
 	newDevices := ip.meshView.MergeGossip(&gossipMsg)
 
@@ -105,34 +108,60 @@ func (ip *IPhone) handleGossipMessage(peerUUID string, data []byte) {
 			len(newDevices), shortHash(gossipMsg.SenderDeviceId))
 	}
 
-	// Check for photos we need to request
+	// Check for photos we need to request (MULTI-HOP ROUTING)
 	missingPhotos := ip.meshView.GetMissingPhotos()
 	for _, device := range missingPhotos {
-		// Only request from directly connected devices for now
-		// TODO: Multi-hop photo routing via gossip
-		if peerUUID, exists := ip.identityManager.GetHardwareUUID(device.DeviceID); exists {
-			if ip.meshView.IsDeviceConnected(device.DeviceID) {
-				logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
-					"📸 Requesting photo %s from %s (learned via gossip)",
-					shortHash(device.PhotoHash), shortHash(device.DeviceID))
+		// Find ANY connected neighbor who has this photo
+		neighborsWithPhoto := ip.meshView.FindNeighborsWithPhoto(device.PhotoHash)
 
-				ip.meshView.MarkPhotoRequested(device.DeviceID)
-				go ip.requestAndReceivePhoto(peerUUID, device.PhotoHash, device.DeviceID)
+		if len(neighborsWithPhoto) > 0 {
+			// Request from the first neighbor who has it (could be owner or relay)
+			neighborUUID := neighborsWithPhoto[0]
+			logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+				"📸 Multi-hop: Requesting photo %s from neighbor %s (for device %s)",
+				shortHash(device.PhotoHash), shortHash(neighborUUID), shortHash(device.DeviceID))
+
+			ip.meshView.MarkPhotoRequested(device.DeviceID)
+			go ip.requestAndReceivePhoto(neighborUUID, device.PhotoHash, device.DeviceID)
+		} else {
+			// Fallback: Try direct connection to owner if available
+			if peerUUID, exists := ip.identityManager.GetHardwareUUID(device.DeviceID); exists {
+				if ip.meshView.IsDeviceConnected(device.DeviceID) {
+					logger.Debug(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+						"📸 Direct: Requesting photo %s from owner %s",
+						shortHash(device.PhotoHash), shortHash(device.DeviceID))
+
+					ip.meshView.MarkPhotoRequested(device.DeviceID)
+					go ip.requestAndReceivePhoto(peerUUID, device.PhotoHash, device.DeviceID)
+				}
 			}
 		}
 	}
 
-	// Check for profiles we need to update
+	// Check for profiles we need to update (MULTI-HOP ROUTING)
 	outdatedProfiles := ip.meshView.GetDevicesWithOutdatedProfiles()
 	for _, device := range outdatedProfiles {
-		// Only request from directly connected devices
-		if peerUUID, exists := ip.identityManager.GetHardwareUUID(device.DeviceID); exists {
-			if ip.meshView.IsDeviceConnected(device.DeviceID) {
-				logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
-					"📋 Requesting updated profile v%d for %s (learned via gossip)",
-					device.ProfileVersion, shortHash(device.DeviceID))
+		// Find ANY connected neighbor who has this profile version
+		neighborsWithProfile := ip.meshView.FindNeighborsWithProfile(device.DeviceID, device.ProfileVersion)
 
-				go ip.sendProfileRequest(peerUUID, device.DeviceID)
+		if len(neighborsWithProfile) > 0 {
+			// Request from the first neighbor who has it (could be owner or relay)
+			neighborUUID := neighborsWithProfile[0]
+			logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+				"📋 Multi-hop: Requesting profile v%d for %s from neighbor %s",
+				device.ProfileVersion, shortHash(device.DeviceID), shortHash(neighborUUID))
+
+			go ip.sendProfileRequest(neighborUUID, device.DeviceID)
+		} else {
+			// Fallback: Try direct connection to owner if available
+			if peerUUID, exists := ip.identityManager.GetHardwareUUID(device.DeviceID); exists {
+				if ip.meshView.IsDeviceConnected(device.DeviceID) {
+					logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+						"📋 Direct: Requesting profile v%d from owner %s",
+						device.ProfileVersion, shortHash(device.DeviceID))
+
+					go ip.sendProfileRequest(peerUUID, device.DeviceID)
+				}
 			}
 		}
 	}

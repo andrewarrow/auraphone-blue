@@ -125,26 +125,99 @@ func (ip *IPhone) handleProfileMessage(peerUUID string, profileMsg *pb.ProfileMe
 	ip.mu.RUnlock()
 }
 
-// handleProfileRequest sends our profile when another device requests it
+// handleProfileRequest sends a profile when another device requests it
+// MULTI-HOP: Serves ANY cached profile, not just our own
 func (ip *IPhone) handleProfileRequest(peerUUID string, req *pb.ProfileRequestMessage) {
+	logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+		"📋 Received profile request from %s for device %s (version: %d)",
+		shortHash(peerUUID), shortHash(req.TargetDeviceId), req.ExpectedVersion)
+
 	// Check if they're requesting our profile
 	ip.mu.RLock()
 	ourDeviceID := ip.deviceID
 	ip.mu.RUnlock()
 
-	if req.TargetDeviceId != ourDeviceID {
-		logger.Warn(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
-			"Received profile request for %s but we are %s",
-			req.TargetDeviceId, ourDeviceID)
+	if req.TargetDeviceId == ourDeviceID {
+		// They want our profile - send it
+		logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+			"📋 Sending OUR profile to %s", shortHash(peerUUID))
+		ip.sendProfileMessage(peerUUID)
 		return
 	}
 
-	logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
-		"📋 Received profile request from %s - sending profile",
-		shortHash(peerUUID))
+	// MULTI-HOP: They want someone else's profile - check if we have it cached
+	cacheManager := phone.NewDeviceCacheManager(ip.hardwareUUID)
+	cachedProfile, err := cacheManager.LoadDeviceMetadata(req.TargetDeviceId)
+	if err != nil || cachedProfile == nil {
+		logger.Warn(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+			"⚠️  Don't have cached profile for %s", shortHash(req.TargetDeviceId))
+		return
+	}
 
-	// Send our profile
-	ip.sendProfileMessage(peerUUID)
+	// Check if our cached version is sufficient
+	if cachedProfile.ProfileVersion < req.ExpectedVersion {
+		logger.Warn(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+			"⚠️  Have profile v%d for %s but they want v%d",
+			cachedProfile.ProfileVersion, shortHash(req.TargetDeviceId), req.ExpectedVersion)
+		return
+	}
+
+	// Send the cached profile (MULTI-HOP relay)
+	logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)),
+		"🔄 Multi-hop: Relaying profile v%d for %s to %s",
+		cachedProfile.ProfileVersion, shortHash(req.TargetDeviceId), shortHash(peerUUID))
+
+	ip.sendCachedProfile(peerUUID, req.TargetDeviceId, cachedProfile)
+}
+
+// sendCachedProfile sends a cached profile (for multi-hop relay)
+func (ip *IPhone) sendCachedProfile(peerUUID string, targetDeviceID string, metadata *phone.DeviceMetadata) {
+	// Build ProfileMessage from cached metadata
+	profileMsg := &pb.ProfileMessage{
+		DeviceId:       targetDeviceID,
+		FirstName:      metadata.FirstName,
+		LastName:       metadata.LastName,
+		PhoneNumber:    "",
+		Tagline:        metadata.Tagline,
+		Insta:          metadata.Insta,
+		Linkedin:       metadata.LinkedIn,
+		Youtube:        metadata.YouTube,
+		Tiktok:         metadata.TikTok,
+		Gmail:          metadata.Gmail,
+		Imessage:       metadata.IMessage,
+		Whatsapp:       metadata.WhatsApp,
+		Signal:         metadata.Signal,
+		Telegram:       metadata.Telegram,
+		ProfileVersion: metadata.ProfileVersion,
+	}
+
+	data, err := proto.Marshal(profileMsg)
+	if err != nil {
+		logger.Error(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to marshal cached profile: %v", err)
+		return
+	}
+
+	// Determine if we're acting as Central or Peripheral for this connection
+	ip.mu.RLock()
+	peripheral := ip.connectedPeers[peerUUID]
+	ip.mu.RUnlock()
+
+	// Send profile via appropriate method based on our role
+	var err2 error
+	if peripheral != nil {
+		// We're Central - write to characteristic
+		err2 = ip.wire.WriteCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	} else {
+		// We're Peripheral - send notification
+		err2 = ip.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	}
+
+	if err2 != nil {
+		logger.Error(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to send cached profile to %s: %v", shortHash(peerUUID), err2)
+	} else {
+		logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "📤 Sent cached profile for %s to %s (%d bytes)",
+			shortHash(targetDeviceID), shortHash(peerUUID), len(data))
+	}
 }
 
 // sendProfileRequest requests a profile from a device

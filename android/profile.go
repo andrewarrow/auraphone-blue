@@ -130,26 +130,103 @@ func (a *Android) handleProfileMessage(peerUUID string, profileMsg *pb.ProfileMe
 	a.mu.RUnlock()
 }
 
-// handleProfileRequest sends our profile when another device requests it
+// handleProfileRequest sends a profile when another device requests it
+// MULTI-HOP: Serves ANY cached profile, not just our own
 func (a *Android) handleProfileRequest(peerUUID string, req *pb.ProfileRequestMessage) {
+	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+		"📋 Received profile request from %s for device %s (version: %d)",
+		shortHash(peerUUID), shortHash(req.TargetDeviceId), req.ExpectedVersion)
+
 	// Check if they're requesting our profile
 	a.mu.RLock()
 	ourDeviceID := a.deviceID
 	a.mu.RUnlock()
 
-	if req.TargetDeviceId != ourDeviceID {
-		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
-			"Received profile request for %s but we are %s",
-			req.TargetDeviceId, ourDeviceID)
+	if req.TargetDeviceId == ourDeviceID {
+		// They want our profile - send it
+		logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+			"📋 Sending OUR profile to %s", shortHash(peerUUID))
+		a.sendProfileMessage(peerUUID)
 		return
 	}
 
-	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
-		"📋 Received profile request from %s - sending profile",
-		shortHash(peerUUID))
+	// MULTI-HOP: They want someone else's profile - check if we have it cached
+	cacheManager := phone.NewDeviceCacheManager(a.hardwareUUID)
+	cachedProfile, err := cacheManager.LoadDeviceMetadata(req.TargetDeviceId)
+	if err != nil || cachedProfile == nil {
+		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+			"⚠️  Don't have cached profile for %s", shortHash(req.TargetDeviceId))
+		return
+	}
 
-	// Send our profile
-	a.sendProfileMessage(peerUUID)
+	// Check if our cached version is sufficient
+	if cachedProfile.ProfileVersion < req.ExpectedVersion {
+		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+			"⚠️  Have profile v%d for %s but they want v%d",
+			cachedProfile.ProfileVersion, shortHash(req.TargetDeviceId), req.ExpectedVersion)
+		return
+	}
+
+	// Send the cached profile (MULTI-HOP relay)
+	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
+		"🔄 Multi-hop: Relaying profile v%d for %s to %s",
+		cachedProfile.ProfileVersion, shortHash(req.TargetDeviceId), shortHash(peerUUID))
+
+	a.sendCachedProfile(peerUUID, req.TargetDeviceId, cachedProfile)
+}
+
+// sendCachedProfile sends a cached profile (for multi-hop relay)
+func (a *Android) sendCachedProfile(peerUUID string, targetDeviceID string, metadata *phone.DeviceMetadata) {
+	// Build ProfileMessage from cached metadata
+	profileMsg := &pb.ProfileMessage{
+		DeviceId:       targetDeviceID,
+		FirstName:      metadata.FirstName,
+		LastName:       metadata.LastName,
+		PhoneNumber:    "",
+		Tagline:        metadata.Tagline,
+		Insta:          metadata.Insta,
+		Linkedin:       metadata.LinkedIn,
+		Youtube:        metadata.YouTube,
+		Tiktok:         metadata.TikTok,
+		Gmail:          metadata.Gmail,
+		Imessage:       metadata.IMessage,
+		Whatsapp:       metadata.WhatsApp,
+		Signal:         metadata.Signal,
+		Telegram:       metadata.Telegram,
+		ProfileVersion: metadata.ProfileVersion,
+	}
+
+	data, err := proto.Marshal(profileMsg)
+	if err != nil {
+		logger.Error(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to marshal cached profile: %v", err)
+		return
+	}
+
+	// Determine if we're acting as Central or Peripheral for this connection
+	a.mu.RLock()
+	gatt, isCentral := a.connectedGatts[peerUUID]
+	a.mu.RUnlock()
+
+	// Send profile via appropriate method based on our role
+	var err2 error
+	if isCentral {
+		// We're Central - write to characteristic
+		char := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
+		if char != nil {
+			char.Value = data
+			gatt.WriteCharacteristic(char)
+		}
+	} else {
+		// We're Peripheral - send notification
+		err2 = a.wire.NotifyCharacteristic(peerUUID, phone.AuraServiceUUID, phone.AuraProtocolCharUUID, data)
+	}
+
+	if err2 != nil {
+		logger.Error(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to send cached profile to %s: %v", shortHash(peerUUID), err2)
+	} else {
+		logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📤 Sent cached profile for %s to %s (%d bytes)",
+			shortHash(targetDeviceID), shortHash(peerUUID), len(data))
+	}
 }
 
 // sendProfileRequest requests a profile from a device
