@@ -34,6 +34,7 @@ func (ip *IPhone) sendProfileMessage(peerUUID string) {
 	// Build ProfileMessage from map
 	profileMsg := &pb.ProfileMessage{
 		DeviceId:       deviceID,
+		FirstName:      profile["first_name"],
 		LastName:       profile["last_name"],
 		PhoneNumber:    profile["phone_number"],
 		Tagline:        profile["tagline"],
@@ -80,10 +81,11 @@ func (ip *IPhone) sendProfileMessage(peerUUID string) {
 // handleProfileMessage receives and stores a profile from a peer
 func (ip *IPhone) handleProfileMessage(peerUUID string, profileMsg *pb.ProfileMessage) {
 	logger.Info(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "📋 Received profile v%d from %s (ID: %s, name: %s %s)",
-		profileMsg.ProfileVersion, shortHash(peerUUID), profileMsg.DeviceId, profileMsg.LastName, profileMsg.Tagline[:min(20, len(profileMsg.Tagline))])
+		profileMsg.ProfileVersion, shortHash(peerUUID), profileMsg.DeviceId, profileMsg.FirstName, profileMsg.Tagline[:min(20, len(profileMsg.Tagline))])
 
 	// Store profile in DeviceCacheManager
 	metadata := &phone.DeviceMetadata{
+		FirstName:      profileMsg.FirstName,
 		LastName:       profileMsg.LastName,
 		Tagline:        profileMsg.Tagline,
 		Insta:          profileMsg.Insta,
@@ -104,7 +106,23 @@ func (ip *IPhone) handleProfileMessage(peerUUID string, profileMsg *pb.ProfileMe
 		logger.Warn(fmt.Sprintf("%s iOS", shortHash(ip.hardwareUUID)), "Failed to save profile for %s: %v", profileMsg.DeviceId, err)
 	}
 
-	// TODO: Notify GUI of profile update
+	// Notify GUI of profile update
+	ip.mu.RLock()
+	callback := ip.callback
+	if device, exists := ip.discovered[peerUUID]; exists {
+		// Update the device name with the new first_name from profile
+		device.Name = profileMsg.FirstName
+		ip.discovered[peerUUID] = device
+
+		if callback != nil {
+			// Trigger GUI refresh with updated device info
+			callbackDevice := device
+			ip.mu.RUnlock()
+			callback(callbackDevice)
+			return
+		}
+	}
+	ip.mu.RUnlock()
 }
 
 // handleProfileRequest sends our profile when another device requests it

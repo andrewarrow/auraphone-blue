@@ -19,19 +19,20 @@ message HandshakeMessage {
 // Can be fragmented if it exceeds MTU
 message ProfileMessage {
   string device_id = 1;
-  string last_name = 2;
-  string phone_number = 3;
-  string tagline = 4;
-  string insta = 5;
-  string linkedin = 6;
-  string youtube = 7;
-  string tiktok = 8;
-  string gmail = 9;
-  string imessage = 10;
-  string whatsapp = 11;
-  string signal = 12;
-  string telegram = 13;
-  int32 profile_version = 14; // Profile version number
+  string first_name = 2;
+  string last_name = 3;
+  string phone_number = 4;
+  string tagline = 5;
+  string insta = 6;
+  string linkedin = 7;
+  string youtube = 8;
+  string tiktok = 9;
+  string gmail = 10;
+  string imessage = 11;
+  string whatsapp = 12;
+  string signal = 13;
+  string telegram = 14;
+  int32 profile_version = 15; // Profile version number
 }
 
 // Acknowledgment of photo transfer completion

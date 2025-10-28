@@ -34,6 +34,7 @@ func (a *Android) sendProfileMessage(peerUUID string) {
 	// Build ProfileMessage from map
 	profileMsg := &pb.ProfileMessage{
 		DeviceId:       deviceID,
+		FirstName:      profile["first_name"],
 		LastName:       profile["last_name"],
 		PhoneNumber:    profile["phone_number"],
 		Tagline:        profile["tagline"],
@@ -85,10 +86,11 @@ func (a *Android) handleProfileMessage(peerUUID string, profileMsg *pb.ProfileMe
 	}
 
 	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📋 Received profile v%d from %s (ID: %s, name: %s %s)",
-		profileMsg.ProfileVersion, shortHash(peerUUID), profileMsg.DeviceId, profileMsg.LastName, taglinePreview)
+		profileMsg.ProfileVersion, shortHash(peerUUID), profileMsg.DeviceId, profileMsg.FirstName, taglinePreview)
 
 	// Store profile in DeviceCacheManager
 	metadata := &phone.DeviceMetadata{
+		FirstName:      profileMsg.FirstName,
 		LastName:       profileMsg.LastName,
 		Tagline:        profileMsg.Tagline,
 		Insta:          profileMsg.Insta,
@@ -109,7 +111,23 @@ func (a *Android) handleProfileMessage(peerUUID string, profileMsg *pb.ProfileMe
 		logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Failed to save profile for %s: %v", profileMsg.DeviceId, err)
 	}
 
-	// TODO: Notify GUI of profile update
+	// Notify GUI of profile update
+	a.mu.RLock()
+	callback := a.callback
+	if device, exists := a.discovered[peerUUID]; exists {
+		// Update the device name with the new first_name from profile
+		device.Name = profileMsg.FirstName
+		a.discovered[peerUUID] = device
+
+		if callback != nil {
+			// Trigger GUI refresh with updated device info
+			callbackDevice := device
+			a.mu.RUnlock()
+			callback(callbackDevice)
+			return
+		}
+	}
+	a.mu.RUnlock()
 }
 
 // handleProfileRequest sends our profile when another device requests it

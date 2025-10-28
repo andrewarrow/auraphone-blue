@@ -112,19 +112,20 @@ func (x *HandshakeMessage) GetProfileVersion() int32 {
 type ProfileMessage struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	DeviceId       string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	LastName       string                 `protobuf:"bytes,2,opt,name=last_name,json=lastName,proto3" json:"last_name,omitempty"`
-	PhoneNumber    string                 `protobuf:"bytes,3,opt,name=phone_number,json=phoneNumber,proto3" json:"phone_number,omitempty"`
-	Tagline        string                 `protobuf:"bytes,4,opt,name=tagline,proto3" json:"tagline,omitempty"`
-	Insta          string                 `protobuf:"bytes,5,opt,name=insta,proto3" json:"insta,omitempty"`
-	Linkedin       string                 `protobuf:"bytes,6,opt,name=linkedin,proto3" json:"linkedin,omitempty"`
-	Youtube        string                 `protobuf:"bytes,7,opt,name=youtube,proto3" json:"youtube,omitempty"`
-	Tiktok         string                 `protobuf:"bytes,8,opt,name=tiktok,proto3" json:"tiktok,omitempty"`
-	Gmail          string                 `protobuf:"bytes,9,opt,name=gmail,proto3" json:"gmail,omitempty"`
-	Imessage       string                 `protobuf:"bytes,10,opt,name=imessage,proto3" json:"imessage,omitempty"`
-	Whatsapp       string                 `protobuf:"bytes,11,opt,name=whatsapp,proto3" json:"whatsapp,omitempty"`
-	Signal         string                 `protobuf:"bytes,12,opt,name=signal,proto3" json:"signal,omitempty"`
-	Telegram       string                 `protobuf:"bytes,13,opt,name=telegram,proto3" json:"telegram,omitempty"`
-	ProfileVersion int32                  `protobuf:"varint,14,opt,name=profile_version,json=profileVersion,proto3" json:"profile_version,omitempty"` // Profile version number
+	FirstName      string                 `protobuf:"bytes,2,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`
+	LastName       string                 `protobuf:"bytes,3,opt,name=last_name,json=lastName,proto3" json:"last_name,omitempty"`
+	PhoneNumber    string                 `protobuf:"bytes,4,opt,name=phone_number,json=phoneNumber,proto3" json:"phone_number,omitempty"`
+	Tagline        string                 `protobuf:"bytes,5,opt,name=tagline,proto3" json:"tagline,omitempty"`
+	Insta          string                 `protobuf:"bytes,6,opt,name=insta,proto3" json:"insta,omitempty"`
+	Linkedin       string                 `protobuf:"bytes,7,opt,name=linkedin,proto3" json:"linkedin,omitempty"`
+	Youtube        string                 `protobuf:"bytes,8,opt,name=youtube,proto3" json:"youtube,omitempty"`
+	Tiktok         string                 `protobuf:"bytes,9,opt,name=tiktok,proto3" json:"tiktok,omitempty"`
+	Gmail          string                 `protobuf:"bytes,10,opt,name=gmail,proto3" json:"gmail,omitempty"`
+	Imessage       string                 `protobuf:"bytes,11,opt,name=imessage,proto3" json:"imessage,omitempty"`
+	Whatsapp       string                 `protobuf:"bytes,12,opt,name=whatsapp,proto3" json:"whatsapp,omitempty"`
+	Signal         string                 `protobuf:"bytes,13,opt,name=signal,proto3" json:"signal,omitempty"`
+	Telegram       string                 `protobuf:"bytes,14,opt,name=telegram,proto3" json:"telegram,omitempty"`
+	ProfileVersion int32                  `protobuf:"varint,15,opt,name=profile_version,json=profileVersion,proto3" json:"profile_version,omitempty"` // Profile version number
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -162,6 +163,13 @@ func (*ProfileMessage) Descriptor() ([]byte, []int) {
 func (x *ProfileMessage) GetDeviceId() string {
 	if x != nil {
 		return x.DeviceId
+	}
+	return ""
+}
+
+func (x *ProfileMessage) GetFirstName() string {
+	if x != nil {
+		return x.FirstName
 	}
 	return ""
 }
@@ -800,23 +808,25 @@ const file_proto_handshake_proto_rawDesc = "" +
 	"\x10protocol_version\x18\x03 \x01(\x05R\x0fprotocolVersion\x12\"\n" +
 	"\rrx_photo_hash\x18\x04 \x01(\fR\vrxPhotoHash\x12\"\n" +
 	"\rtx_photo_hash\x18\x05 \x01(\fR\vtxPhotoHash\x12'\n" +
-	"\x0fprofile_version\x18\x06 \x01(\x05R\x0eprofileVersion\"\x96\x03\n" +
+	"\x0fprofile_version\x18\x06 \x01(\x05R\x0eprofileVersion\"\xb5\x03\n" +
 	"\x0eProfileMessage\x12\x1b\n" +
-	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1b\n" +
-	"\tlast_name\x18\x02 \x01(\tR\blastName\x12!\n" +
-	"\fphone_number\x18\x03 \x01(\tR\vphoneNumber\x12\x18\n" +
-	"\atagline\x18\x04 \x01(\tR\atagline\x12\x14\n" +
-	"\x05insta\x18\x05 \x01(\tR\x05insta\x12\x1a\n" +
-	"\blinkedin\x18\x06 \x01(\tR\blinkedin\x12\x18\n" +
-	"\ayoutube\x18\a \x01(\tR\ayoutube\x12\x16\n" +
-	"\x06tiktok\x18\b \x01(\tR\x06tiktok\x12\x14\n" +
-	"\x05gmail\x18\t \x01(\tR\x05gmail\x12\x1a\n" +
-	"\bimessage\x18\n" +
-	" \x01(\tR\bimessage\x12\x1a\n" +
-	"\bwhatsapp\x18\v \x01(\tR\bwhatsapp\x12\x16\n" +
-	"\x06signal\x18\f \x01(\tR\x06signal\x12\x1a\n" +
-	"\btelegram\x18\r \x01(\tR\btelegram\x12'\n" +
-	"\x0fprofile_version\x18\x0e \x01(\x05R\x0eprofileVersion\"n\n" +
+	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
+	"\n" +
+	"first_name\x18\x02 \x01(\tR\tfirstName\x12\x1b\n" +
+	"\tlast_name\x18\x03 \x01(\tR\blastName\x12!\n" +
+	"\fphone_number\x18\x04 \x01(\tR\vphoneNumber\x12\x18\n" +
+	"\atagline\x18\x05 \x01(\tR\atagline\x12\x14\n" +
+	"\x05insta\x18\x06 \x01(\tR\x05insta\x12\x1a\n" +
+	"\blinkedin\x18\a \x01(\tR\blinkedin\x12\x18\n" +
+	"\ayoutube\x18\b \x01(\tR\ayoutube\x12\x16\n" +
+	"\x06tiktok\x18\t \x01(\tR\x06tiktok\x12\x14\n" +
+	"\x05gmail\x18\n" +
+	" \x01(\tR\x05gmail\x12\x1a\n" +
+	"\bimessage\x18\v \x01(\tR\bimessage\x12\x1a\n" +
+	"\bwhatsapp\x18\f \x01(\tR\bwhatsapp\x12\x16\n" +
+	"\x06signal\x18\r \x01(\tR\x06signal\x12\x1a\n" +
+	"\btelegram\x18\x0e \x01(\tR\btelegram\x12'\n" +
+	"\x0fprofile_version\x18\x0f \x01(\x05R\x0eprofileVersion\"n\n" +
 	"\x12PhotoCompletionAck\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12!\n" +
 	"\ftransfer_crc\x18\x02 \x01(\aR\vtransferCrc\x12\x18\n" +
