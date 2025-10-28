@@ -136,17 +136,21 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 		return
 	}
 
+	// Try to parse as ProfileMessage (has phone_number or tagline fields)
+	// Check this BEFORE ProfileRequestMessage because field 1 and 2 overlap!
+	// ProfileMessage: device_id(1), last_name(2), phone_number(3)...
+	// ProfileRequestMessage: requester_device_id(1), target_device_id(2), expected_version(3)
+	// Without checking ProfileMessage first, last_name gets misread as target_device_id
+	var profileMsg pb.ProfileMessage
+	if proto.Unmarshal(data, &profileMsg) == nil && profileMsg.DeviceId != "" && (profileMsg.PhoneNumber != "" || profileMsg.Tagline != "" || profileMsg.Insta != "" || profileMsg.LastName != "") {
+		a.handleProfileMessage(peerUUID, &profileMsg)
+		return
+	}
+
 	// Try to parse as ProfileRequestMessage (has RequesterDeviceId field)
 	var profileReq pb.ProfileRequestMessage
 	if proto.Unmarshal(data, &profileReq) == nil && profileReq.RequesterDeviceId != "" && profileReq.TargetDeviceId != "" {
 		a.handleProfileRequest(peerUUID, &profileReq)
-		return
-	}
-
-	// Try to parse as ProfileMessage (has phone_number or tagline fields)
-	var profileMsg pb.ProfileMessage
-	if proto.Unmarshal(data, &profileMsg) == nil && profileMsg.DeviceId != "" && (profileMsg.PhoneNumber != "" || profileMsg.Tagline != "" || profileMsg.Insta != "") {
-		a.handleProfileMessage(peerUUID, &profileMsg)
 		return
 	}
 
