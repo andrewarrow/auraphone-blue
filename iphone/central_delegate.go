@@ -70,8 +70,24 @@ func (ip *IPhone) DidConnectPeripheral(central swift.CBCentralManager, periphera
 	// Mark as connected in IdentityManager (tracks connection state by hardware UUID)
 	ip.identityManager.MarkConnected(peripheral.UUID)
 
-	// Send handshake
-	ip.sendHandshake(peripheral.UUID)
+	// Get the peripheral object from our map so we can set delegate and discover services
+	ip.mu.Lock()
+	peripheralPtr, exists := ip.connectedPeers[peripheral.UUID]
+	ip.mu.Unlock()
+
+	if !exists {
+		logger.Error(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "❌ Peripheral %s not found in connectedPeers", shortHash(peripheral.UUID))
+		return
+	}
+
+	// Set ourselves as the delegate to receive service discovery callbacks
+	// This is realistic iOS behavior - delegate must be set before discovering services
+	peripheralPtr.Delegate = ip
+
+	// Discover services - this is async, will callback to DidDiscoverServices
+	// In real iOS CoreBluetooth, you must discover services before you can subscribe to characteristics
+	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🔍 Discovering services for %s", shortHash(peripheral.UUID))
+	peripheralPtr.DiscoverServices([]string{phone.AuraServiceUUID})
 }
 
 func (ip *IPhone) DidFailToConnectPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, err error) {
