@@ -51,32 +51,24 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 		return
 	}
 
-	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📋 Services discovered for %s", shortHash(peerUUID))
-
 	// Subscribe to protocol characteristic for handshake and gossip
-	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔍 Getting protocol characteristic for subscription")
 	char := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
 	if char != nil {
-		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔍 Subscribing to protocol characteristic")
 		gatt.SetCharacteristicNotification(char, true)
 	} else {
 		logger.Error(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "❌ Protocol characteristic not found!")
 	}
 
 	// Subscribe to photo characteristic for photo transfers
-	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔍 Getting photo characteristic for subscription")
 	photoChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraPhotoCharUUID)
 	if photoChar != nil {
-		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔍 Subscribing to photo characteristic")
 		gatt.SetCharacteristicNotification(photoChar, true)
 	} else {
 		logger.Error(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "❌ Photo characteristic not found!")
 	}
 
 	// Send handshake
-	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔍 Calling sendHandshake")
 	a.sendHandshake(peerUUID, gatt)
-	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔍 OnServicesDiscovered complete")
 }
 
 func (a *Android) OnCharacteristicWrite(gatt *kotlin.BluetoothGatt, characteristic *kotlin.BluetoothGattCharacteristic, status int) {

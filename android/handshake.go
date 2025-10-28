@@ -15,11 +15,7 @@ import (
 // ============================================================================
 
 func (a *Android) sendHandshake(peerUUID string, gatt *kotlin.BluetoothGatt) {
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 sendHandshake called for peer %s", shortHash(peerUUID))
-
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Acquiring read lock")
 	a.mu.RLock()
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Read lock acquired")
 	photoHashBytes := []byte{}
 	if a.photoHash != "" {
 		// Convert hex string to bytes
@@ -33,10 +29,6 @@ func (a *Android) sendHandshake(peerUUID string, gatt *kotlin.BluetoothGatt) {
 	firstName := a.firstName  // Capture firstName while holding lock!
 	deviceID := a.deviceID    // Capture deviceID while holding lock!
 	a.mu.RUnlock()
-
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Captured values: firstName='%s', deviceID='%s'", firstName, deviceID)
-
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Marshaling handshake protobuf")
 
 	// Use protobuf HandshakeMessage
 	pbHandshake := &pb.HandshakeMessage{
@@ -52,8 +44,6 @@ func (a *Android) sendHandshake(peerUUID string, gatt *kotlin.BluetoothGatt) {
 		logger.Error(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Failed to marshal handshake: %v", err)
 		return
 	}
-
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Getting protocol characteristic")
 
 	// Write to peer's AuraProtocolCharUUID
 	char := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
@@ -62,12 +52,8 @@ func (a *Android) sendHandshake(peerUUID string, gatt *kotlin.BluetoothGatt) {
 		return
 	}
 
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Writing characteristic")
-
 	char.Value = data
-	success := gatt.WriteCharacteristic(char)
-
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 WriteCharacteristic returned: %v", success)
+	gatt.WriteCharacteristic(char)
 
 	logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🤝 Sent handshake to %s (photo: %s)", shortHash(peerUUID), shortHash(a.photoHash))
 }
@@ -75,8 +61,6 @@ func (a *Android) sendHandshake(peerUUID string, gatt *kotlin.BluetoothGatt) {
 // sendHandshakeViaWire sends handshake directly via wire (when we don't have a GATT connection)
 // This is used when we're acting as Peripheral for this connection
 func (a *Android) sendHandshakeViaWire(peerUUID string) {
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 sendHandshakeViaWire called for peer %s", shortHash(peerUUID))
-
 	a.mu.RLock()
 	photoHashBytes := []byte{}
 	if a.photoHash != "" {
@@ -92,9 +76,6 @@ func (a *Android) sendHandshakeViaWire(peerUUID string) {
 	deviceID := a.deviceID    // Capture deviceID while holding lock!
 	a.mu.RUnlock()
 
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Captured values: firstName='%s', deviceID='%s' (sendHandshakeViaWire)", firstName, deviceID)
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Marshaling handshake protobuf")
-
 	// Use protobuf HandshakeMessage
 	pbHandshake := &pb.HandshakeMessage{
 		DeviceId:        deviceID,       // Use captured value
@@ -109,8 +90,6 @@ func (a *Android) sendHandshakeViaWire(peerUUID string) {
 		logger.Error(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Failed to marshal handshake: %v", err)
 		return
 	}
-
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Calling wire.NotifyCharacteristic (acting as Peripheral)")
 
 	// Send notification via wire (Peripherals send notifications, not writes)
 	// This is the realistic BLE behavior: when we're Peripheral, we can only respond via notifications
@@ -120,18 +99,13 @@ func (a *Android) sendHandshakeViaWire(peerUUID string) {
 	} else {
 		logger.Info(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🤝 Sent handshake via notification to %s (photo: %s)", shortHash(peerUUID), shortHash(a.photoHash))
 	}
-
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 sendHandshakeViaWire completed for peer %s", shortHash(peerUUID))
 }
 
 func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
-	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔍 handleProtocolMessage: %d bytes from %s", len(data), shortHash(peerUUID))
-
 	// Try to parse as GossipMessage first (has MeshView field)
 	var pbGossip pb.GossipMessage
 	err := proto.Unmarshal(data, &pbGossip)
 	if err == nil && len(pbGossip.MeshView) > 0 {
-		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Identified as GossipMessage (mesh_view has %d devices)", len(pbGossip.MeshView))
 		// It's a gossip message
 		a.handleGossipMessage(peerUUID, &pbGossip)
 		return
@@ -142,7 +116,6 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 	var pbHandshake pb.HandshakeMessage
 	err = proto.Unmarshal(data, &pbHandshake)
 	if err == nil && pbHandshake.DeviceId != "" && pbHandshake.ProtocolVersion > 0 {
-		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Identified as HandshakeMessage (protocol_version=%d)", pbHandshake.ProtocolVersion)
 		// It's a handshake
 		a.handleHandshake(peerUUID, &pbHandshake)
 		return
@@ -154,7 +127,6 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 	// The presence of PhotoHash (bytes field 3) is the discriminator
 	var photoReq pb.PhotoRequestMessage
 	if proto.Unmarshal(data, &photoReq) == nil && photoReq.RequesterDeviceId != "" && len(photoReq.PhotoHash) > 0 {
-		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Identified as PhotoRequestMessage")
 		a.handlePhotoRequest(peerUUID, &photoReq)
 		return
 	}
@@ -171,11 +143,9 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 		var testProfile pb.ProfileMessage
 		if proto.Unmarshal(data, &testProfile) == nil && testProfile.ProfileVersion > 0 {
 			// It's actually a ProfileMessage, not a ProfileRequestMessage
-			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔀 Looks like ProfileRequestMessage but has profile_version=%d, treating as ProfileMessage", testProfile.ProfileVersion)
 			// Fall through to ProfileMessage check below
 		} else {
 			// It's a real ProfileRequestMessage
-			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Identified as ProfileRequestMessage (target=%s, version=%d)", profileReq.TargetDeviceId[:8], profileReq.ExpectedVersion)
 			a.handleProfileRequest(peerUUID, &profileReq)
 			return
 		}
@@ -189,18 +159,7 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 	hasDeviceID := profileMsg.DeviceId != ""
 	hasProfileFields := profileMsg.FirstName != "" || profileMsg.PhoneNumber != "" || profileMsg.Tagline != "" || profileMsg.Insta != "" || profileMsg.LastName != ""
 
-	taglinePreview := profileMsg.Tagline
-	if len(taglinePreview) > 20 {
-		taglinePreview = taglinePreview[:20]
-	}
-
-	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]),
-		"🔍 ProfileMessage check: parseErr=%v, deviceID=%s, firstName=%s, lastName=%s, tagline=%s, version=%d, hasProfileFields=%v",
-		parseErr, profileMsg.DeviceId[:min(8, len(profileMsg.DeviceId))], profileMsg.FirstName, profileMsg.LastName,
-		taglinePreview, profileMsg.ProfileVersion, hasProfileFields)
-
 	if parseErr == nil && hasDeviceID && hasProfileFields {
-		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Identified as ProfileMessage (device=%s, version=%d)", profileMsg.DeviceId[:8], profileMsg.ProfileVersion)
 		a.handleProfileMessage(peerUUID, &profileMsg)
 		return
 	}
@@ -208,15 +167,7 @@ func (a *Android) handleProtocolMessage(peerUUID string, data []byte) {
 	logger.Warn(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "⚠️  Failed to parse protocol message from %s (%d bytes)", shortHash(peerUUID), len(data))
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func (a *Android) handleHandshake(peerUUID string, pbHandshake *pb.HandshakeMessage) {
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 handleHandshake called for peer %s", shortHash(peerUUID))
 
 	// Convert photo hash bytes to hex string
 	photoHashHex := ""
@@ -231,7 +182,6 @@ func (a *Android) handleHandshake(peerUUID string, pbHandshake *pb.HandshakeMess
 	a.mu.RUnlock()
 
 	if existingHandshake != nil && deviceExists && existingDevice.PhotoHash == photoHashHex {
-		logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Handshake already completed with %s (same photo), skipping", shortHash(peerUUID))
 		return
 	}
 
@@ -240,32 +190,22 @@ func (a *Android) handleHandshake(peerUUID string, pbHandshake *pb.HandshakeMess
 
 	// CRITICAL: Register the hardware UUID ↔ device ID mapping in IdentityManager
 	// This is THE ONLY place where we learn about other devices' DeviceIDs
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 [STEP 1] Registering device identity")
 	a.identityManager.RegisterDevice(peerUUID, pbHandshake.DeviceId)
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 [STEP 1] Device identity registered")
 
 	// Persist mappings to disk
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 [STEP 2] Saving identity mappings to disk")
 	if err := a.identityManager.SaveToDisk(); err != nil {
 		logger.Warn(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Failed to save identity mappings: %v", err)
 	}
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 [STEP 2] Identity mappings saved")
 
 	// Update mesh view with peer's device state
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 [STEP 3] Updating mesh view")
 	a.meshView.UpdateDevice(pbHandshake.DeviceId, photoHashHex, pbHandshake.FirstName, pbHandshake.ProfileVersion)
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 [STEP 3] Mesh view updated")
-
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 [STEP 4] Marking device connected in mesh")
 	a.meshView.MarkDeviceConnected(pbHandshake.DeviceId)
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 [STEP 4] Device marked as connected")
 
 	// Persist mesh view to disk after handshake
 	if err := a.meshView.SaveToDisk(); err != nil {
 		logger.Warn(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Failed to save mesh view: %v", err)
 	}
 
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Acquiring mutex to update handshaked map")
 	a.mu.Lock()
 	alreadyHandshaked := a.handshaked[peerUUID] != nil
 
@@ -291,29 +231,21 @@ func (a *Android) handleHandshake(peerUUID string, pbHandshake *pb.HandshakeMess
 
 	// Get GATT connection for this peer
 	gatt := a.connectedGatts[peerUUID]
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Releasing mutex")
 	a.mu.Unlock()
 
 	// Notify GUI (outside mutex to avoid deadlock)
 	if callbackDevice != nil && a.callback != nil {
-		logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 Calling discovery callback")
 		a.callback(*callbackDevice)
 	}
-
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
-		"🔍 Checking handshake reply: alreadyHandshaked=%v, gatt=%v, connectedViaWire=%v",
-		alreadyHandshaked, gatt != nil, a.wire.IsConnected(peerUUID))
 
 	// Send our handshake back if we haven't already
 	// This ensures bidirectional handshake completion
 	if !alreadyHandshaked {
 		if gatt != nil {
-			logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🤝 Sending handshake back via GATT to %s", shortHash(peerUUID))
 			a.sendHandshake(peerUUID, gatt)
 		} else if a.wire.IsConnected(peerUUID) {
 			// We're connected but don't have a GATT (we're Peripheral in this connection)
 			// Send handshake back directly via wire
-			logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🤝 Sending handshake back via wire to %s (peripheral mode)", shortHash(peerUUID))
 			a.sendHandshakeViaWire(peerUUID)
 		} else {
 			logger.Warn(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "⚠️ Cannot send handshake back to %s - no connection", shortHash(peerUUID))
@@ -336,9 +268,6 @@ func (a *Android) handleHandshake(peerUUID string, pbHandshake *pb.HandshakeMess
 		if transferInProgress {
 			// Check if it's for the same photo
 			if existingTransfer.PhotoHash == photoHashHex {
-				logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)),
-					"📸 Photo transfer already in progress from %s (hash: %s)",
-					shortHash(peerUUID), shortHash(photoHashHex))
 				return // Don't start duplicate transfer
 			} else {
 				// Different photo - old transfer might be stale, allow new one
@@ -369,6 +298,4 @@ func (a *Android) handleHandshake(peerUUID string, pbHandshake *pb.HandshakeMess
 			shortHash(peerUUID), pbHandshake.ProfileVersion, cachedProfileVersion)
 		go a.requestProfileUpdate(peerUUID, pbHandshake.DeviceId, pbHandshake.ProfileVersion)
 	}
-
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "🔍 handleHandshake completed for peer %s", shortHash(peerUUID))
 }
