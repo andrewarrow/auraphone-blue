@@ -58,19 +58,20 @@ type AdvertiseData struct {
 // BluetoothLeAdvertiser matches Android's BluetoothLeAdvertiser class
 type BluetoothLeAdvertiser struct {
 	uuid            string
+	deviceName      string
 	wire            *wire.Wire
 	isAdvertising   bool
 	stopAdvertising chan struct{}
-	stopListening   chan struct{}
 	callback        AdvertiseCallback
 	settings        *AdvertiseSettings
 	gattServer      *BluetoothGattServer
 }
 
 // NewBluetoothLeAdvertiser creates a new advertiser
-func NewBluetoothLeAdvertiser(uuid string, platform wire.Platform, deviceName string, sharedWire *wire.Wire) *BluetoothLeAdvertiser {
+func NewBluetoothLeAdvertiser(uuid string, deviceName string, sharedWire *wire.Wire) *BluetoothLeAdvertiser {
 	return &BluetoothLeAdvertiser{
 		uuid:          uuid,
+		deviceName:    deviceName,
 		wire:          sharedWire,
 		isAdvertising: false,
 	}
@@ -125,7 +126,7 @@ func (a *BluetoothLeAdvertiser) StartAdvertising(
 
 	// Include device name if requested
 	if advertiseData != nil && advertiseData.IncludeDeviceName {
-		wireAdvData.DeviceName = a.wire.GetDeviceName()
+		wireAdvData.DeviceName = a.deviceName
 	}
 
 	// Include TX power level if requested
@@ -163,9 +164,6 @@ func (a *BluetoothLeAdvertiser) StartAdvertising(
 
 	logger.Info(fmt.Sprintf("%s Android", a.uuid[:8]), "📡 Started Advertising")
 
-	// Start listening for incoming connections
-	a.startListeningForRequests()
-
 	// Handle timeout if specified
 	if settings.Timeout > 0 {
 		go func() {
@@ -200,11 +198,6 @@ func (a *BluetoothLeAdvertiser) StopAdvertising() {
 		a.stopAdvertising = nil
 	}
 
-	if a.stopListening != nil {
-		close(a.stopListening)
-		a.stopListening = nil
-	}
-
 	a.isAdvertising = false
 
 	logger.Info(fmt.Sprintf("%s Android", a.uuid[:8]), "📡 Stopped Advertising")
@@ -231,47 +224,13 @@ func (a *BluetoothLeAdvertiser) txPowerLevelToDbm(level int) int {
 	}
 }
 
-// startListeningForRequests listens for incoming GATT requests
-func (a *BluetoothLeAdvertiser) startListeningForRequests() {
-	if a.stopListening != nil {
-		// Already listening
-		return
+// HandleGATTMessage is called by android.go when a GATT message arrives in peripheral mode
+// This replaces the old inbox polling mechanism with direct message delivery
+func (a *BluetoothLeAdvertiser) HandleGATTMessage(msg *wire.GATTMessage) {
+	// Forward to GATT server
+	if a.gattServer != nil {
+		a.gattServer.handleCharacteristicMessage(msg)
 	}
-
-	a.stopListening = make(chan struct{})
-
-	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-a.stopListening:
-				return
-			case <-ticker.C:
-				// Peripheral mode: read from peripheral_inbox (writes from centrals)
-				messages, err := a.wire.ReadAndConsumeCharacteristicMessagesFromInbox("peripheral_inbox")
-				if err != nil {
-					continue
-				}
-
-				if len(messages) > 0 {
-					logger.Debug(fmt.Sprintf("%s Android", a.uuid[:8]), "📬 Peripheral inbox: received %d messages", len(messages))
-				}
-
-				// Process peripheral-mode operations - all messages are meant for us
-				for _, msg := range messages {
-					logger.Debug(fmt.Sprintf("%s Android", a.uuid[:8]), "📬 Processing message: op=%s, char=%s, from=%s", msg.Operation, msg.CharUUID[:8], msg.SenderUUID[:8])
-					// Forward to GATT server
-					if a.gattServer != nil {
-						a.gattServer.handleCharacteristicMessage(msg)
-					} else {
-						logger.Warn(fmt.Sprintf("%s Android", a.uuid[:8]), "⚠️  GATT server is nil, cannot process message!")
-					}
-				}
-			}
-		}
-	}()
 }
 
 // BluetoothGattServer matches Android's BluetoothGattServer class
@@ -307,7 +266,7 @@ const (
 
 // NewBluetoothGattServer creates a new GATT server
 // Matches: bluetoothManager.openGattServer(context, callback)
-func NewBluetoothGattServer(uuid string, callback BluetoothGattServerCallback, platform wire.Platform, deviceName string, sharedWire *wire.Wire) *BluetoothGattServer {
+func NewBluetoothGattServer(uuid string, callback BluetoothGattServerCallback, deviceName string, sharedWire *wire.Wire) *BluetoothGattServer {
 	return &BluetoothGattServer{
 		uuid:             uuid,
 		wire:             sharedWire,
@@ -469,7 +428,7 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 	for _, service := range s.services {
 		if service.UUID == msg.ServiceUUID {
 			for _, char := range service.Characteristics {
-				if char.UUID == msg.CharUUID {
+				if char.UUID == msg.CharacteristicUUID {
 					targetChar = char
 					break
 				}
@@ -481,7 +440,7 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 	}
 
 	if targetChar == nil {
-		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Received request for unknown characteristic %s", msg.CharUUID)
+		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Received request for unknown characteristic %s (service: %s, op: %s)", msg.CharacteristicUUID, msg.ServiceUUID, msg.Operation)
 		return
 	}
 
@@ -501,7 +460,7 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 	}
 
 	// Generate request ID (timestamp-based)
-	requestId := int(msg.Timestamp & 0x7FFFFFFF)
+	requestId := int(time.Now().UnixNano() & 0x7FFFFFFF)
 
 	switch msg.Operation {
 	case "read":
@@ -519,6 +478,32 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 			// Update characteristic value
 			targetChar.Value = msg.Data
 		}
+
+	case "subscribe":
+		// Central is subscribing to notifications
+		// In real BLE, this would write to the CCCD descriptor
+		// For now, just log it - the subscription tracking happens in the wire layer
+		centralID := device.Address
+		if len(centralID) > 8 {
+			centralID = centralID[:8]
+		}
+		charID := targetChar.UUID
+		if len(charID) > 8 {
+			charID = charID[:8]
+		}
+		logger.Debug(fmt.Sprintf("%s Android", s.uuid[:8]), "📲 Central %s subscribed to characteristic %s", centralID, charID)
+
+	case "unsubscribe":
+		// Central is unsubscribing from notifications
+		centralID := device.Address
+		if len(centralID) > 8 {
+			centralID = centralID[:8]
+		}
+		charID := targetChar.UUID
+		if len(charID) > 8 {
+			charID = charID[:8]
+		}
+		logger.Debug(fmt.Sprintf("%s Android", s.uuid[:8]), "📲 Central %s unsubscribed from characteristic %s", centralID, charID)
 	}
 }
 

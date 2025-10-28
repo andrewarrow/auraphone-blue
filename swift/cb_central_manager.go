@@ -7,7 +7,7 @@ import (
 )
 
 type CBCentralManagerDelegate interface {
-	DidUpdateState(central CBCentralManager)
+	DidUpdateCentralState(central CBCentralManager)
 	DidDiscoverPeripheral(central CBCentralManager, peripheral CBPeripheral, advertisementData map[string]interface{}, rssi float64)
 	DidConnectPeripheral(central CBCentralManager, peripheral CBPeripheral)
 	DidFailToConnectPeripheral(central CBCentralManager, peripheral CBPeripheral, err error)
@@ -20,7 +20,7 @@ type CBCentralManager struct {
 	uuid                string
 	wire                *wire.Wire
 	stopChan            chan struct{}
-	pendingPeripherals  map[string]*CBPeripheral // UUIDs of peripherals to auto-reconnect
+	pendingPeripherals  map[string]*CBPeripheral // UUID -> peripheral (for auto-reconnect and message routing)
 	autoReconnectActive bool                     // Whether auto-reconnect is enabled
 }
 
@@ -37,10 +37,15 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedW
 	// Set up disconnect callback
 	sharedWire.SetDisconnectCallback(func(deviceUUID string) {
 		// Connection was randomly dropped
+		var peripheralCopy CBPeripheral
+		if peripheral, exists := cm.pendingPeripherals[deviceUUID]; exists {
+			peripheralCopy = *peripheral
+		} else {
+			peripheralCopy = CBPeripheral{UUID: deviceUUID}
+		}
+
 		if delegate != nil {
-			delegate.DidDisconnectPeripheral(*cm, CBPeripheral{
-				UUID: deviceUUID,
-			}, nil) // nil error = clean disconnect (not an error, just interference/distance)
+			delegate.DidDisconnectPeripheral(*cm, peripheralCopy, nil) // nil error = clean disconnect (not an error, just interference/distance)
 		}
 
 		// iOS auto-reconnect: if this peripheral was in pendingPeripherals, try to reconnect
@@ -115,7 +120,7 @@ func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map
 		}
 
 		// Get realistic RSSI from wire layer
-		rssi := float64(c.wire.GetRSSI())
+		rssi := float64(c.wire.GetRSSI(deviceUUID))
 
 		c.Delegate.DidDiscoverPeripheral(*c, CBPeripheral{
 			Name: deviceName,
@@ -165,7 +170,7 @@ func (c *CBCentralManager) RetrievePeripheralsByIdentifiers(identifiers []string
 // ShouldInitiateConnection determines if this iOS device should initiate connection to target
 // Simple Role Policy: Use hardware UUID comparison regardless of platform
 // Device with LARGER UUID acts as Central (initiates connection)
-func (c *CBCentralManager) ShouldInitiateConnection(targetPlatform wire.Platform, targetUUID string) bool {
+func (c *CBCentralManager) ShouldInitiateConnection(targetUUID string) bool {
 	// Use hardware UUID comparison for all devices
 	// Device with LARGER UUID initiates the connection (deterministic collision avoidance)
 	return c.uuid > targetUUID
@@ -186,8 +191,9 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 	go func() {
 		err := c.wire.Connect(peripheral.UUID)
 		if err != nil {
-			// Connection failed
-			c.Delegate.DidFailToConnectPeripheral(*c, *peripheral, err)
+			// Connection failed - pass copy to delegate
+			peripheralCopy := *peripheral
+			c.Delegate.DidFailToConnectPeripheral(*c, peripheralCopy, err)
 
 			// iOS auto-reconnect: retry connection in background
 			if c.autoReconnectActive {
@@ -196,8 +202,9 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 			return
 		}
 
-		// Connection succeeded
-		c.Delegate.DidConnectPeripheral(*c, *peripheral)
+		// Connection succeeded - pass copy to delegate
+		peripheralCopy := *peripheral
+		c.Delegate.DidConnectPeripheral(*c, peripheralCopy)
 	}()
 }
 
@@ -220,9 +227,10 @@ func (c *CBCentralManager) attemptReconnect(peripheral *CBPeripheral) {
 		return
 	}
 
-	// Success! Notify delegate
+	// Success! Notify delegate with copy
 	if c.Delegate != nil {
-		c.Delegate.DidConnectPeripheral(*c, *peripheral)
+		peripheralCopy := *peripheral
+		c.Delegate.DidConnectPeripheral(*c, peripheralCopy)
 	}
 }
 
@@ -234,4 +242,32 @@ func (c *CBCentralManager) CancelPeripheralConnection(peripheral *CBPeripheral) 
 
 	// Disconnect if currently connected
 	c.wire.Disconnect(peripheral.UUID)
+}
+
+// RegisterReversePeripheral registers a peripheral object created when a Central connects to us
+// This is needed for bidirectional communication: when we're acting as Peripheral in the BLE connection
+// but we create a CBPeripheral object to make requests back to the Central
+// This ensures notifications from the remote Central are routed to this peripheral's delegate
+func (c *CBCentralManager) RegisterReversePeripheral(peripheral *CBPeripheral) {
+	// Add to pending peripherals so HandleGATTMessage can route notifications to it
+	c.pendingPeripherals[peripheral.UUID] = peripheral
+}
+
+// HandleGATTMessage processes incoming GATT messages and routes them to the appropriate peripheral
+// Should be called from iPhone layer for gatt_notification and gatt_response messages
+// Returns true if message was handled, false otherwise
+func (c *CBCentralManager) HandleGATTMessage(peerUUID string, msg *wire.GATTMessage) bool {
+	// Only handle notification/response messages (these are for centrals)
+	if msg.Type != "gatt_notification" && msg.Type != "gatt_response" {
+		return false
+	}
+
+	// Find the peripheral for this UUID
+	peripheral, exists := c.pendingPeripherals[peerUUID]
+	if !exists {
+		return false // Not connected to this peripheral
+	}
+
+	// Route to peripheral's handler
+	return peripheral.HandleGATTMessage(peerUUID, msg)
 }

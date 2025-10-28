@@ -1,363 +1,392 @@
-# Plan: Fix 50% Photo Transfer Failure Rate
+# Auraphone Blue - Back to Basics Refactor Plan
 
-## Problem Analysis (Test Run 2025-10-27_10-14-10)
+## Current Status: Gossip Protocol Implementation Complete ✅
 
-**Result**: 10/20 transfers succeeded (50% success rate)
+**What's implemented:**
+- ✅ New minimal `phone/phone.go` with additional components:
+  - `Phone` interface with Hardware UUID + DeviceID
+  - `DiscoveredDevice` struct with photo support
+  - `IdentityManager` for UUID ↔ DeviceID mapping
+  - `PhotoCache` for content-addressed photo storage
+  - `MeshView` for gossip protocol (shared iOS/Android logic)
+  - Gossip audit logging to `gossip_audit.jsonl`
+- ✅ Full `iphone/iphone.go` implementation (~1000 lines)
+  - Hardware UUID + DeviceID (base36) identity system
+  - BLE handshake protocol with protobuf messages
+  - Photo transfer with chunking and retry logic
+  - **Gossip protocol integration** (sends/receives mesh state)
+  - Connection management (tracks connected devices)
+  - Mesh view updates on handshake, disconnect, photo receipt
+- ✅ `wire/wire.go` with realistic BLE simulation
+  - Single socket per device at `/tmp/auraphone-{uuid}.sock`
+  - GATT message routing (handshake, gossip, photos)
+  - MTU-based fragmentation, packet loss simulation
+  - Connection state tracking
+- ✅ Updated `main.go` with GUI fixes
+  - Fixed cached photo display bug (adds refresh trigger)
+  - Full 5-tab GUI with profile/photo support
+  - Removed android (coming back later)
 
-**Previous run (2025-10-27_09-49-03)**: Also 10/20 (50%) - **SAME ISSUE PERSISTS**
+**Recent additions (this session):**
+- ✅ `phone/mesh_view.go` - Shared gossip logic (~400 lines)
+- ✅ Gossip timer in iphone.go (5-second intervals)
+- ✅ Gossip message handling (distinguishes from handshakes)
+- ✅ Mesh view persistence to `cache/mesh_view.json`
+- ✅ GUI fix: cached photos now trigger refresh
 
-### Root Causes Identified
-
-#### 1. **Chunks Sent But Never Received** (CRITICAL)
-- **Evidence**: 187 `send_started` events but only 65 `receive_started` events
-- **Symptoms**:
-  - Sender logs: `send_started` + `chunk_sent` (all chunks)
-  - Receiver logs: **NOTHING** (no `receive_started`, no `chunk_received`)
-- **Impact**: ~65% of transfer attempts fail silently on receiver side
-
-**Example failure:**
-```
-YMLA0QYO → ASG1KC19:
-  09:48:07 - photo_request_received [YMLA0QYO side]
-  09:48:07 - send_started [YMLA0QYO side]
-  09:48:07 - chunk_sent (x4) [YMLA0QYO side]
-  [NO EVENTS ON ASG1KC19 SIDE] ❌
-```
-
-**Possible causes:**
-1. Photo chunks not reaching `HandlePhotoChunk()` on receiver
-2. UUID → DeviceID mapping failures causing early returns
-3. Wire layer dropping messages silently
-4. Wrong characteristic/socket being used for chunk delivery
-
-#### 2. **Duplicate Photo Requests** (MAJOR)
-- **Evidence**: ASG1KC19 → TI05WNAZ shows 13+ `photo_request_received` events
-- **Impact**: Senders restart transfers multiple times, potentially losing progress
-- **Status**: MergeGossip fix IS implemented (prevents duplicate discoveries), but requests are still sent multiple times
-
-**Why it's still happening:**
-- Photo requests sent on every gossip interval (5 seconds)
-- `PhotoRequestSent` flag not checked before sending requests
-- Flag might be reset incorrectly somewhere
-
-#### 3. **Uneven Device Participation** (MODERATE)
-- **ASG1KC19** (F09FFFB7): Only 21 timeline events (vs 400-520 for others)
-  - 1 send, 2 receive_started, 1 receive_complete
-- **KXX18IL0** (E0D11F4F): Only 98 timeline events
-  - 7 sends, 9 receive_started, 7 receive_complete
-
-**Why**: These devices are not discovering/requesting photos properly
-
-#### 4. **Connection Drops During Transfers** (MINOR)
-- Only 6 socket errors total (very low impact)
-- ASG1KC19 ↔ TI05WNAZ: Connection dropped at 09:48:07, reconnected 09:48:28
-- May have interrupted 1-2 transfers
+**Next steps:**
+- Test gossip with 4+ devices to verify multi-hop discovery
+- Verify gossip_audit.jsonl logging
+- Android implementation (reuse phone/mesh_view.go)
 
 ---
 
-## Investigation Plan
+## Problem Summary
+Based on `~/Documents/fix.txt`, the codebase has three critical architectural flaws:
 
-### Phase 1: Diagnose Why Chunks Don't Reach Receiver (2-3 hours)
+1. **UUID vs DeviceID Identity Crisis** - Mixing Hardware UUIDs (BLE radio ID) with DeviceIDs (base36 logical IDs assigned after handshake) causes race conditions and routing confusion
+2. **Dual-Socket Architecture** - Separate central.sock and peripheral.sock per device creates unrealistic connection state complexity that doesn't match real BLE
+3. **Callback Hell** - 6-8 layers of indirection (wire → phone → handlers → coordinators → callbacks → wire) makes message flow impossible to trace
 
-#### Step 1.1: Add Detailed Logging to Wire Layer
-**File**: `wire/wire.go` (or iOS/Android write methods)
+## Refactor Goal
+Get back to **SIMPLE, REALISTIC BLE** with:
+- Only Hardware UUIDs (no base36 DeviceIDs yet)
+- Single socket per device (realistic BLE connection model)
+- Direct message flow (no callback chains)
+- Two iPhones discovering each other and listing by Hardware UUID
 
-Add logging BEFORE and AFTER every chunk write:
+---
+
+## STEP 1: DEMOLITION
+
+### 1.1 Delete Flawed Packages Entirely
+**Delete these directories:**
+```
+rm -rf phone/
+rm -rf iphone/
+rm -rf android/
+rm -rf wire/
+```
+
+**Why:** These packages embody all three architectural flaws. Starting fresh is faster than untangling.
+
+### 1.2 Keep Good Packages
+**Keep these directories untouched:**
+```
+swift/          # CoreBluetooth API wrappers (good abstractions)
+kotlin/         # Android BLE API wrappers (good abstractions)
+proto/          # Protobuf definitions (reusable)
+logger/         # Logging utilities
+testdata/       # Test fixtures (hardware_uuids.txt, face*.jpg)
+cmd/            # CLI tools
+```
+
+**Why:** `swift/` and `kotlin/` are thin wrappers around BLE APIs with correct delegate/callback patterns. The problem is in the layers *above* them (phone/iphone/android/wire).
+
+### 1.3 Remove Callbacks from swift/ and kotlin/
+**Files to modify:**
+- `swift/cb_central_manager.go` - Remove `wire.Wire` dependency, callbacks
+- `swift/cb_peripheral_manager.go` - Remove `wire.Wire` dependency, callbacks
+- `swift/cb_peripheral.go` - Remove `wire.Wire` dependency, callbacks
+- `kotlin/bluetooth_manager.go` - Remove `wire.Wire` dependency, callbacks
+- `kotlin/bluetooth_gatt.go` - Remove `wire.Wire` dependency, callbacks
+- `kotlin/bluetooth_advertiser.go` - Remove `wire.Wire` dependency, callbacks
+
+**What to remove:**
+- All `import "github.com/user/auraphone-blue/wire"` references
+- All `*wire.Wire` fields and parameters
+- All callback function types and SetCallback methods
+- Keep only the BLE API method signatures and data structures
+
+**Why:** These packages should be pure API definitions, not coupled to implementation.
+
+### 1.4 Update main.go Dependencies
+**File:** `main.go`
+
+**Remove imports:**
 ```go
-func (w *Wire) WriteCharacteristic(uuid, serviceUUID, charUUID string, data []byte) error {
-    logger.Debug(w.hardwareUUID[:8], "📤 WIRE WRITE: target=%s char=%s bytes=%d",
-        uuid[:8], charUUID[:8], len(data))
+"github.com/user/auraphone-blue/android"
+"github.com/user/auraphone-blue/iphone"
+"github.com/user/auraphone-blue/phone"
+```
 
-    err := w.actualWriteToSocket(uuid, data)
+**Temporarily comment out:**
+- All `PhoneWindow` logic
+- Phone creation (`iphone.NewIPhone`, `android.NewAndroid`)
+- Phone interface calls (`Start()`, `SetDiscoveryCallback()`, etc.)
 
-    if err != nil {
-        logger.Error(w.hardwareUUID[:8], "❌ WIRE WRITE FAILED: target=%s error=%v",
-            uuid[:8], err)
-    } else {
-        logger.Debug(w.hardwareUUID[:8], "✅ WIRE WRITE SUCCESS: target=%s", uuid[:8])
-    }
+**Why:** We'll rewrite `PhoneWindow` in Step 2 to use new simple architecture.
 
-    return err
+---
+
+## STEP 2: MINIMAL BLE IMPLEMENTATION (iOS Only)
+
+### 2.1 Create New Simple Wire Package
+**File:** `wire/wire.go` (new, ~200 lines max)
+
+**Single Responsibility:** Unix domain socket communication with BLE realism.
+
+**Key Design:**
+```go
+type Wire struct {
+    hardwareUUID string
+    socketPath   string  // /tmp/auraphone-{uuid}.sock
+    listener     net.Listener
+    connections  map[string]net.Conn  // peer UUID → connection
+    mu           sync.RWMutex
+}
+
+func NewWire(hardwareUUID string) *Wire
+func (w *Wire) Start() error
+func (w *Wire) Stop()
+func (w *Wire) SendMessage(peerUUID string, data []byte) error
+func (w *Wire) SetMessageHandler(handler func(peerUUID string, data []byte))
+func (w *Wire) ListAvailableDevices() []string  // Scan /tmp for .sock files
+```
+
+**No callbacks, no delegates, no indirection.** Just send/receive bytes.
+
+**BLE Realism:**
+- Single socket per device at `/tmp/auraphone-{hardwareUUID}.sock`
+- Connection-oriented (matches real BLE pairing)
+- Length-prefixed messages (4-byte big-endian length + payload)
+- Simple handshake: connect → send UUID → ready
+
+### 2.2 Create Minimal iphone Package
+**File:** `iphone/iphone.go` (new, ~150 lines max)
+
+**Implements:** `Phone` interface from new minimal package
+
+```go
+type IPhone struct {
+    hardwareUUID string
+    deviceName   string
+    wire         *wire.Wire
+    central      *swift.CBCentralManager
+    peripheral   *swift.CBPeripheralManager
+    discovered   map[string]DiscoveredDevice  // UUID → device
+    mu           sync.RWMutex
+    callback     DeviceDiscoveryCallback
+}
+
+func NewIPhone(hardwareUUID string) *IPhone
+func (ip *IPhone) Start()
+func (ip *IPhone) Stop()
+func (ip *IPhone) SetDiscoveryCallback(callback DeviceDiscoveryCallback)
+func (ip *IPhone) GetDeviceUUID() string
+func (ip *IPhone) GetDeviceName() string
+```
+
+**Key Behavior:**
+1. **Start()**:
+   - Create `wire.Wire`
+   - Start advertising via `CBPeripheralManager`
+   - Start scanning via `CBCentralManager`
+2. **On device discovered** (from `CBCentralManager` delegate):
+   - Add to `discovered` map with Hardware UUID as key
+   - Call `callback(DiscoveredDevice{HardwareUUID: uuid, Name: name})`
+3. **No photo transfer, no handshakes, no base36 IDs yet**
+
+### 2.3 Create Minimal Phone Interface
+**File:** `phone/phone.go` (new, ~170 lines)
+
+```go
+package phone
+
+type DiscoveredDevice struct {
+    HardwareUUID string
+    DeviceID     string // EMPTY for now (base36 ID added later with handshake)
+    Name         string
+    RSSI         float64
+    PhotoHash    string // EMPTY for now (added later with photo transfer)
+    PhotoData    []byte // nil for now (added later with photo transfer)
+}
+
+type DeviceDiscoveryCallback func(device DiscoveredDevice)
+
+type Phone interface {
+    Start()
+    Stop()
+    SetDiscoveryCallback(callback DeviceDiscoveryCallback)
+    GetDeviceUUID() string
+    GetDeviceName() string
+    GetPlatform() string
+
+    // GUI compatibility methods (stubs for now)
+    SetProfilePhoto(photoPath string) error
+    GetLocalProfileMap() map[string]string
+    UpdateLocalProfile(profile map[string]string) error
 }
 ```
 
-#### Step 1.2: Add Logging to iOS/Android Receive Path
-**Files**: `iphone/central_delegate.go`, `iphone/peripheral_delegate.go`, `android/gatt_callback.go`
+**Key Points:**
+- **DiscoveredDevice has extra fields** (DeviceID, PhotoHash, PhotoData) but they are EMPTY/nil in Step 2
+  - These exist for GUI compatibility (main.go expects them)
+  - They will be populated in future steps when we add handshake + photo transfer
+- **Phone interface has extra methods** (GetPlatform, SetProfilePhoto, etc.) as stubs
+  - These are no-ops for now, just return empty/success
+  - This lets main.go GUI code compile without changes
+- **Primary identification is HardwareUUID** - the only field that matters right now
+  - Device list in GUI shows Hardware UUID (first 8 chars)
+  - No base36 DeviceIDs yet, no handshakes, no photo transfers
 
-Add logging IMMEDIATELY when data arrives:
-```go
-func (d *CentralDelegate) DidUpdateValueForCharacteristic(characteristic *swift.CBCharacteristic) {
-    logger.Debug(d.iphone.hardwareUUID[:8],
-        "📥 RECEIVED DATA: char=%s bytes=%d from_peripheral=%s",
-        characteristic.UUID[:8], len(characteristic.Value), peripheral.UUID[:8])
+**Also includes:**
+- `HardwareUUIDManager` - Allocates UUIDs from testdata/hardware_uuids.txt
+- `DeviceCacheManager` - Stub for future metadata caching
+- `GetDataDir()` / `GetDeviceCacheDir()` - Helper functions for GUI
 
-    // Then decode and call HandlePhotoChunk...
-}
-```
+**Why these extras:** The GUI (main.go) has full profile/photo functionality built in. Instead of gutting main.go, we add minimal stubs to phone/iphone packages so the GUI compiles. The UI will work but won't show photos/profiles yet - that's fine for Step 2.
 
-#### Step 1.3: Run Test With Enhanced Logging
+### 2.4 Update main.go for Minimal UI
+**File:** `main.go`
+
+**Status:** ✅ **DONE - main.go kept FULLY INTACT**
+
+**What we did:**
+- Removed `android` package import
+- Changed `NewIPhone(uuid, name)` → `NewIPhone(uuid)` (name auto-generated)
+- Disabled "Start Android Device" button in launcher
+- Updated auto-start and stress-test modes to only create iOS devices
+
+**What we kept:**
+- ✅ **Full 5-tab GUI** (Home, Search, Add, Play, Profile)
+- ✅ **Profile tab** with photo selector, name/tagline fields, contact methods
+- ✅ **Device list** with profile image placeholders and metadata
+- ✅ **Person modal** with full profile view
+- ✅ **All threading logic** (Fyne.Do, goroutines, mutexes) - UNTOUCHED
+
+**Why this approach:**
+- The GUI has full functionality built-in (profiles, photos, contacts)
+- Instead of removing GUI features, we added stub methods to `Phone` interface
+- GUI compiles and runs, profile tab works, but photos/profiles are empty for now
+- This is fine for Step 2 - we're proving BLE discovery works first
+- Profile/photo functionality will "light up" in future steps when we implement:
+  - Step 3: Handshake protocol (DeviceID assignment, name exchange)
+  - Step 4: Photo transfer (PhotoHash, PhotoData population)
+
+**Current behavior:**
+- Device list shows: `UUID: {hardwareUUID[:8]} | Unknown Device | RSSI: -45`
+- Profile tab: You can edit fields and select photos (stored locally, not broadcast yet)
+- Person modal: Shows device info but no profile data yet (empty until handshake implemented)
+
+---
+
+## STEP 3: VERIFICATION & NEXT STEPS
+
+### 3.1 Test Scenario
 ```bash
-go run main.go --phones 5 --duration 60s --packet-loss 0.001
-
-# Check logs for:
-# 1. Do WIRE WRITE SUCCESS events exist for failed transfers?
-# 2. Do RECEIVED DATA events exist on receiver side?
-# 3. Where is the data being lost?
+go run main.go
+# Launcher window appears
+# Click "Start iOS Device" twice to create 2 iPhone windows
+# Each window shows:
+#   - Header: "Auraphone - iPhone ({uuid[:8]}) ({uuid[:8]})"
+#   - Home tab: Device list with discovered devices
+#   - Profile tab: Full profile editor (works but not broadcast yet)
+# Expected device list entries:
+#   "Unknown Device"
+#   "Device: {other_uuid[:8]}"
+#   "RSSI: -45 dBm, Connected: Yes"
 ```
 
-**Expected outcomes:**
-- **If WIRE WRITE SUCCESS but no RECEIVED DATA**: Socket/connection issue
-- **If RECEIVED DATA but no HandlePhotoChunk**: Decoding/routing issue
-- **If HandlePhotoChunk called but no StartReceive**: UUID→DeviceID mapping failure
+### 3.2 Success Criteria
+- [ ] Both iPhones discover each other within 1-2 seconds
+- [ ] Discovery happens via actual Unix socket scanning (/tmp/auraphone-*.sock)
+- [ ] Device list shows Hardware UUID (DeviceID field is empty)
+- [ ] Profile tab allows editing local profile (stored but not broadcast)
+- [ ] No crashes, no race conditions
+- [ ] Clean shutdown (no leaked sockets in /tmp)
 
-#### Step 1.4: Check UUID → DeviceID Mapping
-**File**: `phone/photo_handler.go` line 130-165
+### 3.3 What's Working (Step 2)
+- ✅ Unix socket creation/cleanup (`/tmp/auraphone-{uuid}.sock`)
+- ✅ Device discovery via socket scanning
+- ✅ GUI shows discovered devices by Hardware UUID
+- ✅ Profile tab allows local profile editing
+- ✅ Clean shutdown releases resources
 
-The code already logs the entire UUID→DeviceID map on every chunk. Check logs for:
-```
-📋 Current UUID→DeviceID map has N entries:
-   - UUID1 → DeviceID1
-   - UUID2 → DeviceID2
-```
+### 3.4 What's NOT Working Yet (Expected)
+- ❌ No device names (shows "Unknown Device")
+- ❌ No DeviceID/base36 IDs (field is empty)
+- ❌ No profile photo display (images not transferred)
+- ❌ No profile data exchange (first_name, contacts, etc. not shared)
+- ❌ Person modal shows empty profile data
 
-**If map is empty or missing sender**: That's the bug! Receiver can't identify sender.
-
-**Verify handshake completes:**
-- Handshake should populate UUID→DeviceID map
-- Check if handshake happens BEFORE photo chunks are sent
-- May need to wait for handshake before sending photo requests
+### 3.5 Future Steps (NOT in this branch)
+After Step 2 is verified working:
+1. **Step 3: Handshake Protocol**
+   - Exchange device names via socket connection
+   - Assign base36 DeviceID after handshake
+   - Update GUI to show DeviceID instead of Hardware UUID
+2. **Step 4: Photo Transfer**
+   - Broadcast PhotoHash when profile photo changes
+   - Transfer photo data over sockets
+   - Cache photos to disk
+   - Display photos in device list and person modal
+3. **Step 5: Profile Exchange**
+   - Broadcast profile metadata (first_name, contacts, etc.)
+   - Update person modal with full profile data
+4. **Step 6: Android Support**
+   - Create `android/android.go` (reuse wire package)
+   - Enable "Start Android Device" button
+5. **Step 7: Gossip Protocol**
+   - Multi-hop device/photo discovery
+   - Mesh network without full connectivity
 
 ---
 
-### Phase 2: Fix Duplicate Photo Requests (1 hour)
+## Key Architectural Principles
 
-#### Issue: Photo requests sent repeatedly despite PhotoRequestSent=true
+### ✅ DO:
+- **One socket per device** (matches real BLE connection model)
+- **Hardware UUID as primary key** until handshake
+- **Direct function calls** (no callback chains)
+- **Single responsibility** per package (wire = sockets, iphone = iOS logic)
+- **Explicit error handling** (no silent failures)
 
-**Find where photo requests are sent:**
-```bash
-grep -r "SendPhotoRequest\|photo_request_received" iphone/ android/ phone/
-```
-
-**Expected fix location**: Likely in gossip processing or connection establishment handler
-
-**Fix**: Add guard before sending request:
-```go
-// Before sending photo request
-device := meshView.GetDevice(deviceID)
-if device.PhotoRequestSent {
-    logger.Debug("⏭️ Skipping photo request to %s (already sent)", deviceID)
-    return
-}
-
-// Send request...
-meshView.MarkPhotoRequested(deviceID)
-```
+### ❌ DON'T:
+- **No dual sockets** (central.sock / peripheral.sock)
+- **No base36 DeviceIDs yet** (wait until handshake works)
+- **No callback indirection** (wire → handler → coordinator → callback → wire)
+- **No premature optimization** (gossip, mesh, photos come later)
+- **No cheating** (devices learn about each other via actual socket scanning)
 
 ---
 
-### Phase 3: Fix Uneven Participation (1 hour)
+## File Checklist
 
-#### Issue: ASG1KC19 and KXX18IL0 barely participating
+### To Delete:
+- [ ] `phone/` (entire directory)
+- [ ] `iphone/` (entire directory)
+- [ ] `android/` (entire directory)
+- [ ] `wire/` (entire directory)
 
-**Check gossip neighbors:**
-```bash
-# From gossip_audit.jsonl, check which devices are gossiping to whom
-grep "gossip_sent\|gossip_received" ~/.auraphone-blue-data/*/gossip_audit.jsonl
-```
+### To Modify:
+- [ ] `swift/cb_central_manager.go` (remove wire dependency, callbacks)
+- [ ] `swift/cb_peripheral_manager.go` (remove wire dependency, callbacks)
+- [ ] `swift/cb_peripheral.go` (remove wire dependency, callbacks)
+- [ ] `kotlin/bluetooth_manager.go` (remove wire dependency, callbacks)
+- [ ] `kotlin/bluetooth_gatt.go` (remove wire dependency, callbacks)
+- [ ] `kotlin/bluetooth_advertiser.go` (remove wire dependency, callbacks)
+- [ ] `main.go` (simplify PhoneWindow, remove complex dependencies)
 
-**Verify neighbor selection:**
-- Should have ~3 neighbors each
-- ASG1KC19 might not be in anyone's neighbor list (due to SHA256 hash sorting)
-- If isolated, increase `maxNeighbors` or use different neighbor selection
+### To Create:
+- [ ] `wire/wire.go` (new minimal socket layer, ~200 lines)
+- [ ] `phone/phone.go` (new minimal interface, ~30 lines)
+- [ ] `iphone/iphone.go` (new minimal iOS implementation, ~150 lines)
 
-**Fix**: Ensure all devices have at least 2 neighbors
-```go
-// In mesh_view.go SelectRandomNeighbors()
-// Add minimum neighbor guarantee
-if len(neighbors) < 2 && len(mv.devices) >= 2 {
-    // Force inclusion of at least 2 neighbors even if hash is high
-}
-```
-
----
-
-### Phase 4: Handle Connection Drops Gracefully (30 min)
-
-#### Current behavior: Transfers lost when connection drops
-
-**Fix**: Pause transfers on disconnect, resume on reconnect
-
-**File**: `phone/photo_transfer_coordinator.go`
-
-```go
-// Add methods:
-func (c *PhotoTransferCoordinator) PauseTransfersForDevice(deviceID string) {
-    c.mu.Lock()
-    defer c.mu.Unlock()
-
-    if send, exists := c.inProgressSends[deviceID]; exists {
-        send.Paused = true
-        logger.Debug(c.hardwareUUID[:8], "⏸️ Paused send to %s", deviceID)
-    }
-
-    if recv, exists := c.inProgressReceives[deviceID]; exists {
-        recv.Paused = true
-        logger.Debug(c.hardwareUUID[:8], "⏸️ Paused receive from %s", deviceID)
-    }
-}
-
-func (c *PhotoTransferCoordinator) ResumeTransfersForDevice(deviceID string) {
-    // Resume and retry missing chunks
-}
-```
-
-**Call from**: iOS/Android disconnect handlers
+### To Keep Untouched:
+- `proto/` (protobuf definitions)
+- `logger/` (logging utilities)
+- `testdata/` (test fixtures)
+- `cmd/` (CLI tools)
+- `integration_test.go` (will need updates later)
+- `integration_reliability_test.go` (will need updates later)
 
 ---
 
-## Testing Plan
+## Estimated Line Counts
 
-### Test 1: Enhanced Logging Test (diagnose)
-```bash
-go run main.go --phones 5 --duration 60s
+**Deleted:** ~8,000 lines (phone/ + iphone/ + android/ + wire/)
+**New Code:** ~400 lines (wire + phone + iphone)
+**Net Change:** -7,600 lines
 
-# Check logs line-by-line to find where chunks are lost
-# Focus on failed transfers from test report
-```
-
-### Test 2: After Fixes (validate)
-```bash
-# Run 5-phone test
-go run main.go --phones 5 --duration 120s --packet-loss 0.001
-
-# Expected: 20/20 transfers succeed (100%)
-# Check test report
-cat ~/.auraphone-blue-data/test_report_*.md
-```
-
-### Test 3: Stress Test (ensure reliability)
-```bash
-# Run with higher packet loss
-go run main.go --phones 5 --duration 180s --packet-loss 0.05
-
-# Should still achieve 90%+ success rate with retries
-```
-
----
-
-## Success Criteria
-
-✅ **Primary Goal: 100% success rate** (20/20 transfers)
-- All `send_started` events matched by `receive_started` events
-- No silent failures
-
-✅ **No duplicate photo requests**
-- Each device→device pair: exactly 1 `photo_request_received` event
-- Unless photo hash changes (legitimate re-request)
-
-✅ **All devices participate equally**
-- Each device should have 100-500 timeline events
-- No device with <50 events
-
-✅ **Connection drops don't cause failures**
-- Transfers resume after reconnection
-- Missing chunks detected and re-requested
-
----
-
-## Implementation Order
-
-### Day 1: Investigation (3-4 hours)
-1. 🔄 Add enhanced logging to wire layer (30 min) - IN PROGRESS
-2. ⏳ Add logging to iOS/Android receive paths (30 min)
-3. ⏳ Run test with logging and analyze (2 hours)
-4. ⏳ Identify exact failure point (1 hour)
-
-### Day 2: Fixes (3-4 hours)
-1. ✅ Fix root cause from investigation (varies)
-2. ✅ Fix duplicate photo requests (1 hour)
-3. ✅ Fix uneven participation (1 hour)
-4. ✅ Add connection drop handling (30 min)
-5. ✅ Run validation tests (1 hour)
-
-**Total: 6-8 hours**
-
----
-
-## Files to Modify
-
-### Investigation Phase
-- `wire/wire.go` - Add write logging
-- `iphone/central_delegate.go` - Add receive logging
-- `iphone/peripheral_delegate.go` - Add receive logging
-- `android/gatt_callback.go` - Add receive logging
-
-### Fix Phase (TBD based on investigation results)
-Likely:
-- `phone/photo_handler.go` - Fix UUID→DeviceID handling
-- `iphone/iphone.go` or `android/android.go` - Fix photo request logic
-- `phone/mesh_view.go` - Fix neighbor selection
-- `phone/photo_transfer_coordinator.go` - Add pause/resume
-
----
-
-## Key Insights
-
-1. **The old PLAN.md was wrong** - It assumed duplicate discovery was the main issue, but actually **chunks not reaching receivers** is the critical bug
-
-2. **Tests pass but integration fails** - Unit tests verify individual components work, but the end-to-end flow has a delivery problem
-
-3. **50% failure rate is suspiciously high** - Suggests a systematic issue, not random packet loss. Likely:
-   - Photo requests sent before handshake completes (no UUID→DeviceID mapping yet)
-   - Or chunks sent to wrong socket/characteristic
-   - Or receiver not subscribed to notifications properly
-
-4. **Device F09FFFB7 (ASG1KC19) is the canary** - Only 21 events means it's barely working. If we fix its issues, we'll likely fix everything.
-
----
-
-## Bug Found! (2025-10-27 Analysis)
-
-### Root Cause
-**Multiple devices are responding to photo requests intended for a single device.**
-
-Example from logs:
-- Device 0JSEUJO6 (B4698CEC) requests ZSJSMVL7's photo (hash 35a9a4ad)
-- ZSJSMVL7 (12D90340) correctly responds with its 18777-byte photo ✅
-- BUT: B4698CEC, F09FFFB7, and 88716210 ALSO respond with THEIR OWN photos ❌
-- Result: ZSJSMVL7 receives wrong photos from wrong devices
-
-### Evidence from Logs
-```
-[B4698CEC iOS DEBUG] 📤 Sent photo request for 35a9a4ad
-[B4698CEC iOS INFO ] 📸 Sending our photo to ZSJSMVL7 (13964 bytes, 4 chunks)  ❌ WRONG!
-[F09FFFB7 iOS INFO ] 📸 Sending our photo to ZSJSMVL7 (15311 bytes, 4 chunks)  ❌ WRONG!
-[88716210 iOS INFO ] 📸 Sending our photo to ZSJSMVL7 (11138 bytes, 3 chunks)  ❌ WRONG!
-```
-
-Wire statistics:
-- 327 photo chunks SENT
-- 432 photo chunks RECEIVED (32% more!)
-- Chunks ARE arriving, but wrong devices are sending
-
-### Hypothesis
-The `PhotoRequestMessage` is either:
-1. Being broadcast to all devices instead of just the target
-2. Has swapped requester/target fields
-3. Handler logic incorrectly interprets who should respond
-
-### Fix Applied
-Added debug logging to `photo_handler.go:67-68` to log:
-```go
-logger.Debug(prefix, "📩 Photo request: from=%s requester=%s target=%s (we are %s)",
-    senderUUID[:8], req.RequesterDeviceId[:8], req.TargetDeviceId[:8], device.GetDeviceID()[:8])
-```
-
-### Next Step
-Run test again with new logging to see exact field values in PhotoRequestMessage.
-
----
-
-## Previous Analysis (Obsolete)
-
-**Immediate action**: ~~Add logging from Phase 1 and run a test~~. Logging already added in commits fad5094 and 94b97d6.
+**Goal:** 95% less code, 100% more clarity.

@@ -59,21 +59,13 @@ type BluetoothGattCallback interface {
 	OnCharacteristicChanged(gatt *BluetoothGatt, characteristic *BluetoothGattCharacteristic)
 }
 
-type writeRequest struct {
-	characteristic *BluetoothGattCharacteristic
-	data           []byte // Copy of data to prevent race condition
-}
-
 type BluetoothGatt struct {
 	callback                 BluetoothGattCallback
 	wire                     *wire.Wire
 	remoteUUID               string
 	services                 []*BluetoothGattService
-	stopChan                 chan struct{}
 	notifyingCharacteristics map[string]bool // characteristic UUID -> is notifying
-	writeQueue               chan writeRequest
-	writeQueueStop           chan struct{}
-	autoConnect              bool // Android autoConnect flag for auto-reconnect
+	autoConnect              bool            // Android autoConnect flag for auto-reconnect
 }
 
 func (g *BluetoothGatt) DiscoverServices() bool {
@@ -87,7 +79,7 @@ func (g *BluetoothGatt) DiscoverServices() bool {
 	// Service discovery is async in real Android - run in goroutine with realistic delay
 	go func() {
 		// Simulate realistic discovery delay (50-500ms)
-		delay := g.wire.GetSimulator().ServiceDiscoveryDelay()
+		delay := g.wire.GetSimulator().ServiceDiscoveryDelay
 		time.Sleep(delay)
 
 		// Read GATT table from remote device
@@ -166,70 +158,6 @@ func (g *BluetoothGatt) GetService(uuid string) *BluetoothGattService {
 	return nil
 }
 
-// StartWriteQueue initializes the async write queue (matches real Android BLE behavior)
-func (g *BluetoothGatt) StartWriteQueue() {
-	if g.writeQueue != nil {
-		return // Already started
-	}
-
-	g.writeQueue = make(chan writeRequest, 10) // Buffer up to 10 writes
-	g.writeQueueStop = make(chan struct{})
-
-	go func() {
-		for {
-			select {
-			case <-g.writeQueueStop:
-				return
-			case req := <-g.writeQueue:
-				// Process write asynchronously
-				go func(r writeRequest) {
-					var err error
-					if r.characteristic.WriteType == WRITE_TYPE_NO_RESPONSE {
-						// Fire and forget - don't wait for ACK
-						// Use copied data to avoid race condition
-						err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.data)
-						// Callback comes immediately (doesn't wait for delivery)
-						if g.callback != nil {
-							if err != nil {
-								g.callback.OnCharacteristicWrite(g, r.characteristic, 1) // GATT_FAILURE = 1
-							} else {
-								g.callback.OnCharacteristicWrite(g, r.characteristic, 0) // GATT_SUCCESS = 0
-							}
-						}
-					} else {
-						// With response - wait for ACK
-						// Use copied data to avoid race condition
-						err = g.wire.WriteCharacteristic(g.remoteUUID, r.characteristic.Service.UUID, r.characteristic.UUID, r.data)
-						if err != nil {
-							if g.callback != nil {
-								g.callback.OnCharacteristicWrite(g, r.characteristic, 1) // GATT_FAILURE = 1
-							}
-							return
-						}
-
-						if g.callback != nil {
-							g.callback.OnCharacteristicWrite(g, r.characteristic, 0) // GATT_SUCCESS = 0
-						}
-					}
-				}(req)
-
-				// Small delay between writes to simulate BLE radio constraints
-				time.Sleep(10 * time.Millisecond)
-			}
-		}
-	}()
-}
-
-// StopWriteQueue stops the write queue
-func (g *BluetoothGatt) StopWriteQueue() {
-	if g.writeQueueStop != nil {
-		close(g.writeQueueStop)
-		g.writeQueueStop = nil
-		close(g.writeQueue)
-		g.writeQueue = nil
-	}
-}
-
 func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharacteristic) bool {
 	if g.wire == nil {
 		return false
@@ -238,47 +166,24 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 		return false
 	}
 
-	// If write queue is active, queue the write (async like real Android)
-	if g.writeQueue != nil {
-		// Copy data to prevent race condition with incoming notifications
-		dataCopy := make([]byte, len(characteristic.Value))
-		copy(dataCopy, characteristic.Value)
-
-		select {
-		case g.writeQueue <- writeRequest{characteristic: characteristic, data: dataCopy}:
-			// Queued successfully - callback will come later
-			return true
-		default:
-			// Queue full - this would fail in real BLE too
-			if g.callback != nil {
-				g.callback.OnCharacteristicWrite(g, characteristic, 1) // GATT_FAILURE = 1
-			}
-			return false
+	// Write asynchronously (matches real Android BLE behavior)
+	go func() {
+		var err error
+		if characteristic.WriteType == WRITE_TYPE_NO_RESPONSE {
+			err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, characteristic.Value)
+		} else {
+			err = g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, characteristic.Value)
 		}
-	}
 
-	// Fallback: synchronous write (if queue not started)
-	// Copy data to prevent race condition with incoming notifications
-	dataCopy := make([]byte, len(characteristic.Value))
-	copy(dataCopy, characteristic.Value)
-
-	var err error
-	if characteristic.WriteType == WRITE_TYPE_NO_RESPONSE {
-		err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, dataCopy)
-	} else {
-		err = g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, dataCopy)
-	}
-
-	if err != nil {
 		if g.callback != nil {
-			g.callback.OnCharacteristicWrite(g, characteristic, 1) // GATT_FAILURE = 1
+			if err != nil {
+				g.callback.OnCharacteristicWrite(g, characteristic, 1) // GATT_FAILURE = 1
+			} else {
+				g.callback.OnCharacteristicWrite(g, characteristic, 0) // GATT_SUCCESS = 0
+			}
 		}
-		return false
-	}
+	}()
 
-	if g.callback != nil {
-		g.callback.OnCharacteristicWrite(g, characteristic, 0) // GATT_SUCCESS = 0
-	}
 	return true
 }
 
@@ -343,78 +248,30 @@ func (g *BluetoothGatt) SetCharacteristicNotification(characteristic *BluetoothG
 	return err == nil
 }
 
-func (g *BluetoothGatt) StartListening() {
-	if g.wire == nil {
+// HandleGATTMessage is called by android.go when a GATT message arrives for this connection
+// This replaces the old inbox polling mechanism with direct message delivery
+func (g *BluetoothGatt) HandleGATTMessage(msg *wire.GATTMessage) {
+	// Find the characteristic this message is for
+	char := g.GetCharacteristic(msg.ServiceUUID, msg.CharacteristicUUID)
+	if char == nil {
 		return
 	}
 
-	g.stopChan = make(chan struct{})
+	// Determine if we should deliver this message
+	shouldDeliver := false
+	if msg.Operation == "write" || msg.Operation == "write_no_response" {
+		// Always deliver incoming writes (remote wrote to our characteristic)
+		shouldDeliver = true
+	} else if msg.Operation == "notify" || msg.Operation == "indicate" {
+		// Only deliver notifications/indications if we subscribed
+		shouldDeliver = g.notifyingCharacteristics != nil && g.notifyingCharacteristics[char.UUID]
+	}
 
-	go func() {
-		// Polling interval (25ms) balances responsiveness with filesystem stability
-		// Real BLE uses hardware interrupts, but filesystem polling is an intentional
-		// simplification for portability. This interval reduces filesystem pressure.
-		ticker := time.NewTicker(25 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-g.stopChan:
-				return
-			case <-ticker.C:
-				// Central mode: read from central_inbox (notifications from peripherals)
-				messages, err := g.wire.ReadAndConsumeCharacteristicMessagesFromInbox("central_inbox")
-				if err != nil {
-					continue
-				}
-
-				// Process each notification
-				for _, msg := range messages {
-					// IMPORTANT: Only process messages from the device we're connected to
-					// If the message is not for us, we need to put it back in the queue
-					if msg.SenderUUID != g.GetRemoteUUID() {
-						// Put message back in queue for other GATT connections to process
-						g.wire.RequeueMessage(msg)
-						continue
-					}
-
-					// Find the characteristic this message is for
-					char := g.GetCharacteristic(msg.ServiceUUID, msg.CharUUID)
-					if char != nil {
-						// Deliver the message data
-						// - For "write" operations from remote, we receive the data
-						// - For "notify" operations, only deliver if notifications are enabled
-						shouldDeliver := false
-						if msg.Operation == "write" || msg.Operation == "write_no_response" {
-							// Always deliver incoming writes (remote wrote to our characteristic)
-							shouldDeliver = true
-						} else if msg.Operation == "notify" || msg.Operation == "indicate" {
-							// Only deliver notifications/indications if we subscribed
-							shouldDeliver = g.notifyingCharacteristics != nil && g.notifyingCharacteristics[char.UUID]
-						}
-
-						if shouldDeliver {
-							// Create a copy of data to prevent race conditions
-							dataCopy := make([]byte, len(msg.Data))
-							copy(dataCopy, msg.Data)
-							char.Value = dataCopy
-
-							if g.callback != nil {
-								// Deliver callback
-								g.callback.OnCharacteristicChanged(g, char)
-							}
-						}
-					}
-				}
-			}
+	if shouldDeliver {
+		char.Value = msg.Data
+		if g.callback != nil {
+			g.callback.OnCharacteristicChanged(g, char)
 		}
-	}()
-}
-
-func (g *BluetoothGatt) StopListening() {
-	if g.stopChan != nil {
-		close(g.stopChan)
-		g.stopChan = nil
 	}
 }
 
@@ -426,10 +283,6 @@ func (g *BluetoothGatt) GetRemoteUUID() string {
 // Matches Android's BluetoothGatt.disconnect() - stops connection but doesn't release resources
 func (g *BluetoothGatt) Disconnect() {
 	if g.wire != nil {
-		// Stop listening and write queue before disconnecting
-		g.StopListening()
-		g.StopWriteQueue()
-
 		// Disconnect from remote device
 		g.wire.Disconnect(g.remoteUUID)
 	}

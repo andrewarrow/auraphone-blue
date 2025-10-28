@@ -1,452 +1,247 @@
 package android
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/user/auraphone-blue/kotlin"
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
-	"github.com/user/auraphone-blue/proto"
 	"github.com/user/auraphone-blue/wire"
 )
 
-// NewAndroid creates a new Android instance with gossip protocol integration
+// NewAndroid creates a new Android instance
+// Hardware UUID is provided, DeviceID is loaded from cache or generated
 func NewAndroid(hardwareUUID string) *Android {
-	deviceName := "Android Device"
-
-	// Load or generate device ID (8-char base36, persists across app restarts)
+	// Load or generate device ID (persists to ~/.auraphone-blue-data/{uuid}/cache/device_id.json)
 	deviceID, err := phone.LoadOrGenerateDeviceID(hardwareUUID)
 	if err != nil {
-		fmt.Printf("Failed to load/generate device ID: %v\n", err)
-		return nil
+		panic(fmt.Sprintf("Failed to load/generate device ID: %v", err))
 	}
 
-	a := &Android{
-		hardwareUUID:           hardwareUUID,
-		deviceID:               deviceID,
-		deviceName:             deviceName,
-		connectedGatts:         make(map[string]*kotlin.BluetoothGatt),
-		connectedCentrals:      make(map[string]bool),
-		centralSubscriptions:   make(map[string]int),
-		discoveredDevices:      make(map[string]*kotlin.BluetoothDevice),
-		deviceIDToPhotoHash:    make(map[string]string),
-		receivedPhotoHashes:    make(map[string]string),
-		receivedProfileVersion: make(map[string]int32),
-		staleCheckDone:         make(chan struct{}),
-		useAutoConnect:         false, // Default: manual reconnect (matches real Android apps)
-		gossipInterval:         5 * time.Second,
+	// Generate first name from device ID (first 4 chars for now, will be customizable later)
+	firstName := deviceID[:4]
+	deviceName := fmt.Sprintf("Android (%s)", firstName)
+
+	// Create identity manager (tracks all hardware UUID ↔ device ID mappings)
+	dataDir := filepath.Join(phone.GetDataDir(), hardwareUUID)
+	identityManager := phone.NewIdentityManager(hardwareUUID, deviceID, dataDir)
+
+	// Load previously known device mappings from disk
+	if err := identityManager.LoadFromDisk(); err != nil {
+		logger.Warn(fmt.Sprintf("%s Android", hardwareUUID[:8]), "Failed to load identity mappings: %v", err)
 	}
 
-	// Initialize wire
-	a.wire = wire.NewWireWithPlatform(hardwareUUID, wire.PlatformAndroid, deviceName, nil)
-	if err := a.wire.InitializeDevice(); err != nil {
-		fmt.Printf("Failed to initialize Android device: %v\n", err)
-		return nil
+	photoCache := phone.NewPhotoCache(hardwareUUID)
+	meshView := phone.NewMeshView(deviceID, hardwareUUID, dataDir, photoCache)
+	meshView.SetIdentityManager(identityManager)
+
+	return &Android{
+		hardwareUUID:    hardwareUUID,
+		deviceID:        deviceID,
+		deviceName:      deviceName,
+		firstName:       firstName,
+		identityManager: identityManager,
+		photoCache:      photoCache,
+		photoChunker:    phone.NewPhotoChunker(),
+		discovered:      make(map[string]phone.DiscoveredDevice),
+		handshaked:      make(map[string]*HandshakeMessage),
+		connectedGatts:  make(map[string]*kotlin.BluetoothGatt),
+		photoTransfers:  make(map[string]*phone.PhotoTransferState),
+		meshView:        meshView,
+		stopGossip:      make(chan struct{}),
+		profile:         make(map[string]string),
 	}
-
-	// Initialize cache manager
-	a.cacheManager = phone.NewDeviceCacheManager(hardwareUUID)
-	if err := a.cacheManager.InitializeCache(); err != nil {
-		fmt.Printf("Failed to initialize cache: %v\n", err)
-		return nil
-	}
-
-	// Initialize photo coordinator
-	a.photoCoordinator = phone.NewPhotoTransferCoordinator(hardwareUUID)
-
-	// Initialize identity manager (must come before mesh view)
-	dataDir := phone.GetDeviceDir(hardwareUUID)
-	a.identityManager = phone.NewIdentityManager(hardwareUUID, deviceID, dataDir)
-	if err := a.identityManager.LoadFromDisk(); err != nil {
-		fmt.Printf("Failed to load identity mappings: %v\n", err)
-	}
-
-	// Initialize mesh view for gossip protocol
-	a.meshView = phone.NewMeshView(deviceID, hardwareUUID, dataDir, a.cacheManager)
-	a.meshView.SetIdentityManager(a.identityManager)
-
-	// Initialize connection manager for dual-role support
-	a.connManager = phone.NewConnectionManager(hardwareUUID)
-	a.connManager.SetSendFunctions(a.sendViaCentralMode, a.sendViaPeripheralMode)
-	a.connManager.SetIdentityManager(a.identityManager)
-
-	// Initialize shared handlers (platform-agnostic code in phone/ package)
-	a.gossipHandler = phone.NewGossipHandler(a, a.gossipInterval, a.staleCheckDone)
-	a.photoHandler = phone.NewPhotoHandler(a)
-	a.profileHandler = phone.NewProfileHandler(a)
-
-	// Initialize message router
-	a.messageRouter = phone.NewMessageRouter(
-		a.meshView,
-		a.cacheManager,
-		a.photoCoordinator,
-		hardwareUUID,
-		dataDir,
-	)
-	a.messageRouter.SetDeviceContext(hardwareUUID, "Android")
-	a.messageRouter.SetIdentityManager(a.identityManager)
-	a.messageRouter.SetCallbacks(
-		func(deviceID, photoHash string) error { return a.gossipHandler.RequestPhoto(deviceID, photoHash) },
-		func(deviceID string, version int32) error { return a.gossipHandler.RequestProfile(deviceID, version) },
-		func(senderUUID string, req *proto.PhotoRequestMessage) { a.photoHandler.HandlePhotoRequest(senderUUID, req) },
-		func(senderUUID string, req *proto.ProfileRequestMessage) { a.profileHandler.HandleProfileRequest(senderUUID, req) },
-		func(targetUUID, targetDeviceID string, chunkIndices []int32) error {
-			return a.photoHandler.RetryMissingChunks(targetUUID, targetDeviceID, chunkIndices)
-		},
-	)
-	a.messageRouter.SetDeviceIDDiscoveredCallback(func(hardwareUUID, deviceID string) {
-		prefix := fmt.Sprintf("%s Android", hardwareUUID[:8])
-		logger.Debug(prefix, "🔑 Storing deviceID mapping: %s → %s", hardwareUUID[:8], deviceID[:8])
-
-		// Register device in identity manager
-		a.identityManager.RegisterDevice(hardwareUUID, deviceID)
-		a.identityManager.SaveToDisk()
-
-		logger.Debug(prefix, "✅ Mapping stored. Total mappings: %d", a.identityManager.GetMappingCount())
-
-		// NEW: Try to connect to this device if we're not already connected
-		// This enables connections via gossip (getRemoteDevice without discovery)
-		a.tryConnectToGossipDevice(hardwareUUID, deviceID)
-	})
-
-	// Set callback to check if a device is connected
-	a.messageRouter.SetIsConnectedCallback(func(hardwareUUID string) bool {
-		return a.connManager.IsConnected(hardwareUUID)
-	})
-
-	// Load photo mappings and profile
-	a.loadReceivedPhotoMappings()
-	a.localProfile = phone.LoadLocalProfile(hardwareUUID)
-
-	// Setup BLE
-	a.setupBLE()
-	a.manager = kotlin.NewBluetoothManager(hardwareUUID)
-	a.initializePeripheralMode()
-
-	// Set up subscription callback to track when Central devices subscribe to our characteristics
-	a.wire.SetSubscriptionCallback(a.onCharacteristicSubscribed)
-
-	return a
 }
 
-func (a *Android) initializePeripheralMode() {
-	// Create GATT server with wrapper callback, passing shared wire
-	delegate := &androidGattServerDelegate{android: a}
-	gattServer := kotlin.NewBluetoothGattServer(a.hardwareUUID, delegate, wire.PlatformAndroid, a.deviceName, a.wire)
+// Start initializes the Android device and begins advertising/scanning
+func (a *Android) Start() {
+	// Create wire
+	a.wire = wire.NewWire(a.hardwareUUID)
 
-	// Add the Aura service
+	// Start listening on socket
+	err := a.wire.Start()
+	if err != nil {
+		panic(err)
+	}
+
+	// Set up GATT message handler - this is the ONE place we handle ALL incoming messages
+	a.wire.SetGATTMessageHandler(func(peerUUID string, msg *wire.GATTMessage) {
+		a.handleGATTMessage(peerUUID, msg)
+	})
+
+	// Set up connection callback - handles when Centrals connect to us (as Peripheral)
+	a.wire.SetConnectCallback(func(peerUUID string, role wire.ConnectionRole) {
+		if role == wire.RolePeripheral {
+			// Someone connected to us as Central
+			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Central %s connected to us", peerUUID[:8])
+		}
+	})
+
+	// Create BluetoothManager with shared wire
+	a.manager = kotlin.NewBluetoothManager(a.hardwareUUID, a.wire)
+
+	// Get adapter
+	adapter := a.manager.Adapter
+
+	// Get scanner
+	a.scanner = adapter.GetBluetoothLeScanner()
+
+	// Create GATT server for peripheral mode (use wrapper to avoid method name collision)
+	serverCallback := &androidGattServerCallback{android: a}
+	a.gattServer = a.manager.OpenGattServer(serverCallback, a.deviceName, a.wire)
+
+	// Get advertiser (links with GATT server)
+	a.advertiser = adapter.GetBluetoothLeAdvertiser()
+	a.advertiser.SetGattServer(a.gattServer)
+
+	// Set up GATT services
+	a.setupGATTServices()
+
+	// Start advertising
+	a.startAdvertising()
+
+	// Start scanning
+	a.startScanning()
+
+	// Start gossip protocol timer (sends gossip every 5 seconds to connected peers)
+	a.startGossipTimer()
+
+	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Started Android: %s (ID: %s)", a.firstName, a.deviceID)
+}
+
+// Stop stops the Android device
+func (a *Android) Stop() {
+	// Stop gossip timer
+	if a.gossipTicker != nil {
+		a.gossipTicker.Stop()
+		close(a.stopGossip)
+	}
+
+	// Stop scanning
+	if a.scanner != nil {
+		a.scanner.StopScan()
+	}
+
+	// Stop advertising
+	if a.advertiser != nil {
+		a.advertiser.StopAdvertising()
+	}
+
+	// Disconnect all GATT connections
+	a.mu.Lock()
+	for _, gatt := range a.connectedGatts {
+		gatt.Close()
+	}
+	a.mu.Unlock()
+
+	// Close GATT server
+	if a.gattServer != nil {
+		a.gattServer.Close()
+	}
+
+	// Stop wire
+	if a.wire != nil {
+		a.wire.Stop()
+	}
+
+	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🛑 Stopped Android")
+}
+
+// setupGATTServices sets up the GATT services for peripheral mode
+func (a *Android) setupGATTServices() {
+	// Create Aura service with protocol, photo, and profile characteristics
 	service := &kotlin.BluetoothGattService{
 		UUID: phone.AuraServiceUUID,
 		Type: kotlin.SERVICE_TYPE_PRIMARY,
-	}
-
-	// Add characteristics
-	protocolChar := &kotlin.BluetoothGattCharacteristic{
-		UUID:       phone.AuraProtocolCharUUID,
-		Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
-	}
-	photoChar := &kotlin.BluetoothGattCharacteristic{
-		UUID:       phone.AuraPhotoCharUUID,
-		Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
-	}
-	profileChar := &kotlin.BluetoothGattCharacteristic{
-		UUID:       phone.AuraProfileCharUUID,
-		Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
-	}
-
-	service.Characteristics = append(service.Characteristics, protocolChar, photoChar, profileChar)
-	gattServer.AddService(service)
-
-	// Create advertiser, passing shared wire
-	a.advertiser = kotlin.NewBluetoothLeAdvertiser(a.hardwareUUID, wire.PlatformAndroid, a.deviceName, a.wire)
-	a.advertiser.SetGattServer(gattServer)
-}
-
-func (a *Android) setupBLE() {
-	gattTable := &wire.GATTTable{
-		Services: []wire.GATTService{
+		Characteristics: []*kotlin.BluetoothGattCharacteristic{
 			{
-				UUID: phone.AuraServiceUUID,
-				Type: "primary",
-				Characteristics: []wire.GATTCharacteristic{
-					{
-						UUID:       phone.AuraProtocolCharUUID,
-						Properties: []string{"read", "write", "notify"},
-						Descriptors: []wire.GATTDescriptor{
-							{UUID: "00002902-0000-1000-8000-00805f9b34fb", Type: "CCCD"},
-						},
-					},
-					{
-						UUID:       phone.AuraPhotoCharUUID,
-						Properties: []string{"read", "write", "notify"},
-						Descriptors: []wire.GATTDescriptor{
-							{UUID: "00002902-0000-1000-8000-00805f9b34fb", Type: "CCCD"},
-						},
-					},
-					{
-						UUID:       phone.AuraProfileCharUUID,
-						Properties: []string{"read", "write", "notify"},
-						Descriptors: []wire.GATTDescriptor{
-							{UUID: "00002902-0000-1000-8000-00805f9b34fb", Type: "CCCD"},
-						},
-					},
-				},
+				UUID:       phone.AuraProtocolCharUUID,
+				Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
+			},
+			{
+				UUID:       phone.AuraPhotoCharUUID,
+				Properties: kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
+			},
+			{
+				UUID:       phone.AuraProfileCharUUID,
+				Properties: kotlin.PROPERTY_READ | kotlin.PROPERTY_WRITE | kotlin.PROPERTY_NOTIFY,
 			},
 		},
 	}
 
-	if err := a.wire.WriteGATTTable(gattTable); err != nil {
-		fmt.Printf("Failed to write GATT table: %v\n", err)
-		return
-	}
-
-	txPowerLevel := 0
-	advertisingData := &wire.AdvertisingData{
-		DeviceName:    a.deviceName,
-		ServiceUUIDs:  []string{phone.AuraServiceUUID},
-		TxPowerLevel:  &txPowerLevel,
-		IsConnectable: true,
-	}
-
-	if err := a.wire.WriteAdvertisingData(advertisingData); err != nil {
-		fmt.Printf("Failed to write advertising data: %v\n", err)
-		return
-	}
-
-	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Setup complete - deviceID: %s", a.deviceID)
+	a.gattServer.AddService(service)
 }
 
-func (a *Android) loadReceivedPhotoMappings() {
-	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
-	photosDir := filepath.Join(phone.GetDeviceCacheDir(a.hardwareUUID), "photos")
-	entries, err := os.ReadDir(photosDir)
-	if err != nil {
-		return
-	}
-
-	loadedCount := 0
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jpg" {
-			continue
-		}
-
-		photoHash := entry.Name()[:len(entry.Name())-4]
-		metadataFiles, _ := filepath.Glob(filepath.Join(phone.GetDeviceCacheDir(a.hardwareUUID), "*_metadata.json"))
-
-		for _, metadataFile := range metadataFiles {
-			deviceID := filepath.Base(metadataFile)[:len(filepath.Base(metadataFile))-len("_metadata.json")]
-			hash, _ := a.cacheManager.GetDevicePhotoHash(deviceID)
-			if hash == photoHash {
-				a.receivedPhotoHashes[deviceID] = photoHash
-				loadedCount++
-				break
-			}
-		}
-	}
-
-	if loadedCount > 0 {
-		logger.Info(prefix, "Loaded %d cached photo mappings", loadedCount)
-	}
-}
-
-func (a *Android) Start() {
-	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
-
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		scanner := a.manager.Adapter.GetBluetoothLeScanner()
-		scanner.StartScan(a)
-		logger.Info(prefix, "Started scanning (Central mode)")
-	}()
-
+// startAdvertising starts advertising our GATT services
+func (a *Android) startAdvertising() {
 	settings := &kotlin.AdvertiseSettings{
-		AdvertiseMode: kotlin.ADVERTISE_MODE_LOW_LATENCY,
+		AdvertiseMode: kotlin.ADVERTISE_MODE_LOW_LATENCY, // 100ms interval
 		Connectable:   true,
-		Timeout:       0,
+		Timeout:       0, // No timeout
 		TxPowerLevel:  kotlin.ADVERTISE_TX_POWER_MEDIUM,
 	}
 
 	advertiseData := &kotlin.AdvertiseData{
 		ServiceUUIDs:        []string{phone.AuraServiceUUID},
-		IncludeDeviceName:   true,
 		IncludeTxPowerLevel: true,
+		IncludeDeviceName:   true,
 	}
 
 	a.advertiser.StartAdvertising(settings, advertiseData, nil, a)
-	logger.Info(prefix, "✅ Started advertising (Peripheral mode)")
-
-	go a.gossipHandler.GossipLoop()
-	logger.Info(prefix, "✅ Started gossip protocol (5s interval)")
 }
 
-func (a *Android) Stop() {
-	fmt.Printf("[%s Android] Stopping\n", a.hardwareUUID[:8])
-	close(a.staleCheckDone)
+// startScanning starts scanning for other devices
+func (a *Android) startScanning() {
+	a.scanner.StartScan(a)
 }
 
-// Getters and setters
-
-func (a *Android) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
-	a.discoveryCallback = callback
-}
-
-// TriggerDiscoveryUpdate triggers the discovery callback to update the GUI
-func (a *Android) TriggerDiscoveryUpdate(hardwareUUID, deviceID, photoHash string, photoData []byte) {
-	prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
-	logger.Debug(prefix, "🔔 TriggerDiscoveryUpdate ENTER: hardwareUUID=%s, deviceID=%s, photoHash=%s, photoDataLen=%d",
-		hardwareUUID[:8], deviceID[:8], photoHash[:8], len(photoData))
-
-	if a.discoveryCallback == nil {
-		logger.Warn(prefix, "⚠️  discoveryCallback is NIL - cannot update GUI!")
-		return
+// handleGATTMessage routes incoming GATT messages to the appropriate handler
+// This is the central message routing point - ALL messages come through here
+func (a *Android) handleGATTMessage(peerUUID string, msg *wire.GATTMessage) {
+	// Determine if this is central mode (we initiated) or peripheral mode (they initiated)
+	role, exists := a.wire.GetConnectionRole(peerUUID)
+	if !exists {
+		return // No connection
 	}
 
-	logger.Debug(prefix, "🔔 discoveryCallback is NOT nil, proceeding...")
+	if role == wire.RoleCentral {
+		// Central mode - we initiated the connection
+		// Route to the appropriate BluetoothGatt connection
+		a.mu.RLock()
+		gatt, exists := a.connectedGatts[peerUUID]
+		a.mu.RUnlock()
 
-	// Look up device name from discovered devices
-	a.mu.RLock()
-	// Default name
-	name := "Unknown Device"
-	// Try to find the device by hardware UUID
-	if device, exists := a.discoveredDevices[hardwareUUID]; exists {
-		name = device.Name
-	} else {
-		// If not found by hardware UUID, try looking up from device ID
-		if lookupHardwareUUID, ok := a.identityManager.GetHardwareUUID(deviceID); ok {
-			if device, exists := a.discoveredDevices[lookupHardwareUUID]; exists {
-				name = device.Name
-			}
+		if exists && gatt != nil {
+			gatt.HandleGATTMessage(msg)
+		}
+	} else if role == wire.RolePeripheral {
+		// Peripheral mode - they initiated the connection
+		// Route to advertiser/GATT server
+		if a.advertiser != nil {
+			a.advertiser.HandleGATTMessage(msg)
 		}
 	}
-	a.mu.RUnlock()
-
-	logger.Debug(prefix, "🔔 BEFORE calling discoveryCallback with name=%s", name)
-
-	a.discoveryCallback(phone.DiscoveredDevice{
-		DeviceID:     deviceID,
-		HardwareUUID: hardwareUUID,
-		Name:         name,
-		RSSI:         0, // RSSI not relevant for cached photo updates
-		Platform:     "unknown",
-		PhotoHash:    photoHash,
-		PhotoData:    photoData,
-	})
-
-	logger.Debug(prefix, "🔔 AFTER calling discoveryCallback - GUI update complete")
 }
 
-func (a *Android) GetDeviceUUID() string { return a.hardwareUUID }
-
-func (a *Android) SetProfilePhoto(photoPath string) error {
-	data, err := os.ReadFile(photoPath)
-	if err != nil {
-		return fmt.Errorf("failed to read photo: %w", err)
-	}
-
-	hash := sha256.Sum256(data)
-	photoHash := hex.EncodeToString(hash[:])
-
-	cachePath := filepath.Join(phone.GetDeviceCacheDir(a.hardwareUUID), "my_photo.jpg")
-	cacheDir := filepath.Dir(cachePath)
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(cachePath, data, 0644); err != nil {
-		return err
-	}
-
+// SetDiscoveryCallback sets the callback for when devices are discovered
+func (a *Android) SetDiscoveryCallback(callback phone.DeviceDiscoveryCallback) {
 	a.mu.Lock()
-	a.photoPath, a.photoHash, a.photoData = photoPath, photoHash, data
-	a.mu.Unlock()
-
-	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📸 Set photo: %s", phone.TruncateHash(photoHash, 8))
-	go a.gossipHandler.SendGossipToNeighbors()
-	return nil
+	defer a.mu.Unlock()
+	a.callback = callback
 }
 
-func (a *Android) GetProfilePhotoHash() string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.photoHash
+// GetDeviceUUID returns the hardware UUID
+func (a *Android) GetDeviceUUID() string {
+	return a.hardwareUUID
 }
 
-// GetLocalProfileMap returns the local profile as a map (for external API)
-func (a *Android) GetLocalProfileMap() map[string]string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return phone.ConvertProfileToMap(a.localProfile)
+// GetDeviceName returns the device name
+func (a *Android) GetDeviceName() string {
+	return a.deviceName
 }
 
-func (a *Android) UpdateLocalProfile(profile map[string]string) error {
-	a.mu.Lock()
-	phone.UpdateProfileFromMap(a.localProfile, profile)
-	a.mu.Unlock()
-
-	if err := phone.IncrementProfileVersion(a.hardwareUUID, a.localProfile); err != nil {
-		return err
-	}
-
-	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📝 Updated profile to v%d", a.localProfile.ProfileVersion)
-	go a.gossipHandler.SendGossipToNeighbors()
-	return nil
-}
-
-// sendViaCentralMode sends data via Central mode (GATT client write)
-func (a *Android) sendViaCentralMode(remoteUUID, charUUID string, data []byte) error {
-	a.mu.RLock()
-	gatt, exists := a.connectedGatts[remoteUUID]
-	a.mu.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("not connected as central to %s", remoteUUID[:8])
-	}
-
-	char := gatt.GetCharacteristic(phone.AuraServiceUUID, charUUID)
-	if char == nil {
-		return fmt.Errorf("characteristic %s not found", charUUID[:8])
-	}
-
-	char.Value = data
-	if !gatt.WriteCharacteristic(char) {
-		return fmt.Errorf("write failed for characteristic %s", charUUID[:8])
-	}
-
-	return nil
-}
-
-// sendViaPeripheralMode sends data via Peripheral mode (GATT server notification)
-func (a *Android) sendViaPeripheralMode(remoteUUID, charUUID string, data []byte) error {
-	// Android uses wire layer to send notifications from GATT server
-	// When acting as Peripheral, we send notifications (not writes)
-	if err := a.wire.NotifyCharacteristic(remoteUUID, phone.AuraServiceUUID, charUUID, data); err != nil {
-		return fmt.Errorf("failed to send notification: %w", err)
-	}
-	return nil
-}
-
-// onCharacteristicSubscribed is called when a Central device subscribes to one of our characteristics
-func (a *Android) onCharacteristicSubscribed(remoteUUID, serviceUUID, charUUID string) {
-	// Track subscription count for this Central
-	a.mu.Lock()
-	a.centralSubscriptions[remoteUUID]++
-	count := a.centralSubscriptions[remoteUUID]
-	a.mu.Unlock()
-
-	// Once all 3 characteristics are subscribed, send initial gossip
-	// (AuraProtocolCharUUID, AuraPhotoCharUUID, AuraProfileCharUUID)
-	if count == 3 {
-		prefix := fmt.Sprintf("%s Android", a.hardwareUUID[:8])
-		logger.Debug(prefix, "📥 GATT server: Central %s connected", remoteUUID[:8])
-		// Add a small delay to ensure the Central has received the subscribe ACK
-		// and is ready to receive notifications (fixes race condition)
-		go func() {
-			time.Sleep(100 * time.Millisecond) // Wait for subscribe ACK to reach Central
-			a.gossipHandler.SendGossipToDevice(remoteUUID)
-		}()
-	}
+// GetPlatform returns the platform name
+func (a *Android) GetPlatform() string {
+	return "android"
 }

@@ -2,131 +2,77 @@ package iphone
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
 	"github.com/user/auraphone-blue/swift"
+	pb "github.com/user/auraphone-blue/proto"
+	"google.golang.org/protobuf/proto"
 )
 
-// CBPeripheralManagerDelegate methods for Peripheral mode (advertising and serving)
+// ============================================================================
+// CBPeripheralManagerDelegate Implementation (Peripheral role - accepting connections)
+// ============================================================================
 
-func (d *iPhonePeripheralDelegate) DidUpdateState(peripheralManager *swift.CBPeripheralManager) {
-	// State updated
+func (ip *IPhone) DidUpdatePeripheralState(peripheralManager *swift.CBPeripheralManager) {
+	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Peripheral manager state: %s", peripheralManager.State)
 }
 
-func (d *iPhonePeripheralDelegate) DidStartAdvertising(peripheralManager *swift.CBPeripheralManager, err error) {
-	prefix := fmt.Sprintf("%s iOS", d.iphone.hardwareUUID[:8])
+func (ip *IPhone) DidStartAdvertising(peripheralManager *swift.CBPeripheralManager, err error) {
 	if err != nil {
-		logger.Error(prefix, "❌ Failed to start advertising: %v", err)
+		logger.Error(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Failed to start advertising: %v", err)
 	} else {
-		logger.Debug(prefix, "✅ Advertising started")
+		logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📡 Advertising started")
 	}
 }
 
-func (d *iPhonePeripheralDelegate) DidReceiveReadRequest(peripheralManager *swift.CBPeripheralManager, request *swift.CBATTRequest) {
-	// We don't support reads - all data pushed via writes/notifications
-	peripheralManager.RespondToRequest(request, 0)
+func (ip *IPhone) DidReceiveReadRequest(peripheralManager *swift.CBPeripheralManager, request *swift.CBATTRequest) {
+	logger.Trace(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📖 Read request from %s for %s",
+		shortHash(request.Central.UUID), shortHash(request.Characteristic.UUID))
+
+	// For now, respond with empty data
+	peripheralManager.RespondToRequest(request, 0) // 0 = success
 }
 
-func (d *iPhonePeripheralDelegate) DidReceiveWriteRequests(peripheralManager *swift.CBPeripheralManager, requests []*swift.CBATTRequest) {
-	prefix := fmt.Sprintf("%s iOS", d.iphone.hardwareUUID[:8])
-
+func (ip *IPhone) DidReceiveWriteRequests(peripheralManager *swift.CBPeripheralManager, requests []*swift.CBATTRequest) {
 	for _, request := range requests {
-		senderUUID := request.Central.UUID
+		logger.Trace(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "✍️  Write request from %s to %s (%d bytes)",
+			shortHash(request.Central.UUID), shortHash(request.Characteristic.UUID), len(request.Value))
 
-		logger.Debug(prefix,
-			"📥 RECEIVED DATA (Peripheral): char=%s bytes=%d from_central=%s",
-			request.Characteristic.UUID[len(request.Characteristic.UUID)-4:], len(request.Value), senderUUID[:8])
-
-		// Route message based on characteristic UUID
-		switch request.Characteristic.UUID {
-		case phone.AuraProtocolCharUUID:
-			// Gossip, photo request, or profile request
-			logger.Debug(prefix, "📥 RX Protocol message from %s (%d bytes)", senderUUID[:8], len(request.Value))
-			if err := d.iphone.messageRouter.HandleProtocolMessage(senderUUID, request.Value); err != nil {
-				logger.Error(prefix, "❌ Failed to handle protocol message: %v", err)
+		// Handle based on characteristic
+		if request.Characteristic.UUID == phone.AuraProtocolCharUUID {
+			// Protocol characteristic receives both handshakes and gossip messages
+			// Try to distinguish by parsing as gossip first (has MeshView field)
+			var gossipMsg pb.GossipMessage
+			if proto.Unmarshal(request.Value, &gossipMsg) == nil && len(gossipMsg.MeshView) > 0 {
+				// It's a gossip message
+				ip.handleGossipMessage(request.Central.UUID, request.Value)
+			} else {
+				// It's a handshake message
+				ip.handleHandshake(request.Central.UUID, request.Value)
 			}
-
-		case phone.AuraPhotoCharUUID:
-			// Photo chunk data
-			logger.Debug(prefix, "📥 RX Photo chunk from %s (%d bytes)", senderUUID[:8], len(request.Value))
-			d.iphone.photoHandler.HandlePhotoChunk(senderUUID, request.Value)
-
-		case phone.AuraProfileCharUUID:
-			// Profile message
-			logger.Debug(prefix, "📥 RX Profile message from %s (%d bytes)", senderUUID[:8], len(request.Value))
-			d.iphone.profileHandler.HandleProfileMessage(senderUUID, request.Value)
+		} else if request.Characteristic.UUID == phone.AuraPhotoCharUUID {
+			// Photo data
+			ip.handlePhotoData(request.Central.UUID, request.Value)
 		}
 	}
 
-	// Respond success
-	peripheralManager.RespondToRequest(requests[0], 0)
+	peripheralManager.RespondToRequest(requests[0], 0) // 0 = success
 }
 
-func (d *iPhonePeripheralDelegate) CentralDidSubscribe(peripheralManager *swift.CBPeripheralManager, central swift.CBCentral, characteristic *swift.CBMutableCharacteristic) {
-	prefix := fmt.Sprintf("%s iOS", d.iphone.hardwareUUID[:8])
-	logger.Debug(prefix, "🔔 Central %s subscribed to %s", central.UUID[:8], characteristic.UUID[:8])
+func (ip *IPhone) CentralDidSubscribe(peripheralManager *swift.CBPeripheralManager, central swift.CBCentral, characteristic *swift.CBMutableCharacteristic) {
+	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🔔 Central %s subscribed to %s",
+		shortHash(central.UUID), shortHash(characteristic.UUID))
 
-	// Register this central connection
-	d.iphone.connManager.RegisterPeripheralConnection(central.UUID)
-
-	// Mark device as connected in identity manager
-	d.iphone.identityManager.MarkConnected(central.UUID)
-
-	// NEW (Week 3): Mark device as connected in mesh view
-	if deviceID, ok := d.iphone.identityManager.GetDeviceID(central.UUID); ok {
-		d.iphone.meshView.MarkDeviceConnected(deviceID)
-	}
-
-	// Send initial gossip when they subscribe to protocol characteristic
-	// Add a small delay to ensure the Central has received the subscribe ACK
-	// and is ready to receive notifications (fixes race condition)
-	if characteristic.UUID == phone.AuraProtocolCharUUID {
-		go func() {
-			time.Sleep(100 * time.Millisecond) // Wait for subscribe ACK to reach Central
-			d.iphone.gossipHandler.SendGossipToDevice(central.UUID)
-		}()
+	// If they subscribed to photo characteristic, send them our photo
+	if characteristic.UUID == phone.AuraPhotoCharUUID {
+		logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📸 Central %s subscribed to photo - sending chunks",
+			shortHash(central.UUID))
+		go ip.sendPhotoChunks(central.UUID)
 	}
 }
 
-func (d *iPhonePeripheralDelegate) CentralDidUnsubscribe(peripheralManager *swift.CBPeripheralManager, central swift.CBCentral, characteristic *swift.CBMutableCharacteristic) {
-	prefix := fmt.Sprintf("%s iOS", d.iphone.hardwareUUID[:8])
-	logger.Debug(prefix, "🔕 Central %s unsubscribed from %s", central.UUID[:8], characteristic.UUID[:8])
-
-	// Get device ID before cleanup
-	deviceID, _ := d.iphone.identityManager.GetDeviceID(central.UUID)
-
-	// Mark device as disconnected in identity manager
-	d.iphone.identityManager.MarkDisconnected(central.UUID)
-
-	// NEW (Week 3): Mark device as disconnected in mesh view
-	if deviceID != "" {
-		d.iphone.meshView.MarkDeviceDisconnected(deviceID)
-	}
-
-	// Unregister when they disconnect completely (we'd get unsubscribe for all chars)
-	d.iphone.connManager.UnregisterPeripheralConnection(central.UUID)
-}
-
-// sendViaPeripheralMode sends data to a device that connected to us (we're Peripheral)
-func (ip *iPhone) sendViaPeripheralMode(remoteUUID, charUUID string, data []byte) error {
-	var targetChar *swift.CBMutableCharacteristic
-	switch charUUID {
-	case phone.AuraProtocolCharUUID:
-		targetChar = ip.protocolChar
-	case phone.AuraPhotoCharUUID:
-		targetChar = ip.photoChar
-	case phone.AuraProfileCharUUID:
-		targetChar = ip.profileChar
-	default:
-		return fmt.Errorf("unknown characteristic %s", charUUID[:8])
-	}
-
-	central := swift.CBCentral{UUID: remoteUUID}
-	if success := ip.peripheralManager.UpdateValue(data, targetChar, []swift.CBCentral{central}); !success {
-		return fmt.Errorf("failed to send notification (queue full)")
-	}
-
-	return nil
+func (ip *IPhone) CentralDidUnsubscribe(peripheralManager *swift.CBPeripheralManager, central swift.CBCentral, characteristic *swift.CBMutableCharacteristic) {
+	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🔕 Central %s unsubscribed from %s",
+		shortHash(central.UUID), shortHash(characteristic.UUID))
 }

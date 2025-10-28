@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/user/auraphone-blue/phone"
 )
 
 // DeviceInfo holds information about a test device
@@ -135,15 +133,29 @@ func discoverDevices(dataDir string) ([]DeviceInfo, error) {
 			}
 		}
 
-		// Get own photo hash
-		myPhotoPath := filepath.Join(dataDir, hardwareUUID, "cache", "my_photo.jpg")
-		if _, err := os.Stat(myPhotoPath); err == nil {
-			hash, _ := phone.HashFile(myPhotoPath)
-			deviceInfo.PhotoHash = hash
-			if len(hash) >= 8 {
-				deviceInfo.PhotoHashShort = hash[:8]
-			} else {
-				deviceInfo.PhotoHashShort = hash
+		// Get own photo hash by finding photo metadata that matches this device
+		photosDir := filepath.Join(dataDir, hardwareUUID, "photos")
+		if entries, err := os.ReadDir(photosDir); err == nil {
+			for _, entry := range entries {
+				if strings.HasSuffix(entry.Name(), ".json") {
+					metaPath := filepath.Join(photosDir, entry.Name())
+					if data, err := os.ReadFile(metaPath); err == nil {
+						var meta struct {
+							DeviceID string `json:"device_id"`
+						}
+						if json.Unmarshal(data, &meta) == nil && meta.DeviceID == deviceInfo.DeviceID {
+							// This is their own photo
+							photoHash := strings.TrimSuffix(entry.Name(), ".json")
+							deviceInfo.PhotoHash = photoHash
+							if len(photoHash) >= 8 {
+								deviceInfo.PhotoHashShort = photoHash[:8]
+							} else {
+								deviceInfo.PhotoHashShort = photoHash
+							}
+							break
+						}
+					}
+				}
 			}
 		}
 
@@ -171,7 +183,7 @@ func buildPhotoMatrix(devices []DeviceInfo, dataDir string) PhotoMatrix {
 			}
 
 			// Check if toDevice has fromDevice's photo
-			photosDir := filepath.Join(dataDir, toDevice.HardwareUUID, "cache", "photos")
+			photosDir := filepath.Join(dataDir, toDevice.HardwareUUID, "photos")
 			photoPath := filepath.Join(photosDir, fromDevice.PhotoHash+".jpg")
 			_, err := os.Stat(photoPath)
 			matrix[fromDevice.DeviceID][toDevice.DeviceID] = (err == nil)

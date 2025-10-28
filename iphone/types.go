@@ -9,46 +9,61 @@ import (
 	"github.com/user/auraphone-blue/wire"
 )
 
-// iPhone represents an iOS device with BLE capabilities
-type iPhone struct {
-	hardwareUUID           string                              // Bluetooth hardware UUID (never changes, from testdata/hardware_uuids.txt)
-	deviceID               string                              // Logical device ID (8-char base36, cached to disk)
-	deviceName             string
-	wire                   *wire.Wire
-	cacheManager           *phone.DeviceCacheManager           // Persistent photo storage
-	photoCoordinator       *phone.PhotoTransferCoordinator     // Photo transfer state (single source of truth)
-	manager                *swift.CBCentralManager
-	peripheralManager      *swift.CBPeripheralManager          // Peripheral mode: GATT server + advertising
-	protocolChar           *swift.CBMutableCharacteristic      // Reference to protocol characteristic for notifications
-	photoChar              *swift.CBMutableCharacteristic      // Reference to photo characteristic for notifications
-	profileChar            *swift.CBMutableCharacteristic      // Reference to profile characteristic for notifications
-	discoveryCallback      phone.DeviceDiscoveryCallback
-	photoPath              string
-	photoHash              string
-	photoData              []byte
-	localProfile           *phone.LocalProfile                 // Our local profile data
-	mu                     sync.RWMutex                        // Protects all maps below
-	connectedPeripherals   map[string]*swift.CBPeripheral      // peripheral UUID -> peripheral
-	deviceIDToPhotoHash    map[string]string                   // deviceID -> their TX photo hash
-	receivedPhotoHashes    map[string]string                   // deviceID -> RX hash (photos we got from them)
-	receivedProfileVersion map[string]int32                    // deviceID -> their profile version
-	staleCheckDone         chan struct{}                       // Signal channel for stopping gossip loop
-
-	// NEW: Gossip protocol fields (Phase 3)
-	meshView         *phone.MeshView
-	messageRouter    *phone.MessageRouter
-	connManager      *phone.ConnectionManager
-	identityManager  *phone.IdentityManager                  // Centralized identity mapping (hardware UUID <-> device ID)
-	gossipInterval   time.Duration
-	lastGossipTime   time.Time
-
-	// Shared handlers (no platform-specific code)
-	gossipHandler  *phone.GossipHandler
-	photoHandler   *phone.PhotoHandler
-	profileHandler *phone.ProfileHandler
+// shortHash returns first 8 chars of a hash string, or the full string if shorter
+func shortHash(s string) string {
+	if len(s) >= 8 {
+		return s[:8]
+	}
+	if s == "" {
+		return "(none)"
+	}
+	return s
 }
 
-// iPhonePeripheralDelegate wraps iPhone to implement CBPeripheralManagerDelegate
-type iPhonePeripheralDelegate struct {
-	iphone *iPhone
+// HandshakeMessage is exchanged when two devices first connect
+type HandshakeMessage struct {
+	HardwareUUID string `json:"hardware_uuid"`
+	DeviceID     string `json:"device_id"`
+	DeviceName   string `json:"device_name"`
+	FirstName    string `json:"first_name"`
+}
+
+// IPhone implements the Phone interface for iOS devices
+type IPhone struct {
+	hardwareUUID string
+	deviceID     string
+	deviceName   string
+	firstName    string
+
+	wire            *wire.Wire
+	central         *swift.CBCentralManager
+	peripheral      *swift.CBPeripheralManager
+	identityManager *phone.IdentityManager // THE ONLY place for UUID ↔ DeviceID mapping
+	photoCache      *phone.PhotoCache      // Photo caching and storage
+	photoChunker    *phone.PhotoChunker    // Photo chunking for BLE transfer
+
+	discovered     map[string]phone.DiscoveredDevice    // hardwareUUID -> device
+	handshaked     map[string]*HandshakeMessage         // hardwareUUID -> handshake data
+	connectedPeers map[string]*swift.CBPeripheral       // hardwareUUID -> peripheral object
+	photoTransfers map[string]*phone.PhotoTransferState // hardwareUUID -> in-progress transfer
+
+	// Gossip protocol (shared logic in phone/mesh_view.go)
+	meshView     *phone.MeshView
+	gossipTicker *time.Ticker
+	stopGossip   chan struct{}
+
+	mu           sync.RWMutex
+	callback     phone.DeviceDiscoveryCallback
+	profilePhoto string
+	photoHash    string // SHA-256 hash of our current profile photo
+	photoData    []byte // Our current profile photo data
+	profile      map[string]string
+}
+
+// photoTransferDelegate handles service discovery for photo transfers
+type photoTransferDelegate struct {
+	iphone    *IPhone
+	peerUUID  string
+	photoHash string
+	deviceID  string
 }

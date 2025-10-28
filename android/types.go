@@ -9,47 +9,55 @@ import (
 	"github.com/user/auraphone-blue/wire"
 )
 
-// Android represents an Android device with BLE capabilities
-type Android struct {
-	hardwareUUID         string                              // Bluetooth hardware UUID (never changes, from testdata/hardware_uuids.txt)
-	deviceID             string                              // Logical device ID (8-char base36, cached to disk)
-	deviceName           string
-	wire                 *wire.Wire
-	cacheManager         *phone.DeviceCacheManager           // Persistent photo storage
-	photoCoordinator     *phone.PhotoTransferCoordinator     // Photo transfer state (single source of truth)
-	manager              *kotlin.BluetoothManager
-	advertiser           *kotlin.BluetoothLeAdvertiser       // Peripheral mode: advertising + inbox polling
-	discoveryCallback    phone.DeviceDiscoveryCallback
-	photoPath            string
-	photoHash            string
-	photoData            []byte
-	localProfile         *phone.LocalProfile                 // Our local profile data
-	mu                     sync.RWMutex                        // Protects all maps below
-	connectedGatts         map[string]*kotlin.BluetoothGatt    // remote UUID -> GATT connection (devices we connected to as Central)
-	connectedCentrals      map[string]bool                     // remote UUID -> true (devices that connected to us as Peripheral)
-	centralSubscriptions   map[string]int                      // remote UUID -> count of subscribed characteristics (max 3)
-	discoveredDevices      map[string]*kotlin.BluetoothDevice  // remote UUID -> discovered device (for reconnect)
-	deviceIDToPhotoHash    map[string]string                   // deviceID -> their TX photo hash
-	receivedPhotoHashes    map[string]string                   // deviceID -> RX hash (photos we got from them)
-	receivedProfileVersion map[string]int32                    // deviceID -> their profile version
-	useAutoConnect         bool                                // Whether to use autoConnect=true mode
-	staleCheckDone         chan struct{}                       // Signal channel for stopping gossip loop
-
-	// NEW: Gossip protocol fields (Phase 3)
-	meshView         *phone.MeshView
-	messageRouter    *phone.MessageRouter
-	connManager      *phone.ConnectionManager
-	identityManager  *phone.IdentityManager                  // Centralized identity mapping (hardware UUID <-> device ID)
-	gossipInterval   time.Duration
-	lastGossipTime   time.Time
-
-	// Shared handlers (no platform-specific code)
-	gossipHandler  *phone.GossipHandler
-	photoHandler   *phone.PhotoHandler
-	profileHandler *phone.ProfileHandler
+// shortHash returns first 8 chars of a hash string, or the full string if shorter
+func shortHash(s string) string {
+	if len(s) >= 8 {
+		return s[:8]
+	}
+	if s == "" {
+		return "(none)"
+	}
+	return s
 }
 
-// androidGattServerDelegate wraps Android to implement BluetoothGattServerCallback
-type androidGattServerDelegate struct {
-	android *Android
+// HandshakeMessage is exchanged when two devices first connect
+type HandshakeMessage struct {
+	HardwareUUID string `json:"hardware_uuid"`
+	DeviceID     string `json:"device_id"`
+	DeviceName   string `json:"device_name"`
+	FirstName    string `json:"first_name"`
+}
+
+// Android implements the Phone interface for Android devices
+type Android struct {
+	hardwareUUID string
+	deviceID     string
+	deviceName   string
+	firstName    string
+
+	wire            *wire.Wire
+	manager         *kotlin.BluetoothManager
+	scanner         *kotlin.BluetoothLeScanner
+	advertiser      *kotlin.BluetoothLeAdvertiser
+	gattServer      *kotlin.BluetoothGattServer
+	identityManager *phone.IdentityManager // THE ONLY place for UUID ↔ DeviceID mapping
+	photoCache      *phone.PhotoCache      // Photo caching and storage
+	photoChunker    *phone.PhotoChunker    // Photo chunking for BLE transfer
+
+	discovered     map[string]phone.DiscoveredDevice    // hardwareUUID -> device
+	handshaked     map[string]*HandshakeMessage         // hardwareUUID -> handshake data
+	connectedGatts map[string]*kotlin.BluetoothGatt     // hardwareUUID -> GATT connection (central mode)
+	photoTransfers map[string]*phone.PhotoTransferState // hardwareUUID -> in-progress transfer
+
+	// Gossip protocol (shared logic in phone/mesh_view.go)
+	meshView     *phone.MeshView
+	gossipTicker *time.Ticker
+	stopGossip   chan struct{}
+
+	mu           sync.RWMutex
+	callback     phone.DeviceDiscoveryCallback
+	profilePhoto string
+	photoHash    string // SHA-256 hash of our current profile photo
+	photoData    []byte // Our current profile photo data
+	profile      map[string]string
 }

@@ -1,34 +1,32 @@
 package phone
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"math/rand"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/user/auraphone-blue/proto"
+	"github.com/user/auraphone-blue/logger"
+	pb "github.com/user/auraphone-blue/proto"
 )
 
 // MeshDeviceState represents what we know about a single device in the mesh
 type MeshDeviceState struct {
-	DeviceID           string    `json:"device_id"`
-	PhotoHash          string    `json:"photo_hash"`           // hex-encoded SHA256
-	LastSeenTime       time.Time `json:"last_seen_time"`       // when we last saw this state
-	FirstName          string    `json:"first_name"`           // cached name
-	HavePhoto          bool      `json:"have_photo"`           // do we have their photo cached locally?
-	PhotoRequestSent   bool      `json:"photo_request_sent"`   // have we requested this photo?
-	ProfileVersion     int32     `json:"profile_version"`      // profile version number
-	ProfileSummaryHash string    `json:"profile_summary_hash"` // hex-encoded SHA256 of all profile fields
-	HaveProfile        bool      `json:"have_profile"`         // do we have their profile cached locally?
-	ProfileRequestSent bool      `json:"profile_request_sent"` // have we requested this profile?
+	DeviceID         string    `json:"device_id"`
+	PhotoHash        string    `json:"photo_hash"`         // hex-encoded SHA256
+	LastSeenTime     time.Time `json:"last_seen_time"`     // when we last saw this state
+	FirstName        string    `json:"first_name"`         // cached name
+	HavePhoto        bool      `json:"have_photo"`         // do we have their photo cached locally?
+	PhotoRequestSent bool      `json:"photo_request_sent"` // have we requested this photo?
+	ProfileVersion   int32     `json:"profile_version"`    // profile version number
 }
 
 // MeshView manages the gossip protocol mesh view
 // Tracks which devices exist and what photos they have
+// This is SHARED CODE used by both iPhone and Android
 type MeshView struct {
 	mu sync.RWMutex
 
@@ -40,11 +38,7 @@ type MeshView struct {
 	devices map[string]*MeshDeviceState
 
 	// Connection state: which devices we're actually connected to right now
-	connectedNeighbors map[string]bool // deviceID -> is connected
-
-	// Neighbor management
-	maxNeighbors     int
-	currentNeighbors []string // device IDs of current neighbors
+	connectedDevices map[string]bool // deviceID -> is connected
 
 	// Gossip state
 	gossipRound    int32
@@ -52,7 +46,7 @@ type MeshView struct {
 	gossipInterval time.Duration
 
 	// Photo cache reference (to check if we have photos)
-	cacheManager *DeviceCacheManager
+	photoCache *PhotoCache
 
 	// Identity manager reference (to look up hardware UUIDs)
 	identityManager *IdentityManager
@@ -60,26 +54,21 @@ type MeshView struct {
 	// Persistence
 	dataDir string
 
-	// Random source for neighbor selection
-	rng *rand.Rand
-
 	// Gossip audit logging
 	gossipAuditFile *os.File
 	auditMutex      sync.Mutex
 }
 
 // NewMeshView creates a new mesh view manager
-func NewMeshView(ourDeviceID, ourHardwareUUID, dataDir string, cacheManager *DeviceCacheManager) *MeshView {
+func NewMeshView(ourDeviceID, ourHardwareUUID, dataDir string, photoCache *PhotoCache) *MeshView {
 	mv := &MeshView{
-		ourDeviceID:        ourDeviceID,
-		ourHardwareUUID:    ourHardwareUUID,
-		devices:            make(map[string]*MeshDeviceState),
-		connectedNeighbors: make(map[string]bool),
-		maxNeighbors:       3,
-		gossipInterval:     5 * time.Second,
-		cacheManager:       cacheManager,
-		dataDir:            dataDir,
-		rng:                rand.New(rand.NewSource(time.Now().UnixNano())),
+		ourDeviceID:      ourHardwareUUID,
+		ourHardwareUUID:  ourHardwareUUID,
+		devices:          make(map[string]*MeshDeviceState),
+		connectedDevices: make(map[string]bool),
+		gossipInterval:   5 * time.Second,
+		photoCache:       photoCache,
+		dataDir:          dataDir,
 	}
 
 	// Try to load persisted state
@@ -102,19 +91,18 @@ func (mv *MeshView) SetIdentityManager(im *IdentityManager) {
 func (mv *MeshView) MarkDeviceConnected(deviceID string) {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
-	mv.connectedNeighbors[deviceID] = true
+	mv.connectedDevices[deviceID] = true
 }
 
 // MarkDeviceDisconnected marks a device as disconnected
 func (mv *MeshView) MarkDeviceDisconnected(deviceID string) {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
-	delete(mv.connectedNeighbors, deviceID)
+	delete(mv.connectedDevices, deviceID)
 
 	// Reset request flags so we retry incomplete transfers after reconnect
 	if device, exists := mv.devices[deviceID]; exists {
 		device.PhotoRequestSent = false
-		device.ProfileRequestSent = false
 	}
 }
 
@@ -122,7 +110,7 @@ func (mv *MeshView) MarkDeviceDisconnected(deviceID string) {
 func (mv *MeshView) IsDeviceConnected(deviceID string) bool {
 	mv.mu.RLock()
 	defer mv.mu.RUnlock()
-	return mv.connectedNeighbors[deviceID]
+	return mv.connectedDevices[deviceID]
 }
 
 // GetConnectedDevices returns only devices we're currently connected to
@@ -131,7 +119,7 @@ func (mv *MeshView) GetConnectedDevices() []*MeshDeviceState {
 	defer mv.mu.RUnlock()
 
 	connected := []*MeshDeviceState{}
-	for deviceID := range mv.connectedNeighbors {
+	for deviceID := range mv.connectedDevices {
 		if device, exists := mv.devices[deviceID]; exists {
 			// Make a copy
 			deviceCopy := *device
@@ -142,613 +130,311 @@ func (mv *MeshView) GetConnectedDevices() []*MeshDeviceState {
 }
 
 // UpdateDevice updates or adds a device to the mesh view
-func (mv *MeshView) UpdateDevice(deviceID, photoHashHex, firstName string, profileVersion int32, profileSummaryHashHex string) {
+func (mv *MeshView) UpdateDevice(deviceID, photoHashHex, firstName string, profileVersion int32) {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
 
 	now := time.Now()
 
-	// Check if we have this photo cached
-	havePhoto := false
-	if mv.cacheManager != nil && photoHashHex != "" {
-		photoPath := filepath.Join(mv.dataDir, "cache", "photos", photoHashHex+".jpg")
-		if _, err := os.Stat(photoPath); err == nil {
-			havePhoto = true
-		}
-	}
-
-	// Check if we have this profile cached
-	haveProfile := false
-	if mv.cacheManager != nil && deviceID != "" {
-		profilePath := filepath.Join(mv.dataDir, "cache", "profiles", deviceID+".json")
-		if _, err := os.Stat(profilePath); err == nil {
-			haveProfile = true
-		}
-	}
-
-	existing, exists := mv.devices[deviceID]
-	if exists {
-		// Update existing device
-		if photoHashHex != "" && photoHashHex != existing.PhotoHash {
-			// Photo changed - reset request state
-			existing.PhotoHash = photoHashHex
-			existing.PhotoRequestSent = false
-			existing.HavePhoto = havePhoto
-		}
-		if profileVersion > 0 && (profileVersion != existing.ProfileVersion || profileSummaryHashHex != existing.ProfileSummaryHash) {
-			// Profile changed - reset request state
-			existing.ProfileVersion = profileVersion
-			existing.ProfileSummaryHash = profileSummaryHashHex
-			existing.ProfileRequestSent = false
-			existing.HaveProfile = haveProfile
-		}
-		existing.LastSeenTime = now
-		existing.FirstName = firstName
-	} else {
+	device, exists := mv.devices[deviceID]
+	if !exists {
 		// New device discovered
-		mv.devices[deviceID] = &MeshDeviceState{
-			DeviceID:           deviceID,
-			PhotoHash:          photoHashHex,
-			LastSeenTime:       now,
-			FirstName:          firstName,
-			HavePhoto:          havePhoto,
-			PhotoRequestSent:   false,
-			ProfileVersion:     profileVersion,
-			ProfileSummaryHash: profileSummaryHashHex,
-			HaveProfile:        haveProfile,
-			ProfileRequestSent: false,
+		device = &MeshDeviceState{
+			DeviceID:       deviceID,
+			PhotoHash:      photoHashHex,
+			FirstName:      firstName,
+			ProfileVersion: profileVersion,
+			LastSeenTime:   now,
+			HavePhoto:      mv.photoCache != nil && mv.photoCache.HasPhoto(photoHashHex),
 		}
+		mv.devices[deviceID] = device
+
+		logger.Debug(fmt.Sprintf("%s GOSSIP", mv.ourDeviceID[:8]),
+			"📡 New device in mesh: %s (%s, photo: %s)",
+			deviceID[:8], firstName, shortHash(photoHashHex, 8))
+	} else {
+		// Update existing device
+		photoChanged := device.PhotoHash != photoHashHex
+		if photoChanged {
+			logger.Debug(fmt.Sprintf("%s GOSSIP", mv.ourDeviceID[:8]),
+				"📸 Device %s updated photo: %s → %s",
+				deviceID[:8], shortHash(device.PhotoHash, 8), shortHash(photoHashHex, 8))
+			device.PhotoRequestSent = false // Reset flag for new photo
+		}
+
+		device.PhotoHash = photoHashHex
+		device.FirstName = firstName
+		device.ProfileVersion = profileVersion
+		device.LastSeenTime = now
+		device.HavePhoto = mv.photoCache != nil && mv.photoCache.HasPhoto(photoHashHex)
 	}
 }
 
-// MergeGossip merges gossip information from a neighbor
-// Returns list of new devices or updated photo/profile hashes we learned about
-func (mv *MeshView) MergeGossip(gossipMsg *proto.GossipMessage) []string {
-	mv.mu.Lock()
-	defer mv.mu.Unlock()
-
-	newDiscoveries := []string{}
-
-	for _, deviceState := range gossipMsg.MeshView {
-		deviceID := deviceState.DeviceId
-		photoHashBytes := deviceState.PhotoHash
-		photoHashHex := hex.EncodeToString(photoHashBytes)
-		firstName := deviceState.FirstName
-		lastSeenTime := time.Unix(deviceState.LastSeenTimestamp, 0)
-		profileVersion := deviceState.ProfileVersion
-		profileSummaryHashHex := hex.EncodeToString(deviceState.ProfileSummaryHash)
-
-		// Skip ourselves
-		if deviceID == mv.ourDeviceID {
-			continue
-		}
-
-		existing, exists := mv.devices[deviceID]
-
-		if !exists {
-			// New device we didn't know about
-			havePhoto := false
-			if mv.cacheManager != nil && photoHashHex != "" {
-				photoPath := filepath.Join(mv.dataDir, "cache", "photos", photoHashHex+".jpg")
-				if _, err := os.Stat(photoPath); err == nil {
-					havePhoto = true
-				}
-			}
-
-			haveProfile := false
-			if mv.cacheManager != nil && deviceID != "" {
-				profilePath := filepath.Join(mv.dataDir, "cache", "profiles", deviceID+".json")
-				if _, err := os.Stat(profilePath); err == nil {
-					haveProfile = true
-				}
-			}
-
-			mv.devices[deviceID] = &MeshDeviceState{
-				DeviceID:           deviceID,
-				PhotoHash:          photoHashHex,
-				LastSeenTime:       lastSeenTime,
-				FirstName:          firstName,
-				HavePhoto:          havePhoto,
-				PhotoRequestSent:   false,
-				ProfileVersion:     profileVersion,
-				ProfileSummaryHash: profileSummaryHashHex,
-				HaveProfile:        haveProfile,
-				ProfileRequestSent: false,
-			}
-			// Only add to discoveries if this is truly new (not a re-discovery of same photo)
-			newDiscoveries = append(newDiscoveries, deviceID)
-		} else {
-			// Update existing device
-			updated := false
-
-			// Check for photo hash change (regardless of timestamp)
-			if photoHashHex != "" && photoHashHex != existing.PhotoHash {
-				// Photo changed - this is a NEW photo for this device
-				existing.PhotoHash = photoHashHex
-				existing.PhotoRequestSent = false
-				existing.HavePhoto = false // Need to fetch new photo
-				updated = true
-			}
-
-			// Check for profile changes (regardless of timestamp)
-			if profileVersion > 0 && (profileVersion != existing.ProfileVersion || profileSummaryHashHex != existing.ProfileSummaryHash) {
-				// Profile changed (version increased or hash differs)
-				existing.ProfileVersion = profileVersion
-				existing.ProfileSummaryHash = profileSummaryHashHex
-				existing.ProfileRequestSent = false
-				existing.HaveProfile = false // Need to fetch new profile
-				updated = true
-			}
-
-			// Update metadata if timestamp is newer or equal
-			if !lastSeenTime.Before(existing.LastSeenTime) {
-				existing.LastSeenTime = lastSeenTime
-				existing.FirstName = firstName
-			}
-
-			// Only add to newDiscoveries if photo or profile actually changed
-			if updated {
-				newDiscoveries = append(newDiscoveries, deviceID)
-			}
-		}
-	}
-
-	return newDiscoveries
-}
-
-// GetMissingPhotos returns list of devices whose photos we need to fetch
-// NOW ONLY RETURNS DEVICES WE'RE CURRENTLY CONNECTED TO
+// GetMissingPhotos returns devices whose photos we don't have and haven't requested
 func (mv *MeshView) GetMissingPhotos() []*MeshDeviceState {
 	mv.mu.RLock()
 	defer mv.mu.RUnlock()
 
 	missing := []*MeshDeviceState{}
-
 	for _, device := range mv.devices {
-		// Need photo if: we don't have it, photo hash is known, and we haven't sent request yet
-		if !device.HavePhoto && device.PhotoHash != "" && !device.PhotoRequestSent {
-			// NEW: Only include if this device is currently connected
-			// Check via identity manager for connection state
-			if mv.identityManager != nil {
-				if hardwareUUID, ok := mv.identityManager.GetHardwareUUID(device.DeviceID); ok {
-					if mv.identityManager.IsConnected(hardwareUUID) {
-						missing = append(missing, device)
-					}
-				}
-			}
+		if device.PhotoHash != "" && !device.HavePhoto && !device.PhotoRequestSent {
+			// Make a copy
+			deviceCopy := *device
+			missing = append(missing, &deviceCopy)
 		}
 	}
-
 	return missing
 }
 
-// MarkPhotoRequested marks that we've sent a request for this device's photo
-// This function is idempotent - calling it multiple times has no additional effect
+// MarkPhotoRequested marks that we've requested a photo from a device
 func (mv *MeshView) MarkPhotoRequested(deviceID string) {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
 
 	if device, exists := mv.devices[deviceID]; exists {
-		// Only set if not already set (idempotent)
-		if !device.PhotoRequestSent {
-			device.PhotoRequestSent = true
-		}
+		device.PhotoRequestSent = true
 	}
 }
 
-// MarkPhotoReceived marks that we've successfully received a device's photo
-func (mv *MeshView) MarkPhotoReceived(deviceID, photoHashHex string) {
+// MarkPhotoReceived marks that we've received and cached a photo
+func (mv *MeshView) MarkPhotoReceived(deviceID string) {
 	mv.mu.Lock()
 	defer mv.mu.Unlock()
 
 	if device, exists := mv.devices[deviceID]; exists {
-		if device.PhotoHash == photoHashHex {
-			device.HavePhoto = true
-		}
+		device.HavePhoto = true
+		device.PhotoRequestSent = false
 	}
 }
 
-// CheckStalledTransfers checks for stalled photo transfers and clears request flags
-// This should be called periodically (e.g., every 30 seconds) to allow retries
-func (mv *MeshView) CheckStalledTransfers(coordinator *PhotoTransferCoordinator) int {
-	mv.mu.Lock()
-	defer mv.mu.Unlock()
-
-	clearedCount := 0
-
-	for deviceID, device := range mv.devices {
-		// Skip if we already have the photo or never requested it
-		if device.HavePhoto || !device.PhotoRequestSent {
-			continue
-		}
-
-		// Check if there's an active receive transfer
-		recvState := coordinator.GetReceiveState(deviceID)
-		if recvState != nil {
-			// Check if transfer is stalled (no activity for TransferStallTimeout)
-			if time.Since(recvState.LastActivity) > TransferStallTimeout {
-				// Transfer is stalled - clear flag to allow retry
-				device.PhotoRequestSent = false
-				clearedCount++
-			}
-		} else {
-			// No active transfer but flag is set - this is stale, clear it
-			// This can happen if transfer failed or coordinator state was reset
-			device.PhotoRequestSent = false
-			clearedCount++
-		}
-	}
-
-	return clearedCount
-}
-
-// GetMissingProfiles returns list of devices whose profiles we need to fetch
-// NOW ONLY RETURNS DEVICES WE'RE CURRENTLY CONNECTED TO
-func (mv *MeshView) GetMissingProfiles() []*MeshDeviceState {
-	mv.mu.RLock()
-	defer mv.mu.RUnlock()
-
-	missing := []*MeshDeviceState{}
-
-	for _, device := range mv.devices {
-		// Need profile if: we don't have it, profile version is known, and we haven't sent request yet
-		if !device.HaveProfile && device.ProfileVersion > 0 && !device.ProfileRequestSent {
-			// NEW: Only include if this device is currently connected
-			// Check via identity manager for connection state
-			if mv.identityManager != nil {
-				if hardwareUUID, ok := mv.identityManager.GetHardwareUUID(device.DeviceID); ok {
-					if mv.identityManager.IsConnected(hardwareUUID) {
-						missing = append(missing, device)
-					}
-				}
-			}
-		}
-	}
-
-	return missing
-}
-
-// MarkProfileRequested marks that we've sent a request for this device's profile
-func (mv *MeshView) MarkProfileRequested(deviceID string) {
-	mv.mu.Lock()
-	defer mv.mu.Unlock()
-
-	if device, exists := mv.devices[deviceID]; exists {
-		device.ProfileRequestSent = true
-	}
-}
-
-// MarkProfileReceived marks that we've successfully received a device's profile
-func (mv *MeshView) MarkProfileReceived(deviceID string, version int32) {
-	mv.mu.Lock()
-	defer mv.mu.Unlock()
-
-	if device, exists := mv.devices[deviceID]; exists {
-		if device.ProfileVersion == version {
-			device.HaveProfile = true
-		}
-	}
-}
-
-// SelectRandomNeighbors picks N random devices to be our gossip neighbors
-// Uses consistent selection: picks devices with lowest hash(ourID + theirID)
-func (mv *MeshView) SelectRandomNeighbors() []string {
-	mv.mu.Lock()
-	defer mv.mu.Unlock()
-
-	// Get all known devices except ourselves
-	candidates := []string{}
-	for deviceID := range mv.devices {
-		if deviceID != mv.ourDeviceID {
-			candidates = append(candidates, deviceID)
-		}
-	}
-
-	// If we have <= maxNeighbors devices, connect to all
-	if len(candidates) <= mv.maxNeighbors {
-		mv.currentNeighbors = candidates
-		return candidates
-	}
-
-	// Use consistent hashing to pick neighbors
-	// Hash(ourID + theirID) - pick devices with lowest N hashes
-	type scoredDevice struct {
-		deviceID string
-		score    string
-	}
-
-	scoredDevices := []scoredDevice{}
-	for _, deviceID := range candidates {
-		combined := mv.ourDeviceID + deviceID
-		hash := sha256.Sum256([]byte(combined))
-		hashHex := hex.EncodeToString(hash[:])
-		scoredDevices = append(scoredDevices, scoredDevice{
-			deviceID: deviceID,
-			score:    hashHex,
-		})
-	}
-
-	// Sort by score (lexicographically)
-	// Simple bubble sort is fine for small N
-	for i := 0; i < len(scoredDevices); i++ {
-		for j := i + 1; j < len(scoredDevices); j++ {
-			if scoredDevices[j].score < scoredDevices[i].score {
-				scoredDevices[i], scoredDevices[j] = scoredDevices[j], scoredDevices[i]
-			}
-		}
-	}
-
-	// Take top N
-	neighbors := []string{}
-	for i := 0; i < mv.maxNeighbors && i < len(scoredDevices); i++ {
-		neighbors = append(neighbors, scoredDevices[i].deviceID)
-	}
-
-	mv.currentNeighbors = neighbors
-	return neighbors
-}
-
-// GetCurrentNeighbors returns the current neighbor list
-func (mv *MeshView) GetCurrentNeighbors() []string {
-	mv.mu.RLock()
-	defer mv.mu.RUnlock()
-
-	result := make([]string, len(mv.currentNeighbors))
-	copy(result, mv.currentNeighbors)
-	return result
-}
-
-// IsNeighbor checks if a device is one of our current neighbors
-func (mv *MeshView) IsNeighbor(deviceID string) bool {
-	mv.mu.RLock()
-	defer mv.mu.RUnlock()
-
-	for _, neighbor := range mv.currentNeighbors {
-		if neighbor == deviceID {
-			return true
-		}
-	}
-	return false
-}
-
-// BuildGossipMessage creates a gossip message with our current mesh view
-func (mv *MeshView) BuildGossipMessage(ourPhotoHashHex, ourFirstName string, ourProfileVersion int32, ourProfileSummaryHashHex string) *proto.GossipMessage {
-	mv.mu.Lock()
-	defer mv.mu.Unlock()
-
-	mv.gossipRound++
-	mv.lastGossipTime = time.Now()
-
-	// Build device states including ourselves
-	meshView := []*proto.DeviceState{}
-
-	// Add ourselves first
-	ourHashBytes, _ := hex.DecodeString(ourPhotoHashHex)
-	ourProfileSummaryBytes, _ := hex.DecodeString(ourProfileSummaryHashHex)
-	meshView = append(meshView, &proto.DeviceState{
-		DeviceId:           mv.ourDeviceID,
-		HardwareUuid:       mv.ourHardwareUUID,
-		PhotoHash:          ourHashBytes,
-		LastSeenTimestamp:  time.Now().Unix(),
-		FirstName:          ourFirstName,
-		ProfileVersion:     ourProfileVersion,
-		ProfileSummaryHash: ourProfileSummaryBytes,
-	})
-
-	// Add all known devices
-	for _, device := range mv.devices {
-		hashBytes, _ := hex.DecodeString(device.PhotoHash)
-		profileSummaryBytes, _ := hex.DecodeString(device.ProfileSummaryHash)
-
-		// Look up hardware UUID from identity manager
-		hardwareUUID := ""
-		if mv.identityManager != nil {
-			hardwareUUID, _ = mv.identityManager.GetHardwareUUID(device.DeviceID)
-		}
-
-		meshView = append(meshView, &proto.DeviceState{
-			DeviceId:           device.DeviceID,
-			HardwareUuid:       hardwareUUID,
-			PhotoHash:          hashBytes,
-			LastSeenTimestamp:  device.LastSeenTime.Unix(),
-			FirstName:          device.FirstName,
-			ProfileVersion:     device.ProfileVersion,
-			ProfileSummaryHash: profileSummaryBytes,
-		})
-	}
-
-	return &proto.GossipMessage{
-		SenderDeviceId: mv.ourDeviceID,
-		Timestamp:      time.Now().Unix(),
-		MeshView:       meshView,
-		GossipRound:    mv.gossipRound,
-	}
-}
-
-// ShouldGossipNow checks if it's time to send gossip
-func (mv *MeshView) ShouldGossipNow() bool {
+// ShouldGossip returns true if it's time to send gossip
+func (mv *MeshView) ShouldGossip() bool {
 	mv.mu.RLock()
 	defer mv.mu.RUnlock()
 
 	return time.Since(mv.lastGossipTime) >= mv.gossipInterval
 }
 
-// GetAllDevices returns all known devices
+// BuildGossipMessage creates a gossip message with our complete mesh view
+func (mv *MeshView) BuildGossipMessage(ourPhotoHash string) *pb.GossipMessage {
+	mv.mu.Lock()
+	defer mv.mu.Unlock()
+
+	mv.gossipRound++
+	mv.lastGossipTime = time.Now()
+
+	// Build list of device states
+	deviceStates := []*pb.DeviceState{}
+
+	// Include ourselves first
+	ourPhotoHashBytes := hexToBytes(ourPhotoHash)
+	deviceStates = append(deviceStates, &pb.DeviceState{
+		DeviceId:          mv.ourDeviceID,
+		PhotoHash:         ourPhotoHashBytes,
+		LastSeenTimestamp: time.Now().Unix(),
+		FirstName:         mv.ourDeviceID[:4], // Use first 4 chars of device ID
+		ProfileVersion:    1,
+	})
+
+	// Add all other known devices
+	for _, device := range mv.devices {
+		photoHashBytes := hexToBytes(device.PhotoHash)
+		deviceStates = append(deviceStates, &pb.DeviceState{
+			DeviceId:          device.DeviceID,
+			PhotoHash:         photoHashBytes,
+			LastSeenTimestamp: device.LastSeenTime.Unix(),
+			FirstName:         device.FirstName,
+			ProfileVersion:    device.ProfileVersion,
+		})
+	}
+
+	gossipMsg := &pb.GossipMessage{
+		SenderDeviceId: mv.ourDeviceID,
+		Timestamp:      time.Now().Unix(),
+		MeshView:       deviceStates,
+		GossipRound:    mv.gossipRound,
+	}
+
+	return gossipMsg
+}
+
+// MergeGossip merges received gossip into our mesh view
+// Returns list of newly discovered devices
+func (mv *MeshView) MergeGossip(gossipMsg *pb.GossipMessage) []string {
+	mv.mu.Lock()
+	defer mv.mu.Unlock()
+
+	newDevices := []string{}
+
+	for _, deviceState := range gossipMsg.MeshView {
+		// Skip ourselves
+		if deviceState.DeviceId == mv.ourDeviceID {
+			continue
+		}
+
+		photoHashHex := bytesToHex(deviceState.PhotoHash)
+		_, existed := mv.devices[deviceState.DeviceId]
+
+		// Update or create device
+		device, exists := mv.devices[deviceState.DeviceId]
+		if !exists {
+			device = &MeshDeviceState{
+				DeviceID:       deviceState.DeviceId,
+				PhotoHash:      photoHashHex,
+				FirstName:      deviceState.FirstName,
+				ProfileVersion: deviceState.ProfileVersion,
+				LastSeenTime:   time.Unix(deviceState.LastSeenTimestamp, 0),
+				HavePhoto:      mv.photoCache != nil && mv.photoCache.HasPhoto(photoHashHex),
+			}
+			mv.devices[deviceState.DeviceId] = device
+			newDevices = append(newDevices, deviceState.DeviceId)
+		} else {
+			// Update if timestamp is newer
+			if deviceState.LastSeenTimestamp > device.LastSeenTime.Unix() {
+				device.PhotoHash = photoHashHex
+				device.FirstName = deviceState.FirstName
+				device.ProfileVersion = deviceState.ProfileVersion
+				device.LastSeenTime = time.Unix(deviceState.LastSeenTimestamp, 0)
+				device.HavePhoto = mv.photoCache != nil && mv.photoCache.HasPhoto(photoHashHex)
+			}
+		}
+
+		if !existed && len(newDevices) > 0 {
+			logger.Info(fmt.Sprintf("%s GOSSIP", mv.ourDeviceID[:8]),
+				"🌐 Learned about device %s via gossip from %s",
+				deviceState.DeviceId[:8], gossipMsg.SenderDeviceId[:8])
+		}
+	}
+
+	// Log gossip audit
+	mv.logGossipAudit("received", gossipMsg.SenderDeviceId, len(gossipMsg.MeshView), len(newDevices))
+
+	return newDevices
+}
+
+// GetAllDevices returns all known devices in the mesh
 func (mv *MeshView) GetAllDevices() []*MeshDeviceState {
 	mv.mu.RLock()
 	defer mv.mu.RUnlock()
 
 	devices := make([]*MeshDeviceState, 0, len(mv.devices))
 	for _, device := range mv.devices {
-		// Make a copy
 		deviceCopy := *device
 		devices = append(devices, &deviceCopy)
 	}
 	return devices
 }
 
-// Persistence
-// ===========
+// Helper functions
+func hexToBytes(hexStr string) []byte {
+	if hexStr == "" {
+		return []byte{}
+	}
+	bytes, _ := hex.DecodeString(hexStr)
+	return bytes
+}
 
-func (mv *MeshView) saveToDisk() error {
+func bytesToHex(bytes []byte) string {
+	return hex.EncodeToString(bytes)
+}
+
+func shortHash(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+// Persistence
+func (mv *MeshView) loadFromDisk() {
+	cachePath := filepath.Join(mv.dataDir, "cache", "mesh_view.json")
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return // File doesn't exist yet, that's okay
+	}
+
+	var saved struct {
+		Devices map[string]*MeshDeviceState `json:"devices"`
+	}
+
+	if err := json.Unmarshal(data, &saved); err != nil {
+		logger.Warn(fmt.Sprintf("%s GOSSIP", mv.ourDeviceID[:8]), "Failed to load mesh view: %v", err)
+		return
+	}
+
+	mv.devices = saved.Devices
+	logger.Info(fmt.Sprintf("%s GOSSIP", mv.ourDeviceID[:8]), "📂 Loaded mesh view with %d devices", len(mv.devices))
+}
+
+func (mv *MeshView) SaveToDisk() error {
 	mv.mu.RLock()
 	defer mv.mu.RUnlock()
 
-	statePath := filepath.Join(mv.dataDir, "cache", "mesh_view.json")
-
-	// Ensure cache directory exists
 	cacheDir := filepath.Join(mv.dataDir, "cache")
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return err
 	}
 
-	// Serialize state
-	data, err := json.MarshalIndent(mv.devices, "", "  ")
+	saved := struct {
+		Devices map[string]*MeshDeviceState `json:"devices"`
+	}{
+		Devices: mv.devices,
+	}
+
+	data, err := json.MarshalIndent(saved, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	// Write atomically (write to temp file, then rename)
-	tempPath := statePath + ".tmp"
+	// Atomic write: write to temp file, then rename
+	tempPath := filepath.Join(cacheDir, "mesh_view.json.tmp")
+	finalPath := filepath.Join(cacheDir, "mesh_view.json")
+
 	if err := os.WriteFile(tempPath, data, 0644); err != nil {
 		return err
 	}
 
-	return os.Rename(tempPath, statePath)
+	return os.Rename(tempPath, finalPath)
 }
 
-func (mv *MeshView) loadFromDisk() error {
-	mv.mu.Lock()
-	defer mv.mu.Unlock()
-
-	statePath := filepath.Join(mv.dataDir, "cache", "mesh_view.json")
-
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No saved state, that's fine
-		}
-		return err
-	}
-
-	// Deserialize
-	devices := make(map[string]*MeshDeviceState)
-	if err := json.Unmarshal(data, &devices); err != nil {
-		return err
-	}
-
-	mv.devices = devices
-	return nil
-}
-
-// SaveToDisk persists the mesh view (public method for periodic saves)
-func (mv *MeshView) SaveToDisk() error {
-	return mv.saveToDisk()
-}
-
-// Gossip Audit Logging
-// ====================
-
-// GossipAuditEvent represents a single gossip audit log entry (JSONL format)
-type GossipAuditEvent struct {
-	Timestamp      int64    `json:"timestamp"`       // Nanoseconds since epoch
-	Event          string   `json:"event"`           // "gossip_received", "gossip_sent", "photo_discovered"
-	FromDeviceID   string   `json:"from_deviceid,omitempty"`
-	FromUUID       string   `json:"from_uuid,omitempty"`
-	ToDeviceID     string   `json:"to_deviceid,omitempty"`
-	ToUUID         string   `json:"to_uuid,omitempty"`
-	MeshSize       int      `json:"mesh_size,omitempty"`
-	NewDevices     []string `json:"new_devices,omitempty"`
-	NewPhotos      []string `json:"new_photos,omitempty"`
-	PhotoHash      string   `json:"photo_hash,omitempty"`
-	DiscoveredVia  string   `json:"discovered_via,omitempty"`
-	ViaSocket      string   `json:"via_socket,omitempty"`
-}
-
-// initGossipAuditLog opens the gossip audit log file for appending
+// Gossip audit logging
 func (mv *MeshView) initGossipAuditLog() {
 	auditPath := filepath.Join(mv.dataDir, "gossip_audit.jsonl")
-
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(auditPath), 0755); err != nil {
-		return // Silently fail if we can't create directory
-	}
-
-	// Open file in append mode (create if doesn't exist)
-	file, err := os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(auditPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		return // Silently fail
+		logger.Warn(fmt.Sprintf("%s GOSSIP", mv.ourDeviceID[:8]), "Failed to open gossip audit log: %v", err)
+		return
 	}
-
 	mv.gossipAuditFile = file
 }
 
-// logGossipAuditEvent writes a gossip audit event to the JSONL file
-func (mv *MeshView) logGossipAuditEvent(event *GossipAuditEvent) {
+func (mv *MeshView) logGossipAudit(eventType, peerDeviceID string, totalDevices, newDevices int) {
+	mv.auditMutex.Lock()
+	defer mv.auditMutex.Unlock()
+
 	if mv.gossipAuditFile == nil {
 		return
 	}
 
-	mv.auditMutex.Lock()
-	defer mv.auditMutex.Unlock()
-
-	// Marshal to JSON (single line)
-	data, err := json.Marshal(event)
-	if err != nil {
-		return
+	audit := map[string]interface{}{
+		"timestamp":      time.Now().Unix(),
+		"event":          eventType,
+		"peer_device_id": peerDeviceID,
+		"gossip_round":   mv.gossipRound,
+		"total_devices":  totalDevices,
+		"new_devices":    newDevices,
 	}
 
-	// Write line + newline
-	mv.gossipAuditFile.Write(data)
-	mv.gossipAuditFile.Write([]byte("\n"))
+	data, _ := json.Marshal(audit)
+	mv.gossipAuditFile.Write(append(data, '\n'))
 }
 
-// LogGossipReceived logs when we receive a gossip message
-func (mv *MeshView) LogGossipReceived(fromDeviceID, fromUUID string, meshSize int, newDevices []string, newPhotos []string) {
-	event := &GossipAuditEvent{
-		Timestamp:    time.Now().UnixNano(),
-		Event:        "gossip_received",
-		FromDeviceID: fromDeviceID,
-		FromUUID:     fromUUID,
-		MeshSize:     meshSize,
-		NewDevices:   newDevices,
-		NewPhotos:    newPhotos,
-	}
-	mv.logGossipAuditEvent(event)
-}
-
-// LogGossipSent logs when we send a gossip message
-func (mv *MeshView) LogGossipSent(toDeviceID, toUUID string, meshSize int, viaSocket string) {
-	event := &GossipAuditEvent{
-		Timestamp:  time.Now().UnixNano(),
-		Event:      "gossip_sent",
-		ToDeviceID: toDeviceID,
-		ToUUID:     toUUID,
-		MeshSize:   meshSize,
-		ViaSocket:  viaSocket,
-	}
-	mv.logGossipAuditEvent(event)
-}
-
-// LogPhotoDiscovered logs when we discover a new photo via gossip
-func (mv *MeshView) LogPhotoDiscovered(deviceID, photoHash, discoveredVia string) {
-	event := &GossipAuditEvent{
-		Timestamp:     time.Now().UnixNano(),
-		Event:         "photo_discovered",
-		ToDeviceID:    deviceID, // Device that has the photo
-		PhotoHash:     photoHash,
-		DiscoveredVia: discoveredVia,
-	}
-	mv.logGossipAuditEvent(event)
-}
-
-// CloseGossipAuditLog closes the audit log file (call on shutdown)
-func (mv *MeshView) CloseGossipAuditLog() {
-	mv.auditMutex.Lock()
-	defer mv.auditMutex.Unlock()
+// Close cleans up resources
+func (mv *MeshView) Close() error {
+	mv.SaveToDisk()
 
 	if mv.gossipAuditFile != nil {
-		mv.gossipAuditFile.Close()
-		mv.gossipAuditFile = nil
+		return mv.gossipAuditFile.Close()
 	}
+	return nil
 }

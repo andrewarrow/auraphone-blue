@@ -19,7 +19,7 @@ type DeviceIDCache struct {
 func GenerateBase36ID() string {
 	const base36Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-	// Use current time as seed for uniqueness
+	// Use current time + random for uniqueness
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	result := ""
@@ -34,7 +34,8 @@ func GenerateBase36ID() string {
 // LoadOrGenerateDeviceID loads the cached device ID or generates a new one
 // The device ID is stored in cache/device_id.json and persists across app restarts
 func LoadOrGenerateDeviceID(hardwareUUID string) (string, error) {
-	cachePath := filepath.Join(GetDeviceCacheDir(hardwareUUID), "device_id.json")
+	cacheDir := filepath.Join(GetDataDir(), hardwareUUID, "cache")
+	cachePath := filepath.Join(cacheDir, "device_id.json")
 
 	// Try to load existing device ID
 	data, err := os.ReadFile(cachePath)
@@ -59,7 +60,6 @@ func LoadOrGenerateDeviceID(hardwareUUID string) (string, error) {
 	}
 
 	// Ensure cache directory exists
-	cacheDir := filepath.Dir(cachePath)
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create cache directory: %w", err)
 	}

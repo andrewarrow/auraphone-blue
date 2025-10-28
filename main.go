@@ -87,10 +87,14 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 	}
 
 	// Create platform-specific phone with hardware UUID
+	// NewIPhone/NewAndroid will load/generate DeviceID and firstName internally
 	if platformType == "iOS" {
 		pw.phone = iphone.NewIPhone(hardwareUUID)
-	} else {
+	} else if platformType == "Android" {
 		pw.phone = android.NewAndroid(hardwareUUID)
+	} else {
+		fmt.Printf("Unknown platform type: %s\n", platformType)
+		return nil
 	}
 
 	if pw.phone == nil {
@@ -130,14 +134,24 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 
 		for range ticker.C {
 			if pw.needsRefresh && pw.currentTab == "home" && pw.deviceListWidget != nil {
+				prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+				logger.Debug(prefix, "🔄 Ticker triggered GUI refresh (needsRefresh was true)")
+
 				pw.devicesMutex.Lock()
+				deviceCount := len(pw.devicesMap)
+				hashCount := len(pw.devicePhotoHashes)
+				imageCount := len(pw.deviceImages)
 				pw.needsRefresh = false
 				pw.devicesMutex.Unlock()
+
+				logger.Debug(prefix, "   📊 Refreshing with: %d devices, %d hashes, %d images",
+					deviceCount, hashCount, imageCount)
 
 				// Use fyne.Do to ensure thread-safe UI updates
 				fyne.Do(func() {
 					if pw.deviceListWidget != nil {
 						pw.deviceListWidget.Refresh()
+						logger.Debug(prefix, "   ✅ deviceListWidget.Refresh() completed")
 					}
 				})
 			}
@@ -327,19 +341,26 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 					// Update profile image if available
 					if profileStack != nil && len(profileStack.Objects) >= 2 {
 						profileImage := profileStack.Objects[1].(*canvas.Image)
+						prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
+
 						// Look up device's photo hash using hardware UUID as key, then find image by hash
 						if photoHash, hasHash := pw.devicePhotoHashes[key]; hasHash {
 							if img, hasImage := pw.deviceImages[photoHash]; hasImage {
-								prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
-								logger.Debug(prefix, "🖼️  Rendering list item: key=%s, photoHash=%s, imagePtr=%p",
+								logger.Debug(prefix, "🖼️  Rendering: key=%s, photoHash=%s → ✅ FOUND (imagePtr=%p)",
 									truncateHash(key, 8), truncateHash(photoHash, 8), img)
 								profileImage.Image = img
 							} else {
 								// Hash exists but image not loaded yet - clear any stale image from widget reuse
+								logger.Warn(prefix, "🖼️  Rendering: key=%s, photoHash=%s → ❌ HASH FOUND but NO IMAGE in deviceImages map",
+									truncateHash(key, 8), truncateHash(photoHash, 8))
+								logger.Debug(prefix, "   📊 Current deviceImages map has %d entries", len(pw.deviceImages))
 								profileImage.Image = nil
 							}
 						} else {
 							// No hash for this device yet - clear any stale image from widget reuse
+							logger.Debug(prefix, "🖼️  Rendering: key=%s → ⚠️  NO HASH in devicePhotoHashes map (device=%s)",
+								truncateHash(key, 8), device.Name)
+							logger.Debug(prefix, "   📊 Current devicePhotoHashes map has %d entries", len(pw.devicePhotoHashes))
 							profileImage.Image = nil
 						}
 						profileImage.Refresh()
@@ -569,6 +590,10 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	logger.Debug(prefix, "📱 [GUI CALLBACK] onDeviceDiscovered: deviceID=%s, hardwareUUID=%s, name=%s, photoHash=%s, photoDataLen=%d",
 		deviceIDDisplay, device.HardwareUUID[:8], device.Name, truncateHash(device.PhotoHash, 8), len(device.PhotoData))
 
+	// Log current state BEFORE processing
+	logger.Debug(prefix, "   📊 BEFORE: %d devices, %d hashes, %d images in memory",
+		len(pw.devicesMap), len(pw.devicePhotoHashes), len(pw.deviceImages))
+
 	// Use HardwareUUID as the primary key for deduplication
 	// This ensures the same device doesn't appear twice (once with hardware UUID, once with logical deviceID)
 	key := device.HardwareUUID
@@ -577,36 +602,56 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 		key = device.DeviceID
 	}
 
+	logger.Debug(prefix, "   🔑 Using key: %s (from hardwareUUID=%s, deviceID=%s)",
+		truncateHash(key, 8), truncateHash(device.HardwareUUID, 8), deviceIDDisplay)
+
 	// Add or update device in map (deduplicates by hardware UUID)
 	pw.devicesMap[key] = device
 
 	// If device has photo data (actually received via BLE), load it into memory
 	if device.PhotoData != nil && len(device.PhotoData) > 0 {
+		logger.Debug(prefix, "   ✅ Photo data present (%d bytes), decoding image...", len(device.PhotoData))
+
+		// Store hash mapping FIRST
 		pw.devicePhotoHashes[key] = device.PhotoHash
-		logger.Debug(prefix, "   └─ Photo data present, decoding image...")
+		logger.Debug(prefix, "   📝 Stored hash mapping: devicePhotoHashes[%s] = %s",
+			truncateHash(key, 8), truncateHash(device.PhotoHash, 8))
+
 		// Decode the photo data directly from the callback
 		img, _, err := image.Decode(bytes.NewReader(device.PhotoData))
 		if err == nil {
 			pw.deviceImages[device.PhotoHash] = img
-			logger.Info(prefix, "📷 Stored photo: key=%s → photoHash=%s → imagePtr=%p",
+			logger.Info(prefix, "✅ Photo stored in memory: key=%s → photoHash=%s → imagePtr=%p",
 				truncateHash(key, 8), truncateHash(device.PhotoHash, 8), img)
-			logger.Info(prefix, "📊 Current state: %d devices, %d hashes, %d images",
+			logger.Info(prefix, "📊 AFTER: %d devices, %d hashes, %d images in memory",
 				len(pw.devicesMap), len(pw.devicePhotoHashes), len(pw.deviceImages))
 			// Dump all mappings for debugging
+			logger.Debug(prefix, "   🗺️  All hash mappings:")
 			for k, hash := range pw.devicePhotoHashes {
-				logger.Debug(prefix, "   └─ Mapping: key=%s → photoHash=%s", truncateHash(k, 8), truncateHash(hash, 8))
+				imgStatus := "❌ NO IMAGE"
+				if _, hasImg := pw.deviceImages[hash]; hasImg {
+					imgStatus = "✅ HAS IMAGE"
+				}
+				logger.Debug(prefix, "      %s → %s (%s)", truncateHash(k, 8), truncateHash(hash, 8), imgStatus)
 			}
 		} else {
 			logger.Error(prefix, "❌ Failed to decode photo from %s: %v", truncateHash(key, 8), err)
 		}
 	} else if device.PhotoHash != "" {
 		// Device advertises a photo hash, but we haven't received it yet
-		pw.devicePhotoHashes[key] = device.PhotoHash
-		logger.Debug(prefix, "   └─ Photo hash present but no data, trying to load from cache...")
+		logger.Debug(prefix, "   ⏳ Photo hash present (%s) but no data, trying to load from cache...",
+			truncateHash(device.PhotoHash, 8))
 		// Try to load from disk cache (from previous session)
-		pw.loadDevicePhoto(device.PhotoHash)
+		// IMPORTANT: Only store hash mapping if we successfully load the image
+		if pw.loadDevicePhoto(device.PhotoHash) {
+			pw.devicePhotoHashes[key] = device.PhotoHash
+			logger.Debug(prefix, "   📝 Stored hash mapping after cache load: devicePhotoHashes[%s] = %s",
+				truncateHash(key, 8), truncateHash(device.PhotoHash, 8))
+		} else {
+			logger.Debug(prefix, "   ⏸️  NOT storing hash mapping yet (photo not in cache, will arrive via BLE)")
+		}
 	} else {
-		logger.Debug(prefix, "   └─ No photo hash or data for %s", truncateHash(key, 8))
+		logger.Debug(prefix, "   ⚠️  No photo hash or data for %s", truncateHash(key, 8))
 	}
 
 	// Load first_name from device metadata cache (only if we have a deviceID)
@@ -629,14 +674,15 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 }
 
 // loadDevicePhoto loads a cached photo by hash from disk
-func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
+// Returns true if photo was successfully loaded, false otherwise
+func (pw *PhoneWindow) loadDevicePhoto(photoHash string) bool {
 	prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
 	logger.Debug(prefix, "📸 loadDevicePhoto: hash=%s", truncateHash(photoHash, 8))
 
 	// Check if we already have this image cached in memory
 	if _, exists := pw.deviceImages[photoHash]; exists {
 		logger.Debug(prefix, "   └─ Photo already in memory cache")
-		return
+		return true // Already loaded, success!
 	}
 
 	// Try to load from disk cache using photo hash as filename
@@ -650,7 +696,7 @@ func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
 		} else {
 			logger.Error(prefix, "   └─ Error checking cache file: %v", err)
 		}
-		return
+		return false
 	} else {
 		logger.Debug(prefix, "   └─ Cache file exists: %d bytes", stat.Size())
 	}
@@ -659,7 +705,7 @@ func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
 	if err != nil {
 		logger.Error(prefix, "❌ Failed to read cache file: %v", err)
 		// Photo not in cache yet - it will be received via BLE photo transfer
-		return
+		return false
 	}
 
 	logger.Debug(prefix, "   └─ Read %d bytes from cache, verifying hash...", len(data))
@@ -673,7 +719,7 @@ func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
 		os.Remove(cachePath)
 		logger.Warn(prefix, "⚠️  Cached photo %s has wrong hash (expected %s, got %s), deleted",
 			truncateHash(photoHash, 8), truncateHash(photoHash, 8), truncateHash(hashStr, 8))
-		return
+		return false
 	}
 
 	logger.Debug(prefix, "   └─ Hash verified, decoding image...")
@@ -682,8 +728,18 @@ func (pw *PhoneWindow) loadDevicePhoto(photoHash string) {
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err == nil {
 		pw.deviceImages[photoHash] = img
-		prefix := fmt.Sprintf("%s %s", pw.phone.GetDeviceUUID()[:8], pw.phone.GetPlatform())
-		logger.Debug(prefix, "📷 Loaded cached photo %s from disk", truncateHash(photoHash, 8))
+		logger.Info(prefix, "✅ Loaded cached photo from disk: photoHash=%s → imagePtr=%p",
+			truncateHash(photoHash, 8), img)
+		logger.Info(prefix, "📊 AFTER cache load: %d devices, %d hashes, %d images in memory",
+			len(pw.devicesMap), len(pw.devicePhotoHashes), len(pw.deviceImages))
+
+		// Trigger GUI refresh so the photo actually displays
+		pw.needsRefresh = true
+		logger.Debug(prefix, "   🔄 Set needsRefresh=true to trigger GUI update")
+		return true // Success!
+	} else {
+		logger.Error(prefix, "❌ Failed to decode cached photo %s: %v", truncateHash(photoHash, 8), err)
+		return false
 	}
 }
 
@@ -956,36 +1012,47 @@ func (l *Launcher) Run() {
 	l.window.ShowAndRun()
 }
 
-// cleanupOldDevices removes all device directories from previous runs
+// cleanupOldDevices removes all device directories and socket files from previous runs
 func cleanupOldDevices() error {
+	// Clean up data directory
 	dataPath := phone.GetDataDir()
 
 	// Check if data directory exists
-	if _, err := os.Stat(dataPath); os.IsNotExist(err) {
-		return nil // Nothing to clean
-	}
-
-	// Remove all contents
-	entries, err := os.ReadDir(dataPath)
-	if err != nil {
-		return fmt.Errorf("failed to read data directory: %w", err)
-	}
-
-	for _, entry := range entries {
-		path := filepath.Join(dataPath, entry.Name())
-		if err := os.RemoveAll(path); err != nil {
-			fmt.Printf("Warning: failed to remove %s: %v\n", path, err)
+	if _, err := os.Stat(dataPath); !os.IsNotExist(err) {
+		// Remove all contents
+		entries, err := os.ReadDir(dataPath)
+		if err != nil {
+			return fmt.Errorf("failed to read data directory: %w", err)
 		}
+
+		for _, entry := range entries {
+			path := filepath.Join(dataPath, entry.Name())
+			if err := os.RemoveAll(path); err != nil {
+				fmt.Printf("Warning: failed to remove %s: %v\n", path, err)
+			}
+		}
+
+		fmt.Printf("Cleaned up %d old device directories\n", len(entries))
 	}
 
-	fmt.Printf("Cleaned up %d old device directories\n", len(entries))
+	// Clean up old socket files from /tmp
+	socketMatches, err := filepath.Glob("/tmp/auraphone-*.sock")
+	if err == nil && len(socketMatches) > 0 {
+		for _, sockPath := range socketMatches {
+			if err := os.Remove(sockPath); err != nil {
+				fmt.Printf("Warning: failed to remove socket %s: %v\n", sockPath, err)
+			}
+		}
+		fmt.Printf("Cleaned up %d old socket files from /tmp\n", len(socketMatches))
+	}
+
 	return nil
 }
 
-// runAutoStart starts N phones with GUI, launching one random platform (iOS or Android) every second
+// runAutoStart starts N phones with GUI, launching one iOS device every second
 func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
 	fmt.Println("=== Auraphone Blue - Auto Start Mode ===")
-	fmt.Printf("Will start %d devices (1 per second, random iOS or Android)...\n", numPhones)
+	fmt.Printf("Will start %d iOS devices (1 per second)...\n", numPhones)
 
 	myApp := app.New()
 
@@ -1001,7 +1068,7 @@ func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
 	content := container.NewVBox(
 		widget.NewLabel(""),
 		widget.NewLabelWithStyle("Auraphone Blue", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("Auto Start Mode"),
+		widget.NewLabel("Auto Start Mode (iOS Only)"),
 		widget.NewSeparator(),
 		statusLabel,
 	)
@@ -1014,11 +1081,8 @@ func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
 	// Start phones one per second
 	go func() {
 		for i := 0; i < numPhones; i++ {
-			// Random platform selection (50/50 iOS vs Android)
+			// Only iOS for now
 			platformType := "iOS"
-			if time.Now().UnixNano()%2 == 1 {
-				platformType = "Android"
-			}
 
 			// Capture loop variable for closure
 			currentIndex := i
@@ -1062,18 +1126,17 @@ func runAutoStart(numPhones int, duration time.Duration, logLevel string) {
 	myApp.Run()
 }
 
-// runStressTest runs N phones (mix of iOS and Android) in headless mode for specified duration
+// runStressTest runs N iOS phones in headless mode for specified duration
 func runStressTest(numPhones int, duration time.Duration) {
 	fmt.Println("=== Auraphone Blue - Stress Test Mode ===")
-	fmt.Printf("Starting %d devices in headless mode for %v...\n", numPhones, duration)
+	fmt.Printf("Starting %d iOS devices in headless mode for %v...\n", numPhones, duration)
 
 	// Note: Log level is already set from CLI flag in main(), don't override it here
 
 	// Create device manager for hardware UUIDs
 	manager := phone.GetHardwareUUIDManager()
 
-	// Create mix of iOS and Android devices
-	// Alternate between iOS and Android (e.g., iOS, Android, iOS, Android, iOS for 5 phones)
+	// Create iOS devices only
 	phones := make([]phone.Phone, numPhones)
 	for i := 0; i < numPhones; i++ {
 		hardwareUUID, err := manager.AllocateNextUUID()
@@ -1082,16 +1145,11 @@ func runStressTest(numPhones int, duration time.Duration) {
 			return
 		}
 
-		// Alternate between iOS and Android
+		// Only iOS for now
 		var p phone.Phone
 		var platform string
-		if i%2 == 0 {
-			p = iphone.NewIPhone(hardwareUUID)
-			platform = "iOS"
-		} else {
-			p = android.NewAndroid(hardwareUUID)
-			platform = "Android"
-		}
+		p = iphone.NewIPhone(hardwareUUID)
+		platform = "iOS"
 
 		if p == nil {
 			fmt.Printf("ERROR: Failed to create %s phone %d\n", platform, i+1)
@@ -1148,7 +1206,7 @@ func runStressTest(numPhones int, duration time.Duration) {
 func main() {
 	// Parse CLI flags
 	headless := flag.Bool("headless", false, "Run in headless mode without GUI")
-	numPhones := flag.Int("phones", 4, "Number of phones to simulate (default: 4)")
+	numPhones := flag.Int("phones", 0, "Number of phones to auto-launch (default: 0 = launch GUI with no phones)")
 	duration := flag.Duration("duration", 0, "How long to run the test (e.g., 120s, 5m). 0 means run until Ctrl+C")
 	logLevel := flag.String("log-level", "TRACE", "Set log level (ERROR, WARN, INFO, DEBUG, TRACE)")
 	flag.Parse()
@@ -1166,6 +1224,10 @@ func main() {
 
 	// Run in headless mode if flag is provided
 	if *headless {
+		// Headless requires explicit phone count
+		if *numPhones <= 0 {
+			*numPhones = 4 // Default to 4 phones in headless mode
+		}
 		runStressTest(*numPhones, *duration)
 		return
 	}
@@ -1176,7 +1238,7 @@ func main() {
 		return
 	}
 
-	// Otherwise, run the normal GUI launcher
+	// Otherwise, run the normal GUI launcher with no phones
 	fmt.Println("Starting launcher menu...")
 	launcher := NewLauncher(*logLevel)
 	launcher.Run()

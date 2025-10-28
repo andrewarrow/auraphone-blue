@@ -10,1479 +10,614 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
-	"github.com/user/auraphone-blue/logger"
-	"github.com/user/auraphone-blue/phone"
-)
-
-// AdvertisingData represents BLE advertising packet data
-type AdvertisingData struct {
-	DeviceName       string   `json:"device_name,omitempty"`
-	ServiceUUIDs     []string `json:"service_uuids,omitempty"`
-	ManufacturerData []byte   `json:"manufacturer_data,omitempty"`
-	TxPowerLevel     *int     `json:"tx_power_level,omitempty"`
-	IsConnectable    bool     `json:"is_connectable"`
-}
-
-// DeviceInfo represents a discovered device on the wire
-type DeviceInfo struct {
-	UUID string
-	Name string
-	Rssi int
-}
-
-// GATTDescriptor represents a BLE descriptor
-type GATTDescriptor struct {
-	UUID string `json:"uuid"`
-	Type string `json:"type,omitempty"` // e.g., "CCCD" for Client Characteristic Configuration
-}
-
-// GATTCharacteristic represents a BLE characteristic
-type GATTCharacteristic struct {
-	UUID        string           `json:"uuid"`
-	Properties  []string         `json:"properties"`  // "read", "write", "notify", "indicate", etc.
-	Descriptors []GATTDescriptor `json:"descriptors,omitempty"`
-	Value       []byte           `json:"-"` // Current value (not serialized in gatt.json)
-}
-
-// GATTService represents a BLE service
-type GATTService struct {
-	UUID            string               `json:"uuid"`
-	Type            string               `json:"type"` // "primary" or "secondary"
-	Characteristics []GATTCharacteristic `json:"characteristics"`
-}
-
-// GATTTable represents a device's complete GATT database
-type GATTTable struct {
-	Services []GATTService `json:"services"`
-}
-
-// CharacteristicMessage represents a read/write/notify operation on a characteristic
-type CharacteristicMessage struct {
-	Operation      string `json:"op"`             // "write", "read", "notify", "indicate", "subscribe", "unsubscribe", "subscribe_ack"
-	ServiceUUID    string `json:"service"`
-	CharUUID       string `json:"characteristic"`
-	Data           []byte `json:"data"`
-	Timestamp      int64  `json:"timestamp"`
-	SenderUUID     string `json:"sender,omitempty"`
-}
-
-// DeviceRole represents the BLE role(s) a device can perform
-type DeviceRole int
-
-const (
-	RoleCentralOnly     DeviceRole = 1 << 0 // Can scan and connect (rarely used alone)
-	RolePeripheralOnly  DeviceRole = 1 << 1 // Can advertise and accept connections
-	RoleDual            DeviceRole = RoleCentralOnly | RolePeripheralOnly // Both roles (iOS and Android)
-)
-
-// Platform represents the device platform for role negotiation
-type Platform string
-
-const (
-	PlatformIOS     Platform = "ios"
-	PlatformAndroid Platform = "android"
-	PlatformGeneric Platform = "generic"
 )
 
 // ConnectionRole represents the role in a specific connection
 type ConnectionRole string
 
 const (
-	ConnectionRoleCentral    ConnectionRole = "central"    // We initiated, we can write
-	ConnectionRolePeripheral ConnectionRole = "peripheral" // They initiated, we can only notify
+	RoleCentral    ConnectionRole = "central"    // We initiated connection
+	RolePeripheral ConnectionRole = "peripheral" // They initiated connection
 )
 
-// RoleConnection represents a single directional BLE connection with a specific role
-type RoleConnection struct {
-	conn               net.Conn
-	role               ConnectionRole // Our role on this connection (Central or Peripheral)
-	remoteUUID         string
-	mtu                int            // Current MTU (starts at 23)
-	mtuNegotiated      bool           // Has MTU negotiation completed?
-	mtuNegotiationTime time.Time      // When negotiation completed
-	subscriptions      map[string]bool // Track subscriptions (key: serviceUUID+charUUID)
-	subMutex           sync.RWMutex    // Protects subscriptions map
-	sendMutex          sync.Mutex      // Protects writes to this connection
+// AdvertisingData represents BLE advertising packet data (stub for old API compatibility)
+// TODO Step 4: Implement full advertising protocol
+type AdvertisingData struct {
+	DeviceName       string
+	ServiceUUIDs     []string
+	ManufacturerData []byte
+	TxPowerLevel     *int
+	IsConnectable    bool
 }
 
-// DualConnection represents the dual-role BLE connection between two devices
-// This matches real BLE where bidirectional communication requires TWO logical connections:
-// - One where we are Central (we can write, they can notify)
-// - One where we are Peripheral (they can write, we can notify)
-type DualConnection struct {
-	remoteUUID    string
-
-	// Connection where we act as Central (we write to their characteristics)
-	asCentral     *RoleConnection
-
-	// Connection where we act as Peripheral (they write to our characteristics, we notify them)
-	asPeripheral  *RoleConnection
-
-	// Shared state
-	state         ConnectionState
-	monitorStop   chan struct{}
-	stateMutex    sync.RWMutex
+// GATTTable represents a device's complete GATT database (stub for old API compatibility)
+// TODO Step 4: Implement GATT service discovery
+type GATTTable struct {
+	Services []GATTService
 }
 
-// Wire implements BLE communication using Unix Domain Sockets with dual-role architecture
-// Each device creates TWO sockets:
-// - peripheralSocket: Accepts connections from Centrals (we act as Peripheral)
-// - centralSocket: Accepts connections from Peripherals (we act as Central)
-// This naturally enforces BLE's asymmetric communication model through socket topology
+// GATTService represents a BLE service (stub for old API compatibility)
+type GATTService struct {
+	UUID            string
+	Type            string
+	Characteristics []GATTCharacteristic
+}
+
+// GATTCharacteristic represents a BLE characteristic (stub for old API compatibility)
+type GATTCharacteristic struct {
+	UUID       string
+	Properties []string
+	Value      []byte
+}
+
+// CharacteristicMessage is deprecated, use GATTMessage instead
+// Kept for backward compatibility with old swift code
+type CharacteristicMessage = GATTMessage
+
+// Connection represents a single bidirectional BLE connection
+type Connection struct {
+	conn       net.Conn
+	remoteUUID string
+	role       ConnectionRole // Our role in this connection
+	sendMutex  sync.Mutex     // Protects writes to this connection
+}
+
+// GATTMessage represents a GATT operation over the wire
+type GATTMessage struct {
+	Type               string `json:"type"`                         // "gatt_request", "gatt_response", "gatt_notification"
+	RequestID          string `json:"request_id,omitempty"`         // For request/response matching
+	Operation          string `json:"operation,omitempty"`          // "read", "write", "subscribe", "unsubscribe"
+	ServiceUUID        string `json:"service_uuid"`
+	CharacteristicUUID string `json:"characteristic_uuid"`
+	CharUUID           string `json:"char_uuid,omitempty"`          // Alias for CharacteristicUUID (old API compat)
+	Data               []byte `json:"data,omitempty"`
+	Status             string `json:"status,omitempty"`             // "success", "error"
+	SenderUUID         string `json:"sender_uuid,omitempty"`        // Who sent this message
+}
+
+// Global registry for advertising data (simulates BLE broadcast)
+// In real BLE, advertising data is broadcast over the air
+// In our simulator, devices write here and others read from here
+var (
+	globalAdvertisingData   = make(map[string]*AdvertisingData)
+	globalAdvertisingDataMu sync.RWMutex
+	globalGATTTables        = make(map[string]*GATTTable)
+	globalGATTTablesMu      sync.RWMutex
+)
+
+// Wire handles Unix domain socket communication with BLE realism
+// Single socket per device at /tmp/auraphone-{hardwareUUID}.sock
 type Wire struct {
-	localUUID            string
-	platform             Platform
-	deviceName           string
-	role                 DeviceRole
-	simulator            *Simulator
-	mtu                  int
-	distance             float64
+	hardwareUUID string
+	socketPath   string
+	listener     net.Listener
+	connections  map[string]*Connection // peer UUID -> single connection
+	mu           sync.RWMutex
 
-	// Dual socket infrastructure - matches real BLE dual-role architecture
-	peripheralSocketPath string          // Socket for accepting Central connections (we are Peripheral)
-	peripheralListener   net.Listener
-	centralSocketPath    string          // Socket for accepting Peripheral connections (we are Central)
-	centralListener      net.Listener
+	// Message handler for incoming GATT messages
+	gattHandler func(peerUUID string, msg *GATTMessage)
+	handlerMu   sync.RWMutex
 
-	// Dual connections to each peer
-	connections          map[string]*DualConnection // remoteUUID -> dual connection
-	connMutex            sync.RWMutex
+	// Connection callbacks
+	connectCallback    func(peerUUID string, role ConnectionRole)
+	disconnectCallback func(peerUUID string)
+	callbackMu         sync.RWMutex
 
-	// Callbacks
-	disconnectCallback        func(deviceUUID string)
-	subscriptionCallback      func(remoteUUID, serviceUUID, charUUID string) // Called when a Central subscribes to our characteristic
+	// Stop channels
+	stopListening chan struct{}
+	stopReading   map[string]chan struct{}
+	stopMu        sync.RWMutex
 
-	// Message handlers
-	messageHandlers      map[string]func(*CharacteristicMessage) // serviceUUID+charUUID -> handler
-	handlerMutex         sync.RWMutex
-
-	// Filesystem logging for debugging (optional)
-	enableDebugLog       bool
-	connectionEventLog   *ConnectionEventLogger
-
-	// Socket health monitoring
-	socketHealthMonitor  *SocketHealthMonitor
-
-	// Message queue for polling compatibility with old Wire API
-	messageQueue         []*CharacteristicMessage
-	queueMutex           sync.Mutex
-
-	// Graceful shutdown
-	stopChan             chan struct{}
-	wg                   sync.WaitGroup
+	// Audit logging
+	connectionEventLog  *ConnectionEventLogger
+	socketHealthMonitor *SocketHealthMonitor
 }
 
-// NewWire creates a new wire with default platform (generic)
-func NewWire(deviceUUID string) *Wire {
-	w, _ := newWireInternal(deviceUUID, PlatformGeneric, "", nil)
-	return w
-}
-
-// NewWireWithPlatform creates a wire with platform-specific behavior
-// This is the main constructor used by iOS and Android implementations
-func NewWireWithPlatform(deviceUUID string, platform Platform, deviceName string, config *SimulationConfig) *Wire {
-	w, err := newWireInternal(deviceUUID, platform, deviceName, config)
-	if err != nil {
-		logger.Error(fmt.Sprintf("%s %s", deviceUUID[:8], platform),
-			"FATAL: Failed to create wire: %v", err)
-		panic(fmt.Sprintf("Failed to create wire: %v", err))
-	}
-	return w
-}
-
-// NewWireWithRole is deprecated but kept for compatibility
-func NewWireWithRole(deviceUUID string, role DeviceRole, config *SimulationConfig) *Wire {
-	w, _ := newWireInternal(deviceUUID, PlatformGeneric, "", config)
-	w.role = role
-	return w
-}
-
-// newWireInternal creates a new socket-based wire implementation with dual-role architecture
-func newWireInternal(deviceUUID string, platform Platform, deviceName string, config *SimulationConfig) (*Wire, error) {
-	if config == nil {
-		config = DefaultSimulationConfig()
-	}
-
-	if deviceName == "" {
-		deviceName = deviceUUID
-	}
-
-	// Create dual socket paths for realistic BLE dual-role simulation
-	peripheralSocketPath := fmt.Sprintf("/tmp/auraphone-%s-peripheral.sock", deviceUUID)
-	centralSocketPath := fmt.Sprintf("/tmp/auraphone-%s-central.sock", deviceUUID)
-
+// NewWire creates a new Wire instance
+func NewWire(hardwareUUID string) *Wire {
 	w := &Wire{
-		localUUID:            deviceUUID,
-		platform:             platform,
-		deviceName:           deviceName,
-		role:                 RoleDual,
-		simulator:            NewSimulator(config),
-		mtu:                  config.DefaultMTU,
-		distance:             1.0,
-		peripheralSocketPath: peripheralSocketPath,
-		centralSocketPath:    centralSocketPath,
-		connections:          make(map[string]*DualConnection),
-		messageHandlers:      make(map[string]func(*CharacteristicMessage)),
-		stopChan:             make(chan struct{}),
-		enableDebugLog:       true,
-		connectionEventLog:   NewConnectionEventLogger(deviceUUID, true),
-		socketHealthMonitor:  NewSocketHealthMonitor(deviceUUID),
+		hardwareUUID: hardwareUUID,
+		socketPath:   fmt.Sprintf("/tmp/auraphone-%s.sock", hardwareUUID),
+		connections:  make(map[string]*Connection),
+		stopReading:  make(map[string]chan struct{}),
 	}
 
-	return w, nil
+	// Initialize audit loggers
+	w.connectionEventLog = NewConnectionEventLogger(hardwareUUID, true)
+	w.socketHealthMonitor = NewSocketHealthMonitor(hardwareUUID)
+
+	return w
 }
 
-// InitializeDevice sets up the dual socket listeners and debug log directories
-func (sw *Wire) InitializeDevice() error {
-	// Remove old sockets if they exist
-	os.Remove(sw.peripheralSocketPath)
-	os.Remove(sw.centralSocketPath)
+// Start begins listening on the Unix domain socket
+func (w *Wire) Start() error {
+	// Clean up any existing socket file
+	os.Remove(w.socketPath)
 
-	// Create Peripheral socket listener (accepts connections from Centrals)
-	peripheralListener, err := net.Listen("unix", sw.peripheralSocketPath)
+	// Create listener
+	listener, err := net.Listen("unix", w.socketPath)
 	if err != nil {
-		return fmt.Errorf("failed to create peripheral socket listener: %w", err)
+		return fmt.Errorf("failed to listen on %s: %w", w.socketPath, err)
 	}
-	sw.peripheralListener = peripheralListener
-	sw.connectionEventLog.LogSocketCreated("peripheral", sw.peripheralSocketPath)
-	sw.socketHealthMonitor.InitializeSocket("peripheral", sw.peripheralSocketPath)
 
-	// Create Central socket listener (accepts connections from Peripherals)
-	centralListener, err := net.Listen("unix", sw.centralSocketPath)
-	if err != nil {
-		peripheralListener.Close()
-		return fmt.Errorf("failed to create central socket listener: %w", err)
-	}
-	sw.centralListener = centralListener
-	sw.connectionEventLog.LogSocketCreated("central", sw.centralSocketPath)
-	sw.socketHealthMonitor.InitializeSocket("central", sw.centralSocketPath)
+	w.listener = listener
+	w.stopListening = make(chan struct{})
 
-	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		"🔌 Dual socket listeners created:\n  Peripheral: %s\n  Central: %s",
-		sw.peripheralSocketPath, sw.centralSocketPath)
+	// Log socket creation and initialize health monitoring
+	w.connectionEventLog.LogSocketCreated("peripheral", w.socketPath)
+	w.socketHealthMonitor.InitializeSocket("peripheral", w.socketPath)
+	w.socketHealthMonitor.StartPeriodicSnapshots()
 
-	// Start accepting connections on both sockets
-	sw.wg.Add(2)
-	go sw.acceptLoopPeripheral()
-	go sw.acceptLoopCentral()
-
-	// Start socket health monitoring (periodic snapshots every 5s)
-	sw.socketHealthMonitor.StartPeriodicSnapshots()
-
-	// Create debug log directories (optional, for inspection)
-	if sw.enableDebugLog {
-		devicePath := phone.GetDeviceDir(sw.localUUID)
-		dirs := []string{
-			filepath.Join(devicePath, "sent_messages"),
-			filepath.Join(devicePath, "received_messages"),
-			filepath.Join(devicePath, "cache"),
-		}
-		for _, dir := range dirs {
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-					"Failed to create debug log dir %s: %v", dir, err)
-			}
-		}
-
-		// Write GATT table and advertising data files for discovery
-		// (these still use filesystem for device discovery)
-		os.MkdirAll(devicePath, 0755)
-	}
+	// Accept incoming connections
+	go w.acceptConnections()
 
 	return nil
 }
 
-// acceptLoopPeripheral accepts incoming connections from Centrals (we act as Peripheral)
-func (sw *Wire) acceptLoopPeripheral() {
-	defer sw.wg.Done()
+// Stop stops the wire and cleans up resources (idempotent - safe to call multiple times)
+func (w *Wire) Stop() {
+	// Stop accepting new connections (check if already stopped)
+	w.mu.Lock()
+	if w.stopListening != nil {
+		select {
+		case <-w.stopListening:
+			// Already stopped
+			w.mu.Unlock()
+			return
+		default:
+			close(w.stopListening)
+		}
+	}
+	w.mu.Unlock()
 
+	// Close listener
+	if w.listener != nil {
+		w.listener.Close()
+	}
+
+	// Close all connections
+	w.mu.Lock()
+	for uuid, connection := range w.connections {
+		// Stop reading goroutine
+		w.stopMu.Lock()
+		if stopChan, exists := w.stopReading[uuid]; exists {
+			select {
+			case <-stopChan:
+				// Already closed
+			default:
+				close(stopChan)
+			}
+			delete(w.stopReading, uuid)
+		}
+		w.stopMu.Unlock()
+
+		connection.conn.Close()
+	}
+	w.connections = make(map[string]*Connection)
+	w.mu.Unlock()
+
+	// Stop health monitor and log socket closure
+	if w.socketHealthMonitor != nil {
+		w.socketHealthMonitor.MarkSocketClosed("peripheral")
+		w.socketHealthMonitor.Stop()
+	}
+	w.connectionEventLog.LogSocketClosed("peripheral", "", "", "shutdown")
+
+	// Clean up socket file
+	os.Remove(w.socketPath)
+
+	// Clean up from global registries
+	globalAdvertisingDataMu.Lock()
+	delete(globalAdvertisingData, w.hardwareUUID)
+	globalAdvertisingDataMu.Unlock()
+
+	globalGATTTablesMu.Lock()
+	delete(globalGATTTables, w.hardwareUUID)
+	globalGATTTablesMu.Unlock()
+}
+
+// acceptConnections handles incoming connections
+func (w *Wire) acceptConnections() {
 	for {
 		select {
-		case <-sw.stopChan:
+		case <-w.stopListening:
 			return
 		default:
 		}
 
-		// Set accept deadline to allow periodic stopChan checks
-		if unixListener, ok := sw.peripheralListener.(*net.UnixListener); ok {
-			unixListener.SetDeadline(time.Now().Add(1 * time.Second))
-		}
-
-		conn, err := sw.peripheralListener.Accept()
+		conn, err := w.listener.Accept()
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue // Check stopChan and try again
-			}
+			// Check if we're stopping
 			select {
-			case <-sw.stopChan:
+			case <-w.stopListening:
 				return
 			default:
-				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-					"Peripheral accept error: %v", err)
-				continue
 			}
-		}
-
-		// Handle incoming connection where we are Peripheral (they are Central)
-		sw.wg.Add(1)
-		go sw.handleIncomingConnection(conn, ConnectionRolePeripheral)
-	}
-}
-
-// acceptLoopCentral accepts incoming connections from Peripherals (we act as Central)
-func (sw *Wire) acceptLoopCentral() {
-	defer sw.wg.Done()
-
-	for {
-		select {
-		case <-sw.stopChan:
-			return
-		default:
-		}
-
-		// Set accept deadline to allow periodic stopChan checks
-		if unixListener, ok := sw.centralListener.(*net.UnixListener); ok {
-			unixListener.SetDeadline(time.Now().Add(1 * time.Second))
-		}
-
-		conn, err := sw.centralListener.Accept()
-		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue // Check stopChan and try again
-			}
-			select {
-			case <-sw.stopChan:
-				return
-			default:
-				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-					"Central accept error: %v", err)
-				continue
-			}
-		}
-
-		// Handle incoming connection where we are Central (they are Peripheral)
-		sw.wg.Add(1)
-		go sw.handleIncomingConnection(conn, ConnectionRoleCentral)
-	}
-}
-
-// handleIncomingConnection handles an incoming connection with specified role
-func (sw *Wire) handleIncomingConnection(conn net.Conn, ourRole ConnectionRole) {
-	defer sw.wg.Done()
-	defer conn.Close()
-
-	// Read the first 4 bytes to get the remote UUID length
-	var uuidLen uint32
-	if err := binary.Read(conn, binary.BigEndian, &uuidLen); err != nil {
-		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"Failed to read UUID length from incoming connection: %v", err)
-		return
-	}
-
-	// Read the remote UUID
-	uuidBytes := make([]byte, uuidLen)
-	if _, err := io.ReadFull(conn, uuidBytes); err != nil {
-		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"Failed to read UUID from incoming connection: %v", err)
-		return
-	}
-	remoteUUID := string(uuidBytes)
-
-	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		"📞 Accepted %s connection from %s", ourRole, remoteUUID[:8])
-
-	// Log connection acceptance (deviceID not yet known)
-	sw.connectionEventLog.LogConnectionAccepted(string(ourRole), remoteUUID, "")
-
-	// Record connection in health monitor
-	sw.socketHealthMonitor.RecordConnection(string(ourRole), remoteUUID)
-
-	// Create RoleConnection for this directional connection
-	roleConn := &RoleConnection{
-		conn:          conn,
-		role:          ourRole,
-		remoteUUID:    remoteUUID,
-		mtu:           23, // Start with BLE minimum MTU
-		mtuNegotiated: false,
-		subscriptions: make(map[string]bool),
-	}
-
-	// Get or create DualConnection for this peer
-	sw.connMutex.Lock()
-	dualConn, exists := sw.connections[remoteUUID]
-	if !exists {
-		dualConn = &DualConnection{
-			remoteUUID:  remoteUUID,
-			state:       StateConnected,
-			monitorStop: make(chan struct{}),
-		}
-		sw.connections[remoteUUID] = dualConn
-	}
-
-	// Attach this connection to the appropriate role slot
-	if ourRole == ConnectionRoleCentral {
-		if dualConn.asCentral != nil {
-			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"🔌 Replacing existing Central connection to %s", remoteUUID[:8])
-			dualConn.asCentral.conn.Close()
-		}
-		dualConn.asCentral = roleConn
-		logger.Info(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"✅ Central connection established with %s (we write, they notify)", remoteUUID[:8])
-	} else {
-		if dualConn.asPeripheral != nil {
-			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"🔌 Replacing existing Peripheral connection to %s", remoteUUID[:8])
-			dualConn.asPeripheral.conn.Close()
-		}
-		dualConn.asPeripheral = roleConn
-		logger.Info(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"✅ Peripheral connection established with %s (they write, we notify)", remoteUUID[:8])
-	}
-
-	// Start connection monitoring if this is the first connection
-	if !exists {
-		sw.startConnectionMonitoringWithConn(dualConn, remoteUUID)
-	}
-	sw.connMutex.Unlock()
-
-	// Read messages from this connection
-	sw.readLoop(remoteUUID, roleConn)
-
-	// Connection closed - clean up this role connection
-	sw.connMutex.Lock()
-	if ourRole == ConnectionRoleCentral {
-		if dualConn.asCentral == roleConn {
-			dualConn.asCentral = nil
-			logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"🔌 Central connection closed from %s", remoteUUID[:8])
-			sw.socketHealthMonitor.RemoveConnection(string(ourRole), remoteUUID)
-		}
-	} else {
-		if dualConn.asPeripheral == roleConn {
-			dualConn.asPeripheral = nil
-			logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"🔌 Peripheral connection closed from %s", remoteUUID[:8])
-			sw.socketHealthMonitor.RemoveConnection(string(ourRole), remoteUUID)
-		}
-	}
-
-	// If both connections are gone, clean up DualConnection
-	if dualConn.asCentral == nil && dualConn.asPeripheral == nil {
-		delete(sw.connections, remoteUUID)
-		dualConn.stateMutex.Lock()
-		dualConn.state = StateDisconnected
-		dualConn.stateMutex.Unlock()
-		sw.connMutex.Unlock()
-
-		logger.Info(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"🔌 All connections closed to %s", remoteUUID[:8])
-
-		// Notify disconnect callback
-		if sw.disconnectCallback != nil {
-			sw.disconnectCallback(remoteUUID)
-		}
-	} else {
-		sw.connMutex.Unlock()
-	}
-}
-
-// readLoop reads messages from a role connection
-func (sw *Wire) readLoop(remoteUUID string, roleConn *RoleConnection) {
-	conn := roleConn.conn
-	ourRole := roleConn.role
-
-	// Log read loop started
-	sw.connectionEventLog.LogReadLoopStarted(string(ourRole), remoteUUID, "")
-
-	// Determine what operations are valid based on our role
-	// If we are Central: they can notify us (they are Peripheral)
-	// If we are Peripheral: they can write to us (they are Central)
-	var validOps map[string]bool
-	if ourRole == ConnectionRoleCentral {
-		// They are Peripheral, they can notify/indicate to us
-		validOps = map[string]bool{"notify": true, "indicate": true, "subscribe_ack": true}
-	} else {
-		// They are Central, they can write/read from us
-		validOps = map[string]bool{"write": true, "write_no_response": true, "read": true, "subscribe": true, "unsubscribe": true}
-	}
-
-	defer func() {
-		sw.connectionEventLog.LogReadLoopEnded(string(ourRole), remoteUUID, "", "read loop exited")
-	}()
-
-	for {
-		// Read total message length (sent by SendToDevice)
-		var totalLen uint32
-		if err := binary.Read(conn, binary.BigEndian, &totalLen); err != nil {
-			if err != io.EOF {
-				logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-					"Read error from %s: %v", remoteUUID[:8], err)
-				sw.connectionEventLog.LogSocketError(string(ourRole), remoteUUID, "", err.Error(), "read length")
-				sw.socketHealthMonitor.RecordError(string(ourRole), remoteUUID, err.Error())
-			}
-			return
-		}
-
-		// Read complete message data (may arrive in fragments from SendToDevice)
-		msgData := make([]byte, totalLen)
-		if _, err := io.ReadFull(conn, msgData); err != nil {
-			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"Failed to read complete message from %s (expected %d bytes): %v",
-				remoteUUID[:8], totalLen, err)
-			sw.connectionEventLog.LogSocketError(string(ourRole), remoteUUID, "", err.Error(), "read message")
-			sw.socketHealthMonitor.RecordError(string(ourRole), remoteUUID, err.Error())
-			return
-		}
-
-		// Parse message
-		var msg CharacteristicMessage
-		if err := json.Unmarshal(msgData, &msg); err != nil {
-			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"Failed to parse message from %s: %v", remoteUUID[:8], err)
 			continue
 		}
 
-		// Validate protocol: check if operation is valid for this connection's role
-		if !validOps[msg.Operation] {
-			theirRole := ConnectionRoleCentral
-			if ourRole == ConnectionRoleCentral {
-				theirRole = ConnectionRolePeripheral
-			}
-			logger.Error(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"⚠️  PROTOCOL VIOLATION: %s (role=%s) tried to %s on connection where we are %s",
-				remoteUUID[:8], theirRole, msg.Operation, ourRole)
-			continue // Drop invalid message
-		}
-
-		// Log for debugging
-		if sw.enableDebugLog {
-			sw.logReceivedMessage(remoteUUID, &msg)
-		}
-
-		theirRole := "peripheral"
-		if ourRole == ConnectionRolePeripheral {
-			theirRole = "central"
-		}
-		logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			fmt.Sprintf("📥 RX %s [%s→%s] (from %s, svc=%s, char=%s, %d bytes)",
-				msg.Operation, theirRole, ourRole, remoteUUID[:8],
-				msg.ServiceUUID[len(msg.ServiceUUID)-4:],
-				msg.CharUUID[len(msg.CharUUID)-4:], len(msg.Data)), &msg)
-
-		// Record message received in health monitor
-		sw.socketHealthMonitor.RecordMessageReceived(string(ourRole), remoteUUID)
-
-		// Dispatch to handler
-		sw.dispatchMessage(&msg)
+		// Read handshake: 4-byte UUID length + UUID bytes
+		go w.handleIncomingConnection(conn)
 	}
 }
 
-// Connect establishes dual connections to a remote device (both Central and Peripheral roles)
-// This matches real BLE where bidirectional communication requires TWO logical connections
-func (sw *Wire) Connect(targetUUID string) error {
-	sw.connMutex.Lock()
-	dualConn, exists := sw.connections[targetUUID]
+// handleIncomingConnection processes a new incoming connection (we become Peripheral)
+func (w *Wire) handleIncomingConnection(conn net.Conn) {
+	// Read UUID length (4 bytes)
+	var uuidLen uint32
+	err := binary.Read(conn, binary.BigEndian, &uuidLen)
+	if err != nil {
+		conn.Close()
+		return
+	}
+
+	// Read UUID
+	uuidBytes := make([]byte, uuidLen)
+	_, err = io.ReadFull(conn, uuidBytes)
+	if err != nil {
+		conn.Close()
+		return
+	}
+
+	peerUUID := string(uuidBytes)
+
+	// Log connection accepted
+	w.connectionEventLog.LogConnectionAccepted("peripheral", peerUUID, "")
+
+	// Check if already connected
+	w.mu.Lock()
+	if _, exists := w.connections[peerUUID]; exists {
+		w.mu.Unlock()
+		conn.Close()
+		return
+	}
+
+	// Store connection with Peripheral role (they initiated)
+	connection := &Connection{
+		conn:       conn,
+		remoteUUID: peerUUID,
+		role:       RolePeripheral,
+	}
+	w.connections[peerUUID] = connection
+	w.mu.Unlock()
+
+	// Log connection established and record in health monitor
+	w.connectionEventLog.LogConnectionEstablished("peripheral", peerUUID, "", "")
+	w.socketHealthMonitor.RecordConnection("peripheral", peerUUID)
+
+	// Notify callback
+	w.callbackMu.RLock()
+	connectCb := w.connectCallback
+	w.callbackMu.RUnlock()
+	if connectCb != nil {
+		connectCb(peerUUID, RolePeripheral)
+	}
+
+	// Log read loop started
+	w.connectionEventLog.LogReadLoopStarted("peripheral", peerUUID, "")
+
+	// Start reading messages from this connection
+	stopChan := make(chan struct{})
+	w.stopMu.Lock()
+	w.stopReading[peerUUID] = stopChan
+	w.stopMu.Unlock()
+
+	w.readMessages(peerUUID, connection, stopChan)
+}
+
+// Connect establishes a connection to a peer (we become Central)
+func (w *Wire) Connect(peerUUID string) error {
+	// Check if already connected
+	w.mu.RLock()
+	_, exists := w.connections[peerUUID]
+	w.mu.RUnlock()
+
 	if exists {
-		dualConn.stateMutex.RLock()
-		state := dualConn.state
-		dualConn.stateMutex.RUnlock()
-		if state != StateDisconnected && state != 0 {
-			sw.connMutex.Unlock()
-			logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"🔌 Connect attempt to %s BLOCKED (current state: %s)", targetUUID[:8], state.String())
-			return fmt.Errorf("already connected or connecting to %s", targetUUID[:8])
-		}
-	} else {
-		dualConn = &DualConnection{
-			remoteUUID:  targetUUID,
-			state:       StateConnecting,
-			monitorStop: make(chan struct{}),
-		}
-		sw.connections[targetUUID] = dualConn
-	}
-	dualConn.stateMutex.Lock()
-	dualConn.state = StateConnecting
-	dualConn.stateMutex.Unlock()
-	sw.connMutex.Unlock()
-
-	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		"🔌 Establishing dual connections to %s (delay: simulated)", targetUUID[:8])
-
-	// Simulate connection delay
-	delay := sw.simulator.ConnectionDelay()
-	time.Sleep(delay)
-
-	// Check if connection succeeds
-	if !sw.simulator.ShouldConnectionSucceed() {
-		sw.connMutex.Lock()
-		dualConn.stateMutex.Lock()
-		dualConn.state = StateDisconnected
-		dualConn.stateMutex.Unlock()
-		sw.connMutex.Unlock()
-		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"❌ Connection to %s FAILED (simulated interference)", targetUUID[:8])
-		return fmt.Errorf("connection failed (timeout or interference)")
+		return nil // Already connected
 	}
 
-	// Establish FIRST connection: We connect to their Peripheral socket (we act as Central)
-	targetPeripheralSocket := fmt.Sprintf("/tmp/auraphone-%s-peripheral.sock", targetUUID)
-	centralConn, err := sw.dialAndHandshake(targetPeripheralSocket)
+	// Connect to peer's socket
+	peerSocketPath := fmt.Sprintf("/tmp/auraphone-%s.sock", peerUUID)
+	conn, err := net.Dial("unix", peerSocketPath)
 	if err != nil {
-		sw.connMutex.Lock()
-		dualConn.stateMutex.Lock()
-		dualConn.state = StateDisconnected
-		dualConn.stateMutex.Unlock()
-		sw.connMutex.Unlock()
-		return fmt.Errorf("failed to establish Central connection: %w", err)
+		return fmt.Errorf("failed to connect to %s: %w", peerUUID, err)
 	}
 
-	// Establish SECOND connection: We connect to their Central socket (we act as Peripheral)
-	targetCentralSocket := fmt.Sprintf("/tmp/auraphone-%s-central.sock", targetUUID)
-	peripheralConn, err := sw.dialAndHandshake(targetCentralSocket)
+	// Send handshake: our UUID
+	uuidBytes := []byte(w.hardwareUUID)
+	uuidLen := uint32(len(uuidBytes))
+
+	err = binary.Write(conn, binary.BigEndian, uuidLen)
 	if err != nil {
-		centralConn.Close()
-		sw.connMutex.Lock()
-		dualConn.stateMutex.Lock()
-		dualConn.state = StateDisconnected
-		dualConn.stateMutex.Unlock()
-		sw.connMutex.Unlock()
-		return fmt.Errorf("failed to establish Peripheral connection: %w", err)
+		conn.Close()
+		return fmt.Errorf("failed to send handshake: %w", err)
 	}
 
-	// Create RoleConnections
-	centralRoleConn := &RoleConnection{
-		conn:          centralConn,
-		role:          ConnectionRoleCentral,
-		remoteUUID:    targetUUID,
-		mtu:           23,
-		mtuNegotiated: false,
-		subscriptions: make(map[string]bool),
+	_, err = conn.Write(uuidBytes)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("failed to send handshake: %w", err)
 	}
 
-	peripheralRoleConn := &RoleConnection{
-		conn:          peripheralConn,
-		role:          ConnectionRolePeripheral,
-		remoteUUID:    targetUUID,
-		mtu:           23,
-		mtuNegotiated: false,
-		subscriptions: make(map[string]bool),
+	// Store connection with Central role (we initiated)
+	connection := &Connection{
+		conn:       conn,
+		remoteUUID: peerUUID,
+		role:       RoleCentral,
 	}
 
-	// Store both connections
-	sw.connMutex.Lock()
-	dualConn.asCentral = centralRoleConn
-	dualConn.asPeripheral = peripheralRoleConn
-	dualConn.stateMutex.Lock()
-	dualConn.state = StateConnected
-	dualConn.stateMutex.Unlock()
-	sw.connMutex.Unlock()
+	w.mu.Lock()
+	w.connections[peerUUID] = connection
+	w.mu.Unlock()
 
-	logger.Info(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		"✅ Dual connections established with %s:\n  As Central: %s\n  As Peripheral: %s",
-		targetUUID[:8], targetPeripheralSocket, targetCentralSocket)
+	// Log connection established and record in health monitor
+	w.connectionEventLog.LogConnectionEstablished("central", peerUUID, "", peerSocketPath)
+	w.socketHealthMonitor.RecordConnection("central", peerUUID)
 
-	// Log dual connection established
-	sw.connectionEventLog.LogConnectionEstablished("central", targetUUID, "", targetPeripheralSocket)
-	sw.connectionEventLog.LogConnectionEstablished("peripheral", targetUUID, "", targetCentralSocket)
-	sw.connectionEventLog.LogDualConnectionComplete(targetUUID, "")
+	// Notify callback
+	w.callbackMu.RLock()
+	connectCb := w.connectCallback
+	w.callbackMu.RUnlock()
+	if connectCb != nil {
+		connectCb(peerUUID, RoleCentral)
+	}
 
-	// Record connections in health monitor
-	sw.socketHealthMonitor.RecordConnection("central", targetUUID)
-	sw.socketHealthMonitor.RecordConnection("peripheral", targetUUID)
+	// Log read loop started
+	w.connectionEventLog.LogReadLoopStarted("central", peerUUID, "")
 
-	// Start read loops for both connections
-	sw.wg.Add(2)
-	go func() {
-		defer sw.wg.Done()
-		sw.readLoop(targetUUID, centralRoleConn)
+	// Start reading messages from this connection
+	stopChan := make(chan struct{})
+	w.stopMu.Lock()
+	w.stopReading[peerUUID] = stopChan
+	w.stopMu.Unlock()
 
-		// Central connection closed
-		sw.connMutex.Lock()
-		if dualConn.asCentral == centralRoleConn {
-			dualConn.asCentral = nil
-			logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"🔌 Central connection closed to %s", targetUUID[:8])
-			sw.connectionEventLog.LogSocketClosed("central", targetUUID, "", "read loop ended")
-		}
-		sw.checkAndCleanupDualConnection(dualConn)
-		sw.connMutex.Unlock()
-	}()
-
-	go func() {
-		defer sw.wg.Done()
-		sw.readLoop(targetUUID, peripheralRoleConn)
-
-		// Peripheral connection closed
-		sw.connMutex.Lock()
-		if dualConn.asPeripheral == peripheralRoleConn {
-			dualConn.asPeripheral = nil
-			logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"🔌 Peripheral connection closed to %s", targetUUID[:8])
-			sw.connectionEventLog.LogSocketClosed("peripheral", targetUUID, "", "read loop ended")
-		}
-		sw.checkAndCleanupDualConnection(dualConn)
-		sw.connMutex.Unlock()
-	}()
-
-	// Start connection monitoring
-	sw.startConnectionMonitoring(targetUUID)
-
-	// Start automatic MTU negotiation in background for both connections
-	// This simulates iOS auto-negotiation and Android RequestMtu() behavior
-	go sw.negotiateMTU(centralRoleConn, targetUUID, "Central")
-	go sw.negotiateMTU(peripheralRoleConn, targetUUID, "Peripheral")
+	go w.readMessages(peerUUID, connection, stopChan)
 
 	return nil
 }
 
-// negotiateMTU performs automatic MTU negotiation after connection is established
-// This simulates:
-//   - iOS: OS automatically negotiates MTU after service discovery (~500ms delay)
-//   - Android: App calls RequestMtu() after discovering services
-func (sw *Wire) negotiateMTU(roleConn *RoleConnection, targetUUID string, roleName string) {
-	// Simulate service discovery delay before MTU negotiation
-	// Real BLE: iOS takes 500ms-2s, Android varies by device
-	delay := sw.simulator.ServiceDiscoveryDelay()
-	time.Sleep(delay)
+// readMessages continuously reads messages from a connection
+func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan chan struct{}) {
+	defer func() {
+		// Log read loop ended
+		socketType := string(connection.role)
+		if connection.role == RolePeripheral {
+			socketType = "peripheral"
+		} else {
+			socketType = "central"
+		}
+		w.connectionEventLog.LogReadLoopEnded(socketType, peerUUID, "", "connection closed")
+		w.socketHealthMonitor.RemoveConnection(socketType, peerUUID)
 
-	// Check if connection still exists
-	sw.connMutex.RLock()
-	dualConn, exists := sw.connections[targetUUID]
-	sw.connMutex.RUnlock()
+		// Clean up on exit
+		w.mu.Lock()
+		delete(w.connections, peerUUID)
+		w.mu.Unlock()
 
-	if !exists {
-		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"⚠️  MTU negotiation skipped: connection to %s no longer exists", targetUUID[:8])
-		return
-	}
+		w.stopMu.Lock()
+		delete(w.stopReading, peerUUID)
+		w.stopMu.Unlock()
 
-	dualConn.stateMutex.RLock()
-	state := dualConn.state
-	dualConn.stateMutex.RUnlock()
-
-	if state != StateConnected {
-		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"⚠️  MTU negotiation skipped: connection to %s not in Connected state (current: %s)",
-			targetUUID[:8], state.String())
-		return
-	}
-
-	// Negotiate MTU (both sides propose their max, take minimum)
-	// iOS: typically 185 bytes, Android: 185-512 bytes
-	proposedMTU := sw.simulator.config.DefaultMTU
-	negotiatedMTU := sw.simulator.NegotiatedMTU(proposedMTU, proposedMTU)
-
-	// Update MTU for this connection
-	roleConn.sendMutex.Lock()
-	roleConn.mtu = negotiatedMTU
-	roleConn.mtuNegotiated = true
-	roleConn.mtuNegotiationTime = time.Now()
-	roleConn.sendMutex.Unlock()
-
-	logger.Info(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		"📏 MTU negotiated: %d bytes with %s [%s role] (delay: %dms)",
-		negotiatedMTU, targetUUID[:8], roleName, delay.Milliseconds())
-
-	sw.connectionEventLog.LogMTUNegotiated(roleName, targetUUID, "", negotiatedMTU)
-}
-
-// dialAndHandshake dials a socket and performs UUID handshake
-func (sw *Wire) dialAndHandshake(socketPath string) (net.Conn, error) {
-	conn, err := net.Dial("unix", socketPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial %s: %w", socketPath, err)
-	}
-
-	// Send our UUID as first message (handshake)
-	uuidBytes := []byte(sw.localUUID)
-	if err := binary.Write(conn, binary.BigEndian, uint32(len(uuidBytes))); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to send UUID length: %w", err)
-	}
-	if _, err := conn.Write(uuidBytes); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("failed to send UUID: %w", err)
-	}
-
-	return conn, nil
-}
-
-// checkAndCleanupDualConnection cleans up if both connections are closed (must be called with connMutex held)
-func (sw *Wire) checkAndCleanupDualConnection(dualConn *DualConnection) {
-	if dualConn.asCentral == nil && dualConn.asPeripheral == nil {
-		delete(sw.connections, dualConn.remoteUUID)
-		dualConn.stateMutex.Lock()
-		dualConn.state = StateDisconnected
-		dualConn.stateMutex.Unlock()
-
-		logger.Info(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"🔌 All connections closed to %s", dualConn.remoteUUID[:8])
+		connection.conn.Close()
 
 		// Notify disconnect callback
-		if sw.disconnectCallback != nil {
-			sw.disconnectCallback(dualConn.remoteUUID)
-		}
-	}
-}
-
-// Disconnect closes both connections to a device
-func (sw *Wire) Disconnect(targetUUID string) error {
-	sw.connMutex.Lock()
-	dualConn, exists := sw.connections[targetUUID]
-	if !exists {
-		sw.connMutex.Unlock()
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
-	}
-
-	dualConn.stateMutex.Lock()
-	if dualConn.state != StateConnected {
-		dualConn.stateMutex.Unlock()
-		sw.connMutex.Unlock()
-		return fmt.Errorf("not connected to %s (state: %s)", targetUUID[:8], dualConn.state.String())
-	}
-	dualConn.state = StateDisconnecting
-	dualConn.stateMutex.Unlock()
-	sw.connMutex.Unlock()
-
-	// Stop monitoring
-	sw.stopConnectionMonitoring(targetUUID)
-
-	// Simulate disconnection delay
-	delay := sw.simulator.DisconnectDelay()
-	time.Sleep(delay)
-
-	// Close both connections
-	sw.connMutex.Lock()
-	if dualConn.asCentral != nil {
-		dualConn.asCentral.conn.Close()
-		dualConn.asCentral = nil
-	}
-	if dualConn.asPeripheral != nil {
-		dualConn.asPeripheral.conn.Close()
-		dualConn.asPeripheral = nil
-	}
-	delete(sw.connections, targetUUID)
-	dualConn.stateMutex.Lock()
-	dualConn.state = StateDisconnected
-	dualConn.stateMutex.Unlock()
-	sw.connMutex.Unlock()
-
-	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		"🔌 Disconnected from %s (both connections closed)", targetUUID[:8])
-
-	return nil
-}
-
-// sendViaRoleConnection sends data over a specific role connection
-// This is the low-level send that implements fragmentation, MTU, and packet loss
-func (sw *Wire) sendViaRoleConnection(roleConn *RoleConnection, targetUUID string, data []byte) error {
-	roleConn.sendMutex.Lock()
-	defer roleConn.sendMutex.Unlock()
-
-	conn := roleConn.conn
-	mtu := roleConn.mtu
-
-	// Fragment data based on connection-specific MTU
-	fragments := sw.simulator.FragmentData(data, mtu)
-
-	// Send complete message length first
-	totalLen := uint32(len(data))
-	if err := binary.Write(conn, binary.BigEndian, totalLen); err != nil {
-		sw.socketHealthMonitor.RecordError(string(roleConn.role), targetUUID, err.Error())
-		return fmt.Errorf("failed to write message length: %w", err)
-	}
-
-	// Send each fragment with realistic BLE timing and packet loss
-	for i, fragment := range fragments {
-		if i > 0 {
-			time.Sleep(2 * time.Millisecond)
-		}
-
-		var lastErr error
-		for attempt := 0; attempt <= sw.simulator.config.MaxRetries; attempt++ {
-			if attempt > 0 {
-				time.Sleep(time.Duration(sw.simulator.config.RetryDelay) * time.Millisecond)
-				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-					"🔄 Retrying packet to %s [%s] (attempt %d/%d, fragment %d/%d)",
-					targetUUID[:8], roleConn.role, attempt+1, sw.simulator.config.MaxRetries+1, i+1, len(fragments))
-			}
-
-			if !sw.simulator.ShouldPacketSucceed() && attempt < sw.simulator.config.MaxRetries {
-				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-					"📉 Simulated packet loss to %s [%s] (attempt %d/%d, fragment %d/%d)",
-					targetUUID[:8], roleConn.role, attempt+1, sw.simulator.config.MaxRetries+1, i+1, len(fragments))
-				lastErr = fmt.Errorf("packet loss (attempt %d/%d)", attempt+1, sw.simulator.config.MaxRetries+1)
-				continue
-			}
-
-			if _, err := conn.Write(fragment); err != nil {
-				lastErr = fmt.Errorf("failed to write fragment: %w", err)
-				continue
-			}
-
-			lastErr = nil
-			break
-		}
-
-		if lastErr != nil {
-			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"❌ Failed to send fragment %d/%d to %s [%s] after %d retries: %v",
-				i+1, len(fragments), targetUUID[:8], roleConn.role, sw.simulator.config.MaxRetries, lastErr)
-			sw.socketHealthMonitor.RecordError(string(roleConn.role), targetUUID, lastErr.Error())
-			return lastErr
-		}
-	}
-
-	// Successfully sent all fragments - record message sent
-	sw.socketHealthMonitor.RecordMessageSent(string(roleConn.role), targetUUID)
-
-	return nil
-}
-
-// WriteCharacteristic writes to a characteristic (automatically uses Central connection)
-// In real BLE, writes ALWAYS go from Central to Peripheral
-func (sw *Wire) WriteCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
-	// Get Central connection (where we write to their characteristics)
-	sw.connMutex.RLock()
-	dualConn, exists := sw.connections[targetUUID]
-	sw.connMutex.RUnlock()
-
-	if !exists {
-		logger.Error(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"❌ WIRE WRITE BLOCKED: not connected to %s", targetUUID[:8])
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
-	}
-
-	if dualConn.asCentral == nil {
-		logger.Error(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"❌ WIRE WRITE BLOCKED: no Central connection to %s", targetUUID[:8])
-		return fmt.Errorf("no Central connection to %s (cannot write)", targetUUID[:8])
-	}
-
-	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		"📤 WIRE WRITE START: target=%s char=%s bytes=%d",
-		targetUUID[:8], charUUID[len(charUUID)-4:], len(data))
-
-	msg := CharacteristicMessage{
-		Operation:   "write",
-		ServiceUUID: serviceUUID,
-		CharUUID:    charUUID,
-		Data:        data,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  sw.localUUID,
-	}
-
-	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		fmt.Sprintf("📤 TX Write [central→peripheral] (to %s, svc=%s, char=%s, %d bytes)",
-			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
-
-	err := sw.sendCharacteristicMessageViaRole(dualConn.asCentral, targetUUID, &msg)
-
-	if err != nil {
-		logger.Error(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"❌ WIRE WRITE FAILED: target=%s error=%v", targetUUID[:8], err)
-	} else {
-		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"✅ WIRE WRITE SUCCESS: target=%s char=%s bytes=%d",
-			targetUUID[:8], charUUID[len(charUUID)-4:], len(data))
-	}
-
-	return err
-}
-
-// WriteCharacteristicNoResponse sends a write without waiting for response (uses Central connection)
-func (sw *Wire) WriteCharacteristicNoResponse(targetUUID, serviceUUID, charUUID string, data []byte) error {
-	// Get Central connection
-	sw.connMutex.RLock()
-	dualConn, exists := sw.connections[targetUUID]
-	sw.connMutex.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
-	}
-
-	if dualConn.asCentral == nil {
-		return fmt.Errorf("no Central connection to %s (cannot write)", targetUUID[:8])
-	}
-
-	msg := CharacteristicMessage{
-		Operation:   "write_no_response",
-		ServiceUUID: serviceUUID,
-		CharUUID:    charUUID,
-		Data:        data,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  sw.localUUID,
-	}
-
-	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		fmt.Sprintf("📤 TX Write NO Response [central→peripheral] (to %s, svc=%s, char=%s, %d bytes)",
-			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
-
-	// Send asynchronously (fire and forget)
-	go func() {
-		if err := sw.sendCharacteristicMessageViaRole(dualConn.asCentral, targetUUID, &msg); err != nil {
-			logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-				"❌ Write NO Response transmission FAILED to %s: %v", targetUUID[:8], err)
+		w.callbackMu.RLock()
+		disconnectCb := w.disconnectCallback
+		w.callbackMu.RUnlock()
+		if disconnectCb != nil {
+			disconnectCb(peerUUID)
 		}
 	}()
 
+	for {
+		select {
+		case <-stopChan:
+			return
+		default:
+		}
+
+		// Read message length (4 bytes)
+		var msgLen uint32
+		err := binary.Read(connection.conn, binary.BigEndian, &msgLen)
+		if err != nil {
+			return // Connection closed or error
+		}
+
+		// Read message data (JSON-encoded GATTMessage)
+		msgData := make([]byte, msgLen)
+		_, err = io.ReadFull(connection.conn, msgData)
+		if err != nil {
+			return // Connection closed or error
+		}
+
+		// Parse GATT message
+		var msg GATTMessage
+		err = json.Unmarshal(msgData, &msg)
+		if err != nil {
+			// Invalid message, skip it
+			continue
+		}
+
+		// Track message received in health monitor
+		socketType := string(connection.role)
+		if connection.role == RolePeripheral {
+			socketType = "peripheral"
+		} else {
+			socketType = "central"
+		}
+		w.socketHealthMonitor.RecordMessageReceived(socketType, peerUUID)
+
+		// Call GATT handler
+		w.handlerMu.RLock()
+		handler := w.gattHandler
+		w.handlerMu.RUnlock()
+
+		if handler != nil {
+			handler(peerUUID, &msg)
+		}
+	}
+}
+
+// SendGATTMessage sends a GATT message to a peer
+func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
+	// Set sender UUID if not already set
+	if msg.SenderUUID == "" {
+		msg.SenderUUID = w.hardwareUUID
+	}
+
+	// Marshal message to JSON
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal GATT message: %w", err)
+	}
+
+	w.mu.RLock()
+	connection, exists := w.connections[peerUUID]
+	w.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("not connected to %s", peerUUID)
+	}
+
+	// Lock for thread-safe writes
+	connection.sendMutex.Lock()
+	defer connection.sendMutex.Unlock()
+
+	// Send length-prefixed message
+	msgLen := uint32(len(data))
+
+	// Write length
+	err = binary.Write(connection.conn, binary.BigEndian, msgLen)
+	if err != nil {
+		return fmt.Errorf("failed to send message length: %w", err)
+	}
+
+	// Write data
+	_, err = connection.conn.Write(data)
+	if err != nil {
+		return fmt.Errorf("failed to send message data: %w", err)
+	}
+
+	// Track message sent in health monitor
+	socketType := string(connection.role)
+	if connection.role == RolePeripheral {
+		socketType = "peripheral"
+	} else {
+		socketType = "central"
+	}
+	w.socketHealthMonitor.RecordMessageSent(socketType, peerUUID)
+
 	return nil
 }
 
-// sendCharacteristicMessageViaRole marshals and sends a message via specific role connection
-func (sw *Wire) sendCharacteristicMessageViaRole(roleConn *RoleConnection, targetUUID string, msg *CharacteristicMessage) error {
-	msgData, err := json.Marshal(msg)
+// SetGATTMessageHandler sets the callback for incoming GATT messages
+func (w *Wire) SetGATTMessageHandler(handler func(peerUUID string, msg *GATTMessage)) {
+	w.handlerMu.Lock()
+	w.gattHandler = handler
+	w.handlerMu.Unlock()
+}
+
+// SetConnectCallback sets the callback for when a connection is established
+func (w *Wire) SetConnectCallback(callback func(peerUUID string, role ConnectionRole)) {
+	w.callbackMu.Lock()
+	w.connectCallback = callback
+	w.callbackMu.Unlock()
+}
+
+// SetDisconnectCallback sets the callback for when a connection is lost
+func (w *Wire) SetDisconnectCallback(callback func(peerUUID string)) {
+	w.callbackMu.Lock()
+	w.disconnectCallback = callback
+	w.callbackMu.Unlock()
+}
+
+// ListAvailableDevices scans /tmp for .sock files and returns hardware UUIDs
+func (w *Wire) ListAvailableDevices() []string {
+	devices := make([]string, 0)
+
+	// Scan /tmp for auraphone-*.sock files
+	matches, err := filepath.Glob("/tmp/auraphone-*.sock")
 	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
+		return devices
 	}
 
-	// Log for debugging
-	if sw.enableDebugLog {
-		sw.logSentMessage(targetUUID, msg)
-	}
-
-	return sw.sendViaRoleConnection(roleConn, targetUUID, msgData)
-}
-
-
-// dispatchMessage routes incoming messages to handlers or queues them
-func (sw *Wire) dispatchMessage(msg *CharacteristicMessage) {
-	// Handle subscription operations specially (they update connection state at wire level)
-	// But still dispatch them to the message queue so CBPeripheralManager can process them
-	if msg.Operation == "subscribe" || msg.Operation == "unsubscribe" {
-		sw.handleSubscriptionMessage(msg)
-		// Continue to dispatch - don't return yet
-	}
-
-	// Handle subscription acknowledgments (informational only, no action needed)
-	if msg.Operation == "subscribe_ack" {
-		logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"📥 RX Subscribe ACK from %s (svc=%s, char=%s) - subscription confirmed",
-			msg.SenderUUID[:8], msg.ServiceUUID[len(msg.ServiceUUID)-4:], msg.CharUUID[len(msg.CharUUID)-4:])
-		return
-	}
-
-	sw.handlerMutex.RLock()
-	handler, exists := sw.messageHandlers[msg.ServiceUUID+msg.CharUUID]
-	sw.handlerMutex.RUnlock()
-
-	if exists {
-		handler(msg)
-	} else {
-		// No specific handler, queue for polling
-		sw.queueMutex.Lock()
-		sw.messageQueue = append(sw.messageQueue, msg)
-		logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"📥 Queued message: op=%s, char=%s, from=%s, queueLen=%d",
-			msg.Operation, msg.CharUUID[:8], msg.SenderUUID[:8], len(sw.messageQueue))
-		sw.queueMutex.Unlock()
-	}
-}
-
-// handleSubscriptionMessage processes subscribe/unsubscribe requests from Central
-// This updates the subscription state on the Peripheral connection so notifications can be sent
-func (sw *Wire) handleSubscriptionMessage(msg *CharacteristicMessage) {
-	sw.connMutex.RLock()
-	dualConn := sw.connections[msg.SenderUUID]
-	sw.connMutex.RUnlock()
-
-	if dualConn == nil {
-		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"⚠️  Received %s from unknown device %s", msg.Operation, msg.SenderUUID[:8])
-		return
-	}
-
-	if dualConn.asPeripheral == nil {
-		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"⚠️  Received %s but no Peripheral connection exists to %s", msg.Operation, msg.SenderUUID[:8])
-		return
-	}
-
-	// Update subscription state on our Peripheral connection
-	// When they subscribe, we can now send notifications to them
-	key := msg.ServiceUUID + msg.CharUUID
-	dualConn.asPeripheral.subMutex.Lock()
-	if msg.Operation == "subscribe" {
-		dualConn.asPeripheral.subscriptions[key] = true
-		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"✅ Central %s subscribed to characteristic %s (svc=%s) - notifications enabled",
-			msg.SenderUUID[:8], msg.CharUUID[len(msg.CharUUID)-4:], msg.ServiceUUID[len(msg.ServiceUUID)-4:])
-
-		// Notify application layer about subscription (after unlocking mutex)
-		if sw.subscriptionCallback != nil {
-			remoteUUID := msg.SenderUUID
-			serviceUUID := msg.ServiceUUID
-			charUUID := msg.CharUUID
-			dualConn.asPeripheral.subMutex.Unlock()
-			sw.subscriptionCallback(remoteUUID, serviceUUID, charUUID)
-			dualConn.asPeripheral.subMutex.Lock()
+	for _, path := range matches {
+		// Extract UUID from filename
+		filename := filepath.Base(path)
+		// Format: auraphone-{UUID}.sock
+		if len(filename) < len("auraphone-") || filepath.Ext(filename) != ".sock" {
+			continue
 		}
-	} else {
-		delete(dualConn.asPeripheral.subscriptions, key)
-		logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"🔕 Central %s unsubscribed from characteristic %s (svc=%s) - notifications disabled",
-			msg.SenderUUID[:8], msg.CharUUID[len(msg.CharUUID)-4:], msg.ServiceUUID[len(msg.ServiceUUID)-4:])
-	}
-	dualConn.asPeripheral.subMutex.Unlock()
 
-	// Send acknowledgment back to Central to prevent race conditions
-	// This ensures Central knows subscription is active before sending first notification
-	ackMsg := CharacteristicMessage{
-		Operation:   "subscribe_ack",
-		ServiceUUID: msg.ServiceUUID,
-		CharUUID:    msg.CharUUID,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  sw.localUUID,
+		uuid := filename[len("auraphone-") : len(filename)-len(".sock")]
+
+		// Don't include ourselves
+		if uuid != w.hardwareUUID {
+			devices = append(devices, uuid)
+		}
 	}
 
-	logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		"📤 TX Subscribe ACK [peripheral→central] (to %s, svc=%s, char=%s)",
-		msg.SenderUUID[:8], msg.ServiceUUID[len(msg.ServiceUUID)-4:], msg.CharUUID[len(msg.CharUUID)-4:])
-
-	// Send ACK via Peripheral connection (we notify them of subscription state change)
-	go sw.sendCharacteristicMessageViaRole(dualConn.asPeripheral, msg.SenderUUID, &ackMsg)
+	return devices
 }
 
-// ReadAndConsumeCharacteristicMessages reads and consumes queued messages
-// This provides compatibility with the old Wire polling-based API
-func (sw *Wire) ReadAndConsumeCharacteristicMessages() ([]*CharacteristicMessage, error) {
-	sw.queueMutex.Lock()
-	defer sw.queueMutex.Unlock()
-
-	if len(sw.messageQueue) == 0 {
-		return nil, nil
-	}
-
-	// Return all queued messages and clear queue
-	messages := make([]*CharacteristicMessage, len(sw.messageQueue))
-	copy(messages, sw.messageQueue)
-	sw.messageQueue = nil
-
-	return messages, nil
+// GetHardwareUUID returns this device's hardware UUID
+func (w *Wire) GetHardwareUUID() string {
+	return w.hardwareUUID
 }
 
-// RegisterMessageHandler registers a handler for messages on a characteristic
-func (sw *Wire) RegisterMessageHandler(serviceUUID, charUUID string, handler func(*CharacteristicMessage)) {
-	sw.handlerMutex.Lock()
-	sw.messageHandlers[serviceUUID+charUUID] = handler
-	sw.handlerMutex.Unlock()
+// IsConnected checks if we're connected to a peer
+func (w *Wire) IsConnected(peerUUID string) bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	_, exists := w.connections[peerUUID]
+	return exists
 }
 
-// startConnectionMonitoring monitors dual connection health (looks up connection)
-func (sw *Wire) startConnectionMonitoring(targetUUID string) {
-	sw.connMutex.Lock()
-	dualConn, exists := sw.connections[targetUUID]
+// GetConnectionRole returns our role in the connection with the peer
+func (w *Wire) GetConnectionRole(peerUUID string) (ConnectionRole, bool) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	connection, exists := w.connections[peerUUID]
 	if !exists {
-		sw.connMutex.Unlock()
-		return
+		return "", false
 	}
-	sw.connMutex.Unlock()
-
-	sw.startConnectionMonitoringWithConn(dualConn, targetUUID)
+	return connection.role, true
 }
 
-// startConnectionMonitoringWithConn monitors dual connection health (connection already obtained)
-// This version is used when caller already holds connMutex to avoid deadlock
-func (sw *Wire) startConnectionMonitoringWithConn(dualConn *DualConnection, targetUUID string) {
-	// Use DualConnection's monitorStop channel
-	if dualConn.monitorStop == nil {
-		dualConn.monitorStop = make(chan struct{})
+// GetConnectedPeers returns a list of all connected peer UUIDs
+func (w *Wire) GetConnectedPeers() []string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	peers := make([]string, 0, len(w.connections))
+	for uuid := range w.connections {
+		peers = append(peers, uuid)
 	}
-	stopChan := dualConn.monitorStop
-
-	sw.wg.Add(1)
-	go func() {
-		defer sw.wg.Done()
-
-		interval := time.Duration(sw.simulator.config.ConnectionMonitorInterval) * time.Millisecond
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-stopChan:
-				return
-			case <-sw.stopChan:
-				return
-			case <-ticker.C:
-				sw.connMutex.Lock()
-				dualConn, exists := sw.connections[targetUUID]
-				if !exists {
-					sw.connMutex.Unlock()
-					return
-				}
-
-				dualConn.stateMutex.RLock()
-				state := dualConn.state
-				dualConn.stateMutex.RUnlock()
-
-				if state == StateConnected && sw.simulator.ShouldRandomlyDisconnect() {
-					// Simulate random disconnect - close one or both connections
-					logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-						"⚠️  Random disconnect simulation: closing connections to %s", targetUUID[:8])
-
-					if dualConn.asCentral != nil {
-						dualConn.asCentral.conn.Close()
-					}
-					if dualConn.asPeripheral != nil {
-						dualConn.asPeripheral.conn.Close()
-					}
-
-					callback := sw.disconnectCallback
-					sw.connMutex.Unlock()
-
-					if callback != nil {
-						callback(targetUUID)
-					}
-
-					// Stop monitoring
-					return
-				}
-				sw.connMutex.Unlock()
-			}
-		}
-	}()
+	return peers
 }
 
-// stopConnectionMonitoring stops monitoring a connection
-func (sw *Wire) stopConnectionMonitoring(targetUUID string) {
-	sw.connMutex.Lock()
-	defer sw.connMutex.Unlock()
+// ============================================================================
+// STUB METHODS FOR OLD API COMPATIBILITY
+// These will be properly implemented in Steps 4-6
+// ============================================================================
 
-	dualConn, exists := sw.connections[targetUUID]
-	if exists && dualConn.monitorStop != nil {
-		close(dualConn.monitorStop)
-		dualConn.monitorStop = nil
-	}
-}
-
-// SetDisconnectCallback sets the callback for disconnections
-func (sw *Wire) SetDisconnectCallback(callback func(deviceUUID string)) {
-	sw.disconnectCallback = callback
-}
-
-// SetSubscriptionCallback sets a callback that's triggered when a Central subscribes to our characteristic
-func (sw *Wire) SetSubscriptionCallback(callback func(remoteUUID, serviceUUID, charUUID string)) {
-	sw.subscriptionCallback = callback
-}
-
-// GetConnectionState returns the connection state for a device
-func (sw *Wire) GetConnectionState(targetUUID string) ConnectionState {
-	sw.connMutex.RLock()
-	dualConn, exists := sw.connections[targetUUID]
-	sw.connMutex.RUnlock()
-
-	if !exists {
-		return StateDisconnected
-	}
-
-	dualConn.stateMutex.RLock()
-	state := dualConn.state
-	dualConn.stateMutex.RUnlock()
-	return state
-}
-
-// ShouldActAsCentral determines if this device should initiate connection
-func (sw *Wire) ShouldActAsCentral(targetUUID string) bool {
-	return sw.localUUID > targetUUID
-}
-
-// Cleanup closes all connections and stops both listeners
-func (sw *Wire) Cleanup() {
-	// Signal shutdown
-	close(sw.stopChan)
-
-	// Stop socket health monitoring (writes final snapshot)
-	sw.socketHealthMonitor.Stop()
-
-	// Close all dual connections
-	sw.connMutex.Lock()
-	for uuid, dualConn := range sw.connections {
-		if dualConn.asCentral != nil {
-			dualConn.asCentral.conn.Close()
-		}
-		if dualConn.asPeripheral != nil {
-			dualConn.asPeripheral.conn.Close()
-		}
-		delete(sw.connections, uuid)
-	}
-	sw.connMutex.Unlock()
-
-	// Mark sockets as closed in health monitor
-	sw.socketHealthMonitor.MarkSocketClosed("peripheral")
-	sw.socketHealthMonitor.MarkSocketClosed("central")
-
-	// Close both listeners
-	if sw.peripheralListener != nil {
-		sw.peripheralListener.Close()
-	}
-	if sw.centralListener != nil {
-		sw.centralListener.Close()
-	}
-
-	// Wait for goroutines
-	sw.wg.Wait()
-
-	// Remove both socket files
-	os.Remove(sw.peripheralSocketPath)
-	os.Remove(sw.centralSocketPath)
-
-	logger.Debug(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		"🧹 Cleaned up dual socket wire")
-}
-
-// logSentMessage logs a sent message to filesystem for debugging
-func (sw *Wire) logSentMessage(targetUUID string, msg *CharacteristicMessage) {
-	if !sw.enableDebugLog {
-		return
-	}
-
-	logDir := filepath.Join(phone.GetDeviceDir(sw.localUUID), "sent_messages")
-	filename := fmt.Sprintf("to_%s_msg_%d.json", targetUUID[:8], msg.Timestamp)
-	logPath := filepath.Join(logDir, filename)
-
-	data, _ := json.MarshalIndent(msg, "", "  ")
-	os.WriteFile(logPath, data, 0644)
-}
-
-// logReceivedMessage logs a received message to filesystem for debugging
-func (sw *Wire) logReceivedMessage(remoteUUID string, msg *CharacteristicMessage) {
-	if !sw.enableDebugLog {
-		return
-	}
-
-	logDir := filepath.Join(phone.GetDeviceDir(sw.localUUID), "received_messages")
-	filename := fmt.Sprintf("from_%s_msg_%d.json", remoteUUID[:8], msg.Timestamp)
-	logPath := filepath.Join(logDir, filename)
-
-	data, _ := json.MarshalIndent(msg, "", "  ")
-	os.WriteFile(logPath, data, 0644)
-}
-
-// Helper methods for compatibility with existing Wire interface
-
-func (sw *Wire) GetRole() DeviceRole {
-	return sw.role
-}
-
-func (sw *Wire) GetPlatform() Platform {
-	return sw.platform
-}
-
-func (sw *Wire) GetDeviceName() string {
-	return sw.deviceName
-}
-
-func (sw *Wire) GetRSSI() int {
-	return sw.simulator.GenerateRSSI(sw.distance)
-}
-
-func (sw *Wire) SetDistance(meters float64) {
-	sw.distance = meters
-}
-
-func (sw *Wire) GetSimulator() *Simulator {
-	return sw.simulator
-}
-
-// CanScan returns true if device can scan (Central role)
-func (w *Wire) CanScan() bool {
-	return w.role&RoleCentralOnly != 0
-}
-
-// CanAdvertise returns true if device can advertise (Peripheral role)
-func (w *Wire) CanAdvertise() bool {
-	return w.role&RolePeripheralOnly != 0
-}
-
-// DiscoverDevices finds other devices by scanning for socket files
-func (sw *Wire) DiscoverDevices() ([]string, error) {
-	// For now, use filesystem-based discovery (scan data/ directory)
-	// This is still filesystem-based but only for discovery, not IPC
-	basePath := phone.GetDataDir()
-	files, err := os.ReadDir(basePath)
-	if err != nil {
-		return nil, err
-	}
-
-	var devices []string
-	for _, file := range files {
-		if file.IsDir() {
-			deviceName := file.Name()
-			// Check if it's a valid UUID and not our own device
-			if len(deviceName) > 8 && deviceName != sw.localUUID {
-				// Check if dual sockets exist (both peripheral and central)
-				peripheralSock := fmt.Sprintf("/tmp/auraphone-%s-peripheral.sock", deviceName)
-				centralSock := fmt.Sprintf("/tmp/auraphone-%s-central.sock", deviceName)
-				if _, err1 := os.Stat(peripheralSock); err1 == nil {
-					if _, err2 := os.Stat(centralSock); err2 == nil {
-						devices = append(devices, deviceName)
-					}
-				}
-			}
-		}
-	}
-
-	return devices, nil
-}
-
-// DeviceExists checks if a device with the given UUID exists and is reachable
-// This checks for the presence of socket files, indicating the device is active
-// Used by iOS retrievePeripherals(withIdentifiers:) to check if devices learned via gossip are available
-func (sw *Wire) DeviceExists(deviceUUID string) bool {
-	if deviceUUID == sw.localUUID {
-		return false // Don't return our own device
-	}
-
-	// Check if dual sockets exist (both peripheral and central)
-	peripheralSock := fmt.Sprintf("/tmp/auraphone-%s-peripheral.sock", deviceUUID)
-	centralSock := fmt.Sprintf("/tmp/auraphone-%s-central.sock", deviceUUID)
-
-	_, err1 := os.Stat(peripheralSock)
-	_, err2 := os.Stat(centralSock)
-
-	// Device exists if both sockets are present
-	return err1 == nil && err2 == nil
-}
-
-// StartDiscovery continuously scans for devices
-func (sw *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
+// StartDiscovery starts scanning for devices (stub for old API)
+// TODO Step 4: Implement proper discovery with callbacks
+func (w *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
 	stopChan := make(chan struct{})
 
-	sw.wg.Add(1)
 	go func() {
-		defer sw.wg.Done()
-
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 
-		discoveredDevices := make(map[string]bool)
-
 		for {
 			select {
 			case <-stopChan:
 				return
-			case <-sw.stopChan:
-				return
 			case <-ticker.C:
-				devices, err := sw.DiscoverDevices()
-				if err != nil {
-					continue
-				}
-
+				// Use our new ListAvailableDevices
+				devices := w.ListAvailableDevices()
 				for _, deviceUUID := range devices {
-					if discoveredDevices[deviceUUID] {
-						callback(deviceUUID)
-						continue
-					}
-
-					// Simulate discovery delay
-					delay := sw.simulator.DiscoveryDelay()
-					time.Sleep(delay)
-
-					discoveredDevices[deviceUUID] = true
 					callback(deviceUUID)
 				}
 			}
@@ -1492,301 +627,221 @@ func (sw *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
 	return stopChan
 }
 
-// WriteGATTTable writes the GATT table to filesystem (for discovery)
-func (sw *Wire) WriteGATTTable(table *GATTTable) error {
-	devicePath := phone.GetDeviceDir(sw.localUUID)
-	gattPath := filepath.Join(devicePath, "gatt.json")
+// ReadAdvertisingData reads advertising data for a device
+func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) {
+	globalAdvertisingDataMu.RLock()
+	defer globalAdvertisingDataMu.RUnlock()
 
-	// Ensure directory exists
-	if err := os.MkdirAll(devicePath, 0755); err != nil {
-		return fmt.Errorf("failed to create device directory: %w", err)
+	advData, exists := globalAdvertisingData[deviceUUID]
+	if !exists {
+		// Return default advertising data if not found
+		return &AdvertisingData{
+			DeviceName:    fmt.Sprintf("Device-%s", deviceUUID[:8]),
+			ServiceUUIDs:  []string{},
+			IsConnectable: true,
+		}, nil
 	}
 
-	data, err := json.MarshalIndent(table, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal GATT table: %w", err)
-	}
-
-	return os.WriteFile(gattPath, data, 0644)
+	// Return a copy to prevent race conditions
+	return &AdvertisingData{
+		DeviceName:       advData.DeviceName,
+		ServiceUUIDs:     append([]string{}, advData.ServiceUUIDs...),
+		ManufacturerData: append([]byte{}, advData.ManufacturerData...),
+		TxPowerLevel:     advData.TxPowerLevel,
+		IsConnectable:    advData.IsConnectable,
+	}, nil
 }
 
-// ReadGATTTable reads GATT table from filesystem
-func (sw *Wire) ReadGATTTable(deviceUUID string) (*GATTTable, error) {
-	devicePath := phone.GetDeviceDir(deviceUUID)
-	gattPath := filepath.Join(devicePath, "gatt.json")
-
-	data, err := os.ReadFile(gattPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read GATT table: %w", err)
-	}
-
-	var table GATTTable
-	if err := json.Unmarshal(data, &table); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal GATT table: %w", err)
-	}
-
-	return &table, nil
+// GetRSSI returns simulated RSSI for a device (stub for old API)
+// TODO Step 4: Implement realistic RSSI simulation
+func (w *Wire) GetRSSI(deviceUUID string) float64 {
+	return -45.0 // Good signal strength
 }
 
-// WriteAdvertisingData writes advertising data to filesystem
-func (sw *Wire) WriteAdvertisingData(advData *AdvertisingData) error {
-	devicePath := phone.GetDeviceDir(sw.localUUID)
-	advPath := filepath.Join(devicePath, "advertising.json")
-
-	// Ensure directory exists
-	if err := os.MkdirAll(devicePath, 0755); err != nil {
-		return fmt.Errorf("failed to create device directory: %w", err)
-	}
-
-	data, err := json.MarshalIndent(advData, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal advertising data: %w", err)
-	}
-
-	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		"📡 TX Advertising Data", advData)
-
-	return os.WriteFile(advPath, data, 0644)
+// DeviceExists checks if a device exists (stub for old API)
+// TODO Step 4: Implement proper device discovery state tracking
+func (w *Wire) DeviceExists(deviceUUID string) bool {
+	// Check if device socket exists
+	socketPath := fmt.Sprintf("/tmp/auraphone-%s.sock", deviceUUID)
+	_, err := os.Stat(socketPath)
+	return err == nil
 }
 
-// ReadAdvertisingData reads advertising data from filesystem
-func (sw *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) {
-	devicePath := phone.GetDeviceDir(deviceUUID)
-	advPath := filepath.Join(devicePath, "advertising.json")
+// Disconnect closes connection to a peer (stub for old API)
+// TODO Step 4: Implement graceful disconnect
+func (w *Wire) Disconnect(peerUUID string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
-	data, err := os.ReadFile(advPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &AdvertisingData{
-				IsConnectable: true,
-			}, nil
+	connection, exists := w.connections[peerUUID]
+	if !exists {
+		return fmt.Errorf("not connected to %s", peerUUID)
+	}
+
+	// Stop reading goroutine
+	w.stopMu.Lock()
+	if stopChan, exists := w.stopReading[peerUUID]; exists {
+		select {
+		case <-stopChan:
+			// Already closed
+		default:
+			close(stopChan)
 		}
-		return nil, fmt.Errorf("failed to read advertising data: %w", err)
+		delete(w.stopReading, peerUUID)
+	}
+	w.stopMu.Unlock()
+
+	// Close connection
+	connection.conn.Close()
+	delete(w.connections, peerUUID)
+
+	// Trigger disconnect callback after cleanup
+	w.callbackMu.RLock()
+	callback := w.disconnectCallback
+	w.callbackMu.RUnlock()
+
+	if callback != nil {
+		// Call callback asynchronously to avoid blocking and potential deadlocks
+		go callback(peerUUID)
 	}
 
-	var advData AdvertisingData
-	if err := json.Unmarshal(data, &advData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal advertising data: %w", err)
-	}
-
-	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		fmt.Sprintf("📡 RX Advertising Data (from %s)", deviceUUID[:8]), &advData)
-
-	return &advData, nil
+	return nil
 }
 
-// NotifyCharacteristic sends a notification (automatically uses Peripheral connection)
-// In real BLE, notifications ALWAYS go from Peripheral to Central
-func (sw *Wire) NotifyCharacteristic(targetUUID, serviceUUID, charUUID string, data []byte) error {
-	// Get Peripheral connection (where we notify them)
-	sw.connMutex.RLock()
-	dualConn, exists := sw.connections[targetUUID]
-	sw.connMutex.RUnlock()
+// SimulatorStub is a stub for the old Simulator type
+type SimulatorStub struct {
+	ServiceDiscoveryDelay time.Duration
+}
 
+// GetSimulator returns a stub simulator (stub for old API)
+// TODO Step 4: Remove simulator dependency from swift layer
+func (w *Wire) GetSimulator() *SimulatorStub {
+	return &SimulatorStub{
+		ServiceDiscoveryDelay: 100 * time.Millisecond,
+	}
+}
+
+// ReadGATTTable reads GATT table from peer
+func (w *Wire) ReadGATTTable(peerUUID string) (*GATTTable, error) {
+	globalGATTTablesMu.RLock()
+	defer globalGATTTablesMu.RUnlock()
+
+	table, exists := globalGATTTables[peerUUID]
 	if !exists {
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
+		// Return empty GATT table if not found
+		return &GATTTable{
+			Services: []GATTService{},
+		}, nil
 	}
 
-	if dualConn.asPeripheral == nil {
-		return fmt.Errorf("no Peripheral connection to %s (cannot notify)", targetUUID[:8])
+	// Return a copy to prevent race conditions
+	tableCopy := &GATTTable{
+		Services: make([]GATTService, len(table.Services)),
 	}
+	copy(tableCopy.Services, table.Services)
 
-	// Check subscription state - notifications require prior subscription
-	// This matches real BLE behavior where Central must subscribe before receiving notifications
-	key := serviceUUID + charUUID
-	dualConn.asPeripheral.subMutex.RLock()
-	subscribed := dualConn.asPeripheral.subscriptions[key]
-	dualConn.asPeripheral.subMutex.RUnlock()
-
-	if !subscribed {
-		logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"⚠️  Cannot notify %s: not subscribed to characteristic %s (svc=%s)",
-			targetUUID[:8], charUUID[len(charUUID)-4:], serviceUUID[len(serviceUUID)-4:])
-		return fmt.Errorf("central not subscribed to characteristic %s", charUUID[:8])
-	}
-
-	msg := CharacteristicMessage{
-		Operation:   "notify",
-		ServiceUUID: serviceUUID,
-		CharUUID:    charUUID,
-		Data:        data,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  sw.localUUID,
-	}
-
-	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		fmt.Sprintf("📤 TX Notify [peripheral→central] (to %s, svc=%s, char=%s, %d bytes)",
-			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:], len(data)), &msg)
-
-	// Simulate notification drops (realistic BLE behavior)
-	if sw.simulator.ShouldNotificationDrop() {
-		logger.Trace(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-			"📉 Notification DROPPED (realistic BLE behavior, %d bytes lost)", len(data))
-		return nil
-	}
-
-	// Simulate notification latency
-	if sw.simulator.EnableNotificationReordering() {
-		delay := sw.simulator.NotificationDeliveryDelay()
-		go func() {
-			time.Sleep(delay)
-			if err := sw.sendCharacteristicMessageViaRole(dualConn.asPeripheral, targetUUID, &msg); err != nil {
-				logger.Warn(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-					"❌ Notification transmission FAILED to %s (async): %v", targetUUID[:8], err)
-			}
-		}()
-		return nil
-	}
-
-	return sw.sendCharacteristicMessageViaRole(dualConn.asPeripheral, targetUUID, &msg)
+	return tableCopy, nil
 }
 
-// SubscribeCharacteristic sends a subscription request (uses Central connection)
-// In real BLE, subscribe operations are sent from Central to Peripheral
-func (sw *Wire) SubscribeCharacteristic(targetUUID, serviceUUID, charUUID string) error {
-	// Get Central connection (subscriptions are Central → Peripheral operations)
-	sw.connMutex.RLock()
-	dualConn, exists := sw.connections[targetUUID]
-	sw.connMutex.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
+// WriteCharacteristic writes to a characteristic (stub for old API)
+// TODO Step 5: Implement via SendGATTMessage
+func (w *Wire) WriteCharacteristic(peerUUID, serviceUUID, charUUID string, data []byte) error {
+	msg := &GATTMessage{
+		Type:               "gatt_request",
+		Operation:          "write",
+		ServiceUUID:        serviceUUID,
+		CharacteristicUUID: charUUID,
+		Data:               data,
 	}
-
-	if dualConn.asCentral == nil {
-		return fmt.Errorf("no Central connection to %s (cannot subscribe)", targetUUID[:8])
-	}
-
-	msg := CharacteristicMessage{
-		Operation:   "subscribe",
-		ServiceUUID: serviceUUID,
-		CharUUID:    charUUID,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  sw.localUUID,
-	}
-
-	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		fmt.Sprintf("📤 TX Subscribe [central→peripheral] (to %s, svc=%s, char=%s)",
-			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
-
-	return sw.sendCharacteristicMessageViaRole(dualConn.asCentral, targetUUID, &msg)
+	return w.SendGATTMessage(peerUUID, msg)
 }
 
-// UnsubscribeCharacteristic sends an unsubscription request (uses Central connection)
-// In real BLE, unsubscribe operations are sent from Central to Peripheral
-func (sw *Wire) UnsubscribeCharacteristic(targetUUID, serviceUUID, charUUID string) error {
-	// Get Central connection
-	sw.connMutex.RLock()
-	dualConn, exists := sw.connections[targetUUID]
-	sw.connMutex.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
-	}
-
-	if dualConn.asCentral == nil {
-		return fmt.Errorf("no Central connection to %s (cannot unsubscribe)", targetUUID[:8])
-	}
-
-	msg := CharacteristicMessage{
-		Operation:   "unsubscribe",
-		ServiceUUID: serviceUUID,
-		CharUUID:    charUUID,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  sw.localUUID,
-	}
-
-	logger.TraceJSON(fmt.Sprintf("%s %s", sw.localUUID[:8], sw.platform),
-		fmt.Sprintf("📤 TX Unsubscribe [central→peripheral] (to %s, svc=%s, char=%s)",
-			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
-
-	return sw.sendCharacteristicMessageViaRole(dualConn.asCentral, targetUUID, &msg)
+// WriteCharacteristicNoResponse writes without waiting for response (stub for old API)
+// TODO Step 5: Implement via SendGATTMessage
+func (w *Wire) WriteCharacteristicNoResponse(peerUUID, serviceUUID, charUUID string, data []byte) error {
+	// Same as WriteCharacteristic for now
+	return w.WriteCharacteristic(peerUUID, serviceUUID, charUUID, data)
 }
 
-// ReadCharacteristic sends a read request to target device (uses Central connection)
-// In real BLE, read operations are sent from Central to Peripheral
-func (w *Wire) ReadCharacteristic(targetUUID, serviceUUID, charUUID string) error {
-	// Get Central connection (reads are Central → Peripheral operations)
-	w.connMutex.RLock()
-	dualConn, exists := w.connections[targetUUID]
-	w.connMutex.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("not connected to %s", targetUUID[:8])
-	}
-
-	if dualConn.asCentral == nil {
-		return fmt.Errorf("no Central connection to %s (cannot read)", targetUUID[:8])
-	}
-
-	msg := CharacteristicMessage{
-		Operation:   "read",
-		ServiceUUID: serviceUUID,
-		CharUUID:    charUUID,
-		Timestamp:   time.Now().UnixNano(),
-		SenderUUID:  w.localUUID,
-	}
-
-	logger.TraceJSON(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-		fmt.Sprintf("📤 TX Read Request [central→peripheral] (to %s, svc=%s, char=%s)",
-			targetUUID[:8], serviceUUID[len(serviceUUID)-4:], charUUID[len(charUUID)-4:]), &msg)
-
-	return w.sendCharacteristicMessageViaRole(dualConn.asCentral, targetUUID, &msg)
+// ReadCharacteristic reads from a characteristic (stub for old API)
+// TODO Step 5: Implement via SendGATTMessage request/response
+func (w *Wire) ReadCharacteristic(peerUUID, serviceUUID, charUUID string) error {
+	// Not implemented yet - return error for now
+	return fmt.Errorf("ReadCharacteristic not implemented in Step 3")
 }
 
-// ReadAndConsumeCharacteristicMessagesFromInbox reads messages from a specific inbox type
-// This provides compatibility with dual-role devices (iOS/Android) that have separate
-// central_inbox and peripheral_inbox for bidirectional communication
-//
-// In the socket implementation, there's one unified message queue, but we need to filter
-// messages by their intended recipient role to prevent one polling loop from consuming
-// messages meant for the other role.
-func (w *Wire) ReadAndConsumeCharacteristicMessagesFromInbox(inboxType string) ([]*CharacteristicMessage, error) {
-	w.queueMutex.Lock()
-	defer w.queueMutex.Unlock()
-
-	logger.Trace(fmt.Sprintf("%s %s", w.localUUID[:8], w.platform),
-		"📬 Reading from %s (filtering by role)", inboxType)
-
-	if len(w.messageQueue) == 0 {
-		return nil, nil
+// SubscribeCharacteristic subscribes to notifications (stub for old API)
+// TODO Step 6: Implement via SendGATTMessage subscribe operation
+func (w *Wire) SubscribeCharacteristic(peerUUID, serviceUUID, charUUID string) error {
+	msg := &GATTMessage{
+		Type:               "gatt_request",
+		Operation:          "subscribe",
+		ServiceUUID:        serviceUUID,
+		CharacteristicUUID: charUUID,
 	}
-
-	// Filter messages based on inbox type (operation determines which role should handle it)
-	var filtered []*CharacteristicMessage
-	var remaining []*CharacteristicMessage
-
-	for _, msg := range w.messageQueue {
-		var belongsToThisInbox bool
-
-		if inboxType == "central_inbox" {
-			// Central inbox receives notifications/indications from peripherals
-			belongsToThisInbox = (msg.Operation == "notify" || msg.Operation == "indicate")
-		} else { // "peripheral_inbox"
-			// Peripheral inbox receives writes/reads/subscribes from centrals
-			belongsToThisInbox = (msg.Operation == "write" || msg.Operation == "write_no_response" ||
-			                      msg.Operation == "read" || msg.Operation == "subscribe" || msg.Operation == "unsubscribe")
-		}
-
-		if belongsToThisInbox {
-			filtered = append(filtered, msg)
-		} else {
-			remaining = append(remaining, msg)
-		}
-	}
-
-	// Update queue to only contain messages not consumed by this call
-	w.messageQueue = remaining
-
-	return filtered, nil
+	return w.SendGATTMessage(peerUUID, msg)
 }
 
-// RequeueMessage puts a message back into the queue
-// This is used when a message is consumed but not processed (wrong recipient)
-func (w *Wire) RequeueMessage(msg *CharacteristicMessage) {
-	w.queueMutex.Lock()
-	defer w.queueMutex.Unlock()
+// UnsubscribeCharacteristic unsubscribes from notifications (stub for old API)
+// TODO Step 6: Implement via SendGATTMessage unsubscribe operation
+func (w *Wire) UnsubscribeCharacteristic(peerUUID, serviceUUID, charUUID string) error {
+	msg := &GATTMessage{
+		Type:               "gatt_request",
+		Operation:          "unsubscribe",
+		ServiceUUID:        serviceUUID,
+		CharacteristicUUID: charUUID,
+	}
+	return w.SendGATTMessage(peerUUID, msg)
+}
 
-	// Add message back to the front of the queue for priority processing
-	w.messageQueue = append([]*CharacteristicMessage{msg}, w.messageQueue...)
+// WriteGATTTable writes GATT table to global registry
+func (w *Wire) WriteGATTTable(table *GATTTable) error {
+	globalGATTTablesMu.Lock()
+	defer globalGATTTablesMu.Unlock()
+
+	// Store a copy to prevent race conditions
+	tableCopy := &GATTTable{
+		Services: make([]GATTService, len(table.Services)),
+	}
+	copy(tableCopy.Services, table.Services)
+
+	globalGATTTables[w.hardwareUUID] = tableCopy
+	return nil
+}
+
+// WriteAdvertisingData writes advertising data to global registry
+func (w *Wire) WriteAdvertisingData(data *AdvertisingData) error {
+	globalAdvertisingDataMu.Lock()
+	defer globalAdvertisingDataMu.Unlock()
+
+	// Store a copy to prevent race conditions
+	dataCopy := &AdvertisingData{
+		DeviceName:       data.DeviceName,
+		ServiceUUIDs:     append([]string{}, data.ServiceUUIDs...),
+		ManufacturerData: append([]byte{}, data.ManufacturerData...),
+		TxPowerLevel:     data.TxPowerLevel,
+		IsConnectable:    data.IsConnectable,
+	}
+
+	globalAdvertisingData[w.hardwareUUID] = dataCopy
+	return nil
+}
+
+// NotifyCharacteristic sends a notification (stub for old API)
+// TODO Step 6: Implement via SendGATTMessage notification
+func (w *Wire) NotifyCharacteristic(peerUUID, serviceUUID, charUUID string, data []byte) error {
+	msg := &GATTMessage{
+		Type:               "gatt_notification",
+		ServiceUUID:        serviceUUID,
+		CharacteristicUUID: charUUID,
+		Data:               data,
+	}
+	return w.SendGATTMessage(peerUUID, msg)
+}
+
+// ReadAndConsumeCharacteristicMessagesFromInbox reads messages (stub for old API)
+// TODO Step 5: Remove inbox polling pattern, use SetGATTMessageHandler instead
+func (w *Wire) ReadAndConsumeCharacteristicMessagesFromInbox(deviceUUID string) ([]*CharacteristicMessage, error) {
+	// Return empty list - new architecture uses callbacks, not polling
+	return []*CharacteristicMessage{}, nil
 }

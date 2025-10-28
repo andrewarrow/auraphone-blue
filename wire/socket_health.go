@@ -58,7 +58,7 @@ type SocketHealthSnapshot struct {
 
 // NewSocketHealthMonitor creates a new socket health monitor
 func NewSocketHealthMonitor(deviceUUID string) *SocketHealthMonitor {
-	dataDir := phone.GetDeviceDir(deviceUUID)
+	dataDir := phone.GetDeviceCacheDir(deviceUUID)
 	snapshotFile := filepath.Join(dataDir, "socket_health.json")
 
 	return &SocketHealthMonitor{

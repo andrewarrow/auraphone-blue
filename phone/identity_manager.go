@@ -6,19 +6,22 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
-
-	"github.com/user/auraphone-blue/logger"
 )
 
 // IdentityManager maintains bidirectional mapping between hardware UUIDs and device IDs
 // This is the ONLY place where this mapping should exist
+//
+// CRITICAL RULES:
+// 1. Wire layer ALWAYS uses hardware UUIDs (never DeviceIDs)
+// 2. Application layer uses DeviceIDs for display
+// 3. When sending: DeviceID → lookup hardware UUID → send via wire
+// 4. When receiving: hardware UUID → lookup DeviceID → display to user
 type IdentityManager struct {
 	mu              sync.RWMutex
 	ourHardwareUUID string
 	ourDeviceID     string
 
-	// Bidirectional mapping
+	// Bidirectional mapping (THE ONLY PLACE this exists)
 	hardwareToDevice map[string]string // hardware UUID -> device ID
 	deviceToHardware map[string]string // device ID -> hardware UUID
 
@@ -33,7 +36,6 @@ type IdentityManager struct {
 type IdentityMapping struct {
 	HardwareUUID string `json:"hardware_uuid"`
 	DeviceID     string `json:"device_id"`
-	LastSeen     int64  `json:"last_seen"`
 }
 
 // IdentityManagerState represents the complete persisted state
@@ -41,17 +43,6 @@ type IdentityManagerState struct {
 	OurHardwareUUID string            `json:"our_hardware_uuid"`
 	OurDeviceID     string            `json:"our_device_id"`
 	Mappings        []IdentityMapping `json:"mappings"`
-}
-
-// truncateForLog safely truncates a string for logging (max 8 chars)
-func truncateForLog(s string) string {
-	if len(s) > 8 {
-		return s[:8]
-	}
-	if s == "" {
-		return "(empty)"
-	}
-	return s
 }
 
 // NewIdentityManager creates a new identity manager
@@ -73,6 +64,7 @@ func NewIdentityManager(ourHardwareUUID, ourDeviceID, dataDir string) *IdentityM
 }
 
 // RegisterDevice adds or updates a hardware UUID <-> device ID mapping
+// Called after handshake when we learn a peer's device ID
 func (im *IdentityManager) RegisterDevice(hardwareUUID, deviceID string) {
 	if hardwareUUID == "" || deviceID == "" {
 		return
@@ -81,28 +73,13 @@ func (im *IdentityManager) RegisterDevice(hardwareUUID, deviceID string) {
 	im.mu.Lock()
 	defer im.mu.Unlock()
 
-	// Check if this is a new mapping or an update
-	existingDeviceID, hadHardware := im.hardwareToDevice[hardwareUUID]
-	existingHardwareUUID, hadDevice := im.deviceToHardware[deviceID]
-
 	// Update bidirectional mapping
 	im.hardwareToDevice[hardwareUUID] = deviceID
 	im.deviceToHardware[deviceID] = hardwareUUID
-
-	// Clean up old mappings if hardware UUID or device ID changed
-	if hadHardware && existingDeviceID != deviceID {
-		delete(im.deviceToHardware, existingDeviceID)
-		logger.Debug(truncateForLog(im.ourHardwareUUID), "Identity mapping updated: hardware %s now maps to device %s (was %s)",
-			truncateForLog(hardwareUUID), truncateForLog(deviceID), truncateForLog(existingDeviceID))
-	}
-	if hadDevice && existingHardwareUUID != hardwareUUID {
-		delete(im.hardwareToDevice, existingHardwareUUID)
-		logger.Debug(truncateForLog(im.ourHardwareUUID), "Identity mapping updated: device %s now maps to hardware %s (was %s)",
-			truncateForLog(deviceID), truncateForLog(hardwareUUID), truncateForLog(existingHardwareUUID))
-	}
 }
 
 // GetDeviceID looks up device ID from hardware UUID
+// Returns ("", false) if not yet handshaked
 func (im *IdentityManager) GetDeviceID(hardwareUUID string) (string, bool) {
 	im.mu.RLock()
 	defer im.mu.RUnlock()
@@ -112,6 +89,7 @@ func (im *IdentityManager) GetDeviceID(hardwareUUID string) (string, bool) {
 }
 
 // GetHardwareUUID looks up hardware UUID from device ID
+// CRITICAL: Use this before sending messages via wire!
 func (im *IdentityManager) GetHardwareUUID(deviceID string) (string, bool) {
 	im.mu.RLock()
 	defer im.mu.RUnlock()
@@ -120,7 +98,7 @@ func (im *IdentityManager) GetHardwareUUID(deviceID string) (string, bool) {
 	return hardwareUUID, ok
 }
 
-// MarkConnected marks a device as currently connected
+// MarkConnected marks a device as currently connected (by hardware UUID)
 func (im *IdentityManager) MarkConnected(hardwareUUID string) {
 	if hardwareUUID == "" {
 		return
@@ -129,20 +107,10 @@ func (im *IdentityManager) MarkConnected(hardwareUUID string) {
 	im.mu.Lock()
 	defer im.mu.Unlock()
 
-	wasConnected := im.connectedDevices[hardwareUUID]
 	im.connectedDevices[hardwareUUID] = true
-
-	if !wasConnected {
-		deviceID := im.hardwareToDevice[hardwareUUID]
-		if deviceID == "" {
-			deviceID = "(unknown)"
-		}
-		logger.Debug(truncateForLog(im.ourHardwareUUID), "Device marked as connected: hardware=%s device=%s",
-			truncateForLog(hardwareUUID), truncateForLog(deviceID))
-	}
 }
 
-// MarkDisconnected marks a device as disconnected
+// MarkDisconnected marks a device as disconnected (by hardware UUID)
 func (im *IdentityManager) MarkDisconnected(hardwareUUID string) {
 	if hardwareUUID == "" {
 		return
@@ -151,17 +119,7 @@ func (im *IdentityManager) MarkDisconnected(hardwareUUID string) {
 	im.mu.Lock()
 	defer im.mu.Unlock()
 
-	wasConnected := im.connectedDevices[hardwareUUID]
 	delete(im.connectedDevices, hardwareUUID)
-
-	if wasConnected {
-		deviceID := im.hardwareToDevice[hardwareUUID]
-		if deviceID == "" {
-			deviceID = "(unknown)"
-		}
-		logger.Debug(truncateForLog(im.ourHardwareUUID), "Device marked as disconnected: hardware=%s device=%s",
-			truncateForLog(hardwareUUID), truncateForLog(deviceID))
-	}
 }
 
 // IsConnected checks if a device is currently reachable by hardware UUID
@@ -185,37 +143,6 @@ func (im *IdentityManager) IsConnectedByDeviceID(deviceID string) bool {
 	return im.connectedDevices[hardwareUUID]
 }
 
-// GetAllConnectedDevices returns list of connected device IDs
-func (im *IdentityManager) GetAllConnectedDevices() []string {
-	im.mu.RLock()
-	defer im.mu.RUnlock()
-
-	connectedDeviceIDs := []string{}
-	for hardwareUUID := range im.connectedDevices {
-		if deviceID, ok := im.hardwareToDevice[hardwareUUID]; ok {
-			connectedDeviceIDs = append(connectedDeviceIDs, deviceID)
-		}
-	}
-
-	return connectedDeviceIDs
-}
-
-// GetAllKnownDevices returns all device IDs we've ever seen
-func (im *IdentityManager) GetAllKnownDevices() []string {
-	im.mu.RLock()
-	defer im.mu.RUnlock()
-
-	deviceIDs := make([]string, 0, len(im.deviceToHardware))
-	for deviceID := range im.deviceToHardware {
-		// Skip ourselves
-		if deviceID != im.ourDeviceID {
-			deviceIDs = append(deviceIDs, deviceID)
-		}
-	}
-
-	return deviceIDs
-}
-
 // GetOurDeviceID returns our own device ID
 func (im *IdentityManager) GetOurDeviceID() string {
 	im.mu.RLock()
@@ -230,14 +157,13 @@ func (im *IdentityManager) GetOurHardwareUUID() string {
 	return im.ourHardwareUUID
 }
 
-// SaveToDisk persists mappings to disk
+// SaveToDisk persists mappings to disk (atomic write)
 func (im *IdentityManager) SaveToDisk() error {
 	im.mu.RLock()
 	defer im.mu.RUnlock()
 
 	// Build list of mappings (excluding ourselves)
 	mappings := []IdentityMapping{}
-	now := time.Now().Unix()
 
 	for hardwareUUID, deviceID := range im.hardwareToDevice {
 		// Skip our own mapping
@@ -248,7 +174,6 @@ func (im *IdentityManager) SaveToDisk() error {
 		mappings = append(mappings, IdentityMapping{
 			HardwareUUID: hardwareUUID,
 			DeviceID:     deviceID,
-			LastSeen:     now,
 		})
 	}
 
@@ -264,7 +189,7 @@ func (im *IdentityManager) SaveToDisk() error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	// Write to temp file first (atomic write pattern)
+	// Atomic write pattern: temp file + rename
 	tempPath := im.statePath + ".tmp"
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -275,12 +200,10 @@ func (im *IdentityManager) SaveToDisk() error {
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 
-	// Atomic rename
 	if err := os.Rename(tempPath, im.statePath); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
-	logger.Debug(truncateForLog(im.ourHardwareUUID), "Identity mappings saved: %d devices", len(mappings))
 	return nil
 }
 
@@ -291,8 +214,7 @@ func (im *IdentityManager) LoadFromDisk() error {
 
 	// Check if file exists
 	if _, err := os.Stat(im.statePath); os.IsNotExist(err) {
-		logger.Debug(truncateForLog(im.ourHardwareUUID), "No identity mappings file found, starting fresh")
-		return nil
+		return nil // No saved state, starting fresh
 	}
 
 	// Read file
@@ -309,21 +231,16 @@ func (im *IdentityManager) LoadFromDisk() error {
 
 	// Verify our identity matches
 	if state.OurHardwareUUID != im.ourHardwareUUID {
-		logger.Warn(truncateForLog(im.ourHardwareUUID), "Hardware UUID mismatch in saved state: expected=%s got=%s",
-			truncateForLog(im.ourHardwareUUID), truncateForLog(state.OurHardwareUUID))
-		// Don't load mappings if our identity changed
+		// Hardware UUID changed - don't load old mappings
 		return nil
 	}
 
 	if state.OurDeviceID != im.ourDeviceID {
-		logger.Warn(truncateForLog(im.ourHardwareUUID), "Device ID mismatch in saved state: expected=%s got=%s",
-			truncateForLog(im.ourDeviceID), truncateForLog(state.OurDeviceID))
-		// Don't load mappings if our identity changed
+		// Device ID changed - don't load old mappings
 		return nil
 	}
 
 	// Load mappings
-	loaded := 0
 	for _, mapping := range state.Mappings {
 		if mapping.HardwareUUID == "" || mapping.DeviceID == "" {
 			continue
@@ -336,31 +253,7 @@ func (im *IdentityManager) LoadFromDisk() error {
 
 		im.hardwareToDevice[mapping.HardwareUUID] = mapping.DeviceID
 		im.deviceToHardware[mapping.DeviceID] = mapping.HardwareUUID
-		loaded++
 	}
 
-	logger.Debug(truncateForLog(im.ourHardwareUUID), "Identity mappings loaded: %d devices", loaded)
 	return nil
-}
-
-// GetMappingCount returns the number of known device mappings (excluding ourselves)
-func (im *IdentityManager) GetMappingCount() int {
-	im.mu.RLock()
-	defer im.mu.RUnlock()
-
-	// Subtract 1 for our own mapping
-	count := len(im.hardwareToDevice)
-	if _, hasOurMapping := im.hardwareToDevice[im.ourHardwareUUID]; hasOurMapping {
-		count--
-	}
-
-	return count
-}
-
-// GetConnectedCount returns the number of currently connected devices
-func (im *IdentityManager) GetConnectedCount() int {
-	im.mu.RLock()
-	defer im.mu.RUnlock()
-
-	return len(im.connectedDevices)
 }
