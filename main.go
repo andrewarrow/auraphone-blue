@@ -22,6 +22,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
+	"github.com/user/auraphone-blue/android"
 	"github.com/user/auraphone-blue/iphone"
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
@@ -85,12 +86,14 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 		deviceFirstNames:  make(map[string]string),
 	}
 
-	// Create platform-specific phone with hardware UUID (only iOS for now)
-	// NewIPhone will load/generate DeviceID and firstName internally
+	// Create platform-specific phone with hardware UUID
+	// NewIPhone/NewAndroid will load/generate DeviceID and firstName internally
 	if platformType == "iOS" {
 		pw.phone = iphone.NewIPhone(hardwareUUID)
+	} else if platformType == "Android" {
+		pw.phone = android.NewAndroid(hardwareUUID)
 	} else {
-		fmt.Printf("Android not yet implemented in this refactor\n")
+		fmt.Printf("Unknown platform type: %s\n", platformType)
 		return nil
 	}
 
@@ -969,11 +972,16 @@ func (l *Launcher) buildUI(initialLogLevel string) fyne.CanvasObject {
 		}
 	})
 
-	// Start Android button (disabled during refactor)
-	androidBtn := widget.NewButton("Start Android Device (Not Yet Implemented)", func() {
-		fmt.Println("Android not yet implemented in this refactor")
+	// Start Android button
+	androidBtn := widget.NewButton("Start Android Device", func() {
+		// Small delay to ensure unique random seed if multiple devices started quickly
+		time.Sleep(10 * time.Millisecond)
+		phoneWindow := NewPhoneWindow(l.app, "Android")
+		if phoneWindow != nil {
+			phoneWindow.Show()
+			fmt.Printf("Started Android device (UUID: %s)\n", phoneWindow.phone.GetDeviceUUID()[:8])
+		}
 	})
-	androidBtn.Disable()
 
 	// Info text
 	infoText := widget.NewLabel("Click a button to launch a new phone.\nClose a phone window to stop that device.")
