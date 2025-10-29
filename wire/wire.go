@@ -2,7 +2,6 @@ package wire
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +12,8 @@ import (
 
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/util"
+	"github.com/user/auraphone-blue/wire/att"
+	"github.com/user/auraphone-blue/wire/l2cap"
 )
 
 // Real BLE behavior: advertising data and GATT tables are stored per-device
@@ -315,6 +316,21 @@ func (w *Wire) Connect(peerUUID string) error {
 
 	go w.readMessages(peerUUID, connection, stopChan)
 
+	// Initiate MTU exchange as Central (we initiated the connection)
+	// In real BLE, the Central typically initiates MTU negotiation
+	go func() {
+		time.Sleep(10 * time.Millisecond) // Small delay to ensure read loop is running
+		mtuReq := &att.ExchangeMTURequest{
+			ClientRxMTU: uint16(MaxMTU), // Request our maximum MTU
+		}
+		err := w.sendATTPacket(peerUUID, mtuReq)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to send MTU request to %s: %v", shortHash(peerUUID), err)
+		} else {
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📤 MTU Request to %s: client_mtu=%d", shortHash(peerUUID), MaxMTU)
+		}
+	}()
+
 	return nil
 }
 
@@ -358,31 +374,32 @@ func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan ch
 		default:
 		}
 
-		// Read message length (4 bytes)
-		var msgLen uint32
-		err := binary.Read(connection.conn, binary.BigEndian, &msgLen)
+		// Read L2CAP packet length (2 bytes, little-endian)
+		var l2capLen uint16
+		err := binary.Read(connection.conn, binary.LittleEndian, &l2capLen)
 		if err != nil {
 			return // Connection closed or error
 		}
 
-		// Read message data (JSON-encoded GATTMessage)
-		msgData := make([]byte, msgLen)
-		_, err = io.ReadFull(connection.conn, msgData)
+		// Read the rest of the L2CAP header and payload
+		// Total packet size = 4 bytes header (2 len + 2 channel) + payload
+		packetData := make([]byte, l2cap.L2CAPHeaderLen+int(l2capLen))
+		binary.LittleEndian.PutUint16(packetData[0:2], l2capLen)
+
+		_, err = io.ReadFull(connection.conn, packetData[2:])
 		if err != nil {
 			return // Connection closed or error
 		}
 
-		// Parse GATT message
-		var msg GATTMessage
-		err = json.Unmarshal(msgData, &msg)
+		// Decode L2CAP packet
+		l2capPacket, err := l2cap.Decode(packetData)
 		if err != nil {
-			// Invalid message, skip it
-			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to unmarshal GATT message from %s: %v", shortHash(peerUUID), err)
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to decode L2CAP packet from %s: %v", shortHash(peerUUID), err)
 			continue
 		}
 
-		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📥 Received GATT message from %s: op=%s, len=%d bytes",
-			shortHash(peerUUID), msg.Operation, len(msgData))
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📥 Received L2CAP packet from %s: channel=0x%04X, len=%d bytes",
+			shortHash(peerUUID), l2capPacket.ChannelID, len(l2capPacket.Payload))
 
 		// Track message received in health monitor
 		socketType := string(connection.role)
@@ -393,55 +410,200 @@ func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan ch
 		}
 		w.socketHealthMonitor.RecordMessageReceived(socketType, peerUUID)
 
-		// Call GATT handler
-		w.handlerMu.RLock()
-		handler := w.gattHandler
-		w.handlerMu.RUnlock()
+		// Route based on L2CAP channel
+		switch l2capPacket.ChannelID {
+		case l2cap.ChannelATT:
+			// Decode ATT packet
+			attPacket, err := att.DecodePacket(l2capPacket.Payload)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to decode ATT packet from %s: %v", shortHash(peerUUID), err)
+				continue
+			}
 
-		if handler != nil {
-			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "   ➡️  Calling GATT handler for message from %s", shortHash(peerUUID))
-			handler(peerUUID, &msg)
-		} else {
-			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  No GATT handler registered for message from %s", shortHash(peerUUID))
+			// Handle ATT packet
+			w.handleATTPacket(peerUUID, connection, attPacket)
+
+		default:
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  Unsupported L2CAP channel 0x%04X from %s", l2capPacket.ChannelID, shortHash(peerUUID))
 		}
 	}
 }
 
-// SendGATTMessage sends a GATT message to a peer
-func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
-	// Set sender UUID if not already set
-	if msg.SenderUUID == "" {
-		msg.SenderUUID = w.hardwareUUID
-	}
+// handleATTPacket processes an incoming ATT packet
+func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet interface{}) {
+	switch p := packet.(type) {
+	case *att.ExchangeMTURequest:
+		// Peer is requesting MTU exchange
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📥 MTU Request from %s: client_mtu=%d", shortHash(peerUUID), p.ClientRxMTU)
 
-	// Marshal message to JSON
-	data, err := json.Marshal(msg)
+		// Determine the MTU to use (minimum of client and our max)
+		negotiatedMTU := int(p.ClientRxMTU)
+		if negotiatedMTU > MaxMTU {
+			negotiatedMTU = MaxMTU
+		}
+		if negotiatedMTU < l2cap.MinMTU {
+			negotiatedMTU = l2cap.MinMTU
+		}
+
+		// Update connection MTU
+		connection.mtu = negotiatedMTU
+
+		// Send MTU response
+		response := &att.ExchangeMTUResponse{
+			ServerRxMTU: uint16(negotiatedMTU),
+		}
+		err := w.sendATTPacket(peerUUID, response)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to send MTU response to %s: %v", shortHash(peerUUID), err)
+		}
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📤 MTU Response to %s: server_mtu=%d", shortHash(peerUUID), negotiatedMTU)
+
+	case *att.ExchangeMTUResponse:
+		// Peer responded to our MTU request
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📥 MTU Response from %s: server_mtu=%d", shortHash(peerUUID), p.ServerRxMTU)
+
+		// Determine the MTU to use (minimum of server and our request)
+		negotiatedMTU := int(p.ServerRxMTU)
+		if negotiatedMTU > MaxMTU {
+			negotiatedMTU = MaxMTU
+		}
+		if negotiatedMTU < l2cap.MinMTU {
+			negotiatedMTU = l2cap.MinMTU
+		}
+
+		// Update connection MTU
+		connection.mtu = negotiatedMTU
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "✅ MTU negotiated with %s: %d bytes", shortHash(peerUUID), negotiatedMTU)
+
+	case *att.ReadRequest, *att.WriteRequest, *att.WriteCommand,
+		*att.ReadResponse, *att.WriteResponse, *att.ErrorResponse,
+		*att.HandleValueNotification, *att.HandleValueIndication:
+		// These are GATT operations - convert to GATTMessage for compatibility
+		// TODO: Remove this conversion once higher layers use binary protocol directly
+		msg := w.attToGATTMessage(packet)
+		if msg != nil {
+			w.handlerMu.RLock()
+			handler := w.gattHandler
+			w.handlerMu.RUnlock()
+
+			if handler != nil {
+				logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "   ➡️  Calling GATT handler for ATT packet from %s", shortHash(peerUUID))
+				handler(peerUUID, msg)
+			} else {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  No GATT handler registered for ATT packet from %s", shortHash(peerUUID))
+			}
+		}
+
+	default:
+		logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  Unsupported ATT packet type %T from %s", packet, shortHash(peerUUID))
+	}
+}
+
+// attToGATTMessage converts an ATT packet to a GATTMessage for backward compatibility
+// TODO: Remove this once higher layers use binary protocol directly
+func (w *Wire) attToGATTMessage(packet interface{}) *GATTMessage {
+	switch p := packet.(type) {
+	case *att.ReadRequest:
+		// Convert handle back to UUIDs (reverse of uuidToHandle)
+		// For now, we use placeholder UUIDs since we don't have a reverse mapping
+		return &GATTMessage{
+			Type:               "gatt_request",
+			Operation:          "read",
+			ServiceUUID:        fmt.Sprintf("service-handle-%04x", p.Handle),
+			CharacteristicUUID: fmt.Sprintf("char-handle-%04x", p.Handle),
+		}
+
+	case *att.ReadResponse:
+		return &GATTMessage{
+			Type:      "gatt_response",
+			Operation: "read",
+			Status:    "success",
+			Data:      p.Value,
+		}
+
+	case *att.WriteRequest:
+		return &GATTMessage{
+			Type:               "gatt_request",
+			Operation:          "write",
+			ServiceUUID:        fmt.Sprintf("service-handle-%04x", p.Handle),
+			CharacteristicUUID: fmt.Sprintf("char-handle-%04x", p.Handle),
+			Data:               p.Value,
+		}
+
+	case *att.WriteCommand:
+		return &GATTMessage{
+			Type:               "gatt_request",
+			Operation:          "write",
+			ServiceUUID:        fmt.Sprintf("service-handle-%04x", p.Handle),
+			CharacteristicUUID: fmt.Sprintf("char-handle-%04x", p.Handle),
+			Data:               p.Value,
+		}
+
+	case *att.WriteResponse:
+		return &GATTMessage{
+			Type:      "gatt_response",
+			Operation: "write",
+			Status:    "success",
+		}
+
+	case *att.HandleValueNotification:
+		return &GATTMessage{
+			Type:               "gatt_notification",
+			Operation:          "notify",
+			ServiceUUID:        fmt.Sprintf("service-handle-%04x", p.Handle),
+			CharacteristicUUID: fmt.Sprintf("char-handle-%04x", p.Handle),
+			Data:               p.Value,
+		}
+
+	case *att.HandleValueIndication:
+		return &GATTMessage{
+			Type:               "gatt_notification",
+			Operation:          "indicate",
+			ServiceUUID:        fmt.Sprintf("service-handle-%04x", p.Handle),
+			CharacteristicUUID: fmt.Sprintf("char-handle-%04x", p.Handle),
+			Data:               p.Value,
+		}
+
+	case *att.ErrorResponse:
+		return &GATTMessage{
+			Type:      "gatt_response",
+			Operation: "unknown",
+			Status:    "error",
+		}
+
+	default:
+		return nil
+	}
+}
+
+// sendATTPacket sends an ATT packet to a peer
+func (w *Wire) sendATTPacket(peerUUID string, packet interface{}) error {
+	// Encode ATT packet
+	attData, err := att.EncodePacket(packet)
 	if err != nil {
-		return fmt.Errorf("failed to marshal GATT message: %w", err)
+		return fmt.Errorf("failed to encode ATT packet: %w", err)
 	}
 
+	// Wrap in L2CAP packet
+	l2capPacket := l2cap.NewATTPacket(attData)
+
+	// Send L2CAP packet
+	return w.sendL2CAPPacket(peerUUID, l2capPacket)
+}
+
+// sendL2CAPPacket sends an L2CAP packet to a peer
+func (w *Wire) sendL2CAPPacket(peerUUID string, packet *l2cap.Packet) error {
 	w.mu.RLock()
 	connection, exists := w.connections[peerUUID]
 	w.mu.RUnlock()
 
 	if !exists {
-		logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ SendGATTMessage: not connected to %s", shortHash(peerUUID))
+		logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ sendL2CAPPacket: not connected to %s", shortHash(peerUUID))
 		return fmt.Errorf("not connected to %s", peerUUID)
 	}
 
-	// Enforce MTU limits (real BLE requires manual fragmentation)
-	// We allow the full message through for now, but warn if it exceeds MTU
-	// In real BLE, messages larger than MTU must be manually fragmented or they fail
-	if len(data) > connection.mtu {
-		logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
-			"⚠️  Message size (%d bytes) exceeds MTU (%d bytes) - would fail in real BLE without fragmentation",
-			len(data), connection.mtu)
-		// For now, we'll allow it through since tests expect large messages to work
-		// TODO: Make this a hard error once fragmentation is implemented
-	}
-
-	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📡 SendGATTMessage to %s: op=%s, len=%d bytes",
-		shortHash(peerUUID), msg.Operation, len(data))
+	// Encode L2CAP packet
+	data := packet.Encode()
 
 	// Simulate connection interval latency (real BLE has 7.5-50ms intervals)
 	time.Sleep(connectionIntervalDelay())
@@ -450,20 +612,14 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 	connection.sendMutex.Lock()
 	defer connection.sendMutex.Unlock()
 
-	// Send length-prefixed message
-	msgLen := uint32(len(data))
-
-	// Write length
-	err = binary.Write(connection.conn, binary.BigEndian, msgLen)
+	// Write packet data
+	_, err := connection.conn.Write(data)
 	if err != nil {
-		return fmt.Errorf("failed to send message length: %w", err)
+		return fmt.Errorf("failed to send L2CAP packet: %w", err)
 	}
 
-	// Write data
-	_, err = connection.conn.Write(data)
-	if err != nil {
-		return fmt.Errorf("failed to send message data: %w", err)
-	}
+	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📡 Sent L2CAP packet to %s: channel=0x%04X, len=%d bytes",
+		shortHash(peerUUID), packet.ChannelID, len(data))
 
 	// Track message sent in health monitor
 	socketType := string(connection.role)
@@ -475,6 +631,105 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 	w.socketHealthMonitor.RecordMessageSent(socketType, peerUUID)
 
 	return nil
+}
+
+// SendGATTMessage sends a GATT message to a peer
+// This function converts the high-level GATTMessage to binary ATT packets
+func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
+	// Set sender UUID if not already set
+	if msg.SenderUUID == "" {
+		msg.SenderUUID = w.hardwareUUID
+	}
+
+	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📡 SendGATTMessage to %s: op=%s, type=%s",
+		shortHash(peerUUID), msg.Operation, msg.Type)
+
+	// Convert GATTMessage to ATT packet
+	// For now, we use a simple handle mapping (UUID hash to handle)
+	// TODO: Implement proper GATT handle database with discovery
+	var attPacket interface{}
+	var err error
+
+	switch msg.Type {
+	case "gatt_request":
+		switch msg.Operation {
+		case "write":
+			// Map UUID to handle (simplified for now)
+			handle := w.uuidToHandle(msg.ServiceUUID, msg.CharacteristicUUID)
+			attPacket = &att.WriteRequest{
+				Handle: handle,
+				Value:  msg.Data,
+			}
+		case "read":
+			// Map UUID to handle
+			handle := w.uuidToHandle(msg.ServiceUUID, msg.CharacteristicUUID)
+			attPacket = &att.ReadRequest{
+				Handle: handle,
+			}
+		default:
+			return fmt.Errorf("unsupported operation: %s", msg.Operation)
+		}
+
+	case "gatt_response":
+		switch msg.Status {
+		case "success":
+			if msg.Operation == "read" {
+				attPacket = &att.ReadResponse{
+					Value: msg.Data,
+				}
+			} else if msg.Operation == "write" {
+				attPacket = &att.WriteResponse{}
+			} else {
+				return fmt.Errorf("unsupported response operation: %s", msg.Operation)
+			}
+		case "error":
+			// Generic error response
+			attPacket = &att.ErrorResponse{
+				RequestOpcode: att.OpReadRequest, // Default, should be set properly
+				Handle:        0x0000,
+				ErrorCode:     att.ErrAttributeNotFound,
+			}
+		default:
+			return fmt.Errorf("unsupported status: %s", msg.Status)
+		}
+
+	case "gatt_notification":
+		// Map UUID to handle
+		handle := w.uuidToHandle(msg.ServiceUUID, msg.CharacteristicUUID)
+		attPacket = &att.HandleValueNotification{
+			Handle: handle,
+			Value:  msg.Data,
+		}
+
+	default:
+		return fmt.Errorf("unsupported message type: %s", msg.Type)
+	}
+
+	// Send the ATT packet
+	err = w.sendATTPacket(peerUUID, attPacket)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to send ATT packet: %v", err)
+		return err
+	}
+
+	return nil
+}
+
+// uuidToHandle converts a service+characteristic UUID pair to a handle
+// This is a temporary simplified implementation
+// TODO: Implement proper GATT handle database with discovery
+func (w *Wire) uuidToHandle(serviceUUID, charUUID string) uint16 {
+	// Simple hash-based mapping for now
+	// In real BLE, handles are discovered via GATT service discovery
+	hash := 0
+	for i := 0; i < len(serviceUUID) && i < len(charUUID); i++ {
+		hash = hash*31 + int(serviceUUID[i]) + int(charUUID[i])
+	}
+	// Map to handle range 0x0001-0xFFFF (0x0000 is reserved)
+	handle := uint16((hash % 0xFFFE) + 1)
+	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "   UUID->Handle mapping: svc=%s, char=%s -> 0x%04X",
+		shortHash(serviceUUID), shortHash(charUUID), handle)
+	return handle
 }
 
 // SetGATTMessageHandler sets the callback for incoming GATT messages
