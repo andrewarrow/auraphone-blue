@@ -13,9 +13,6 @@ the iphone/ and android/ packages use swift/ and kotlin/ to make simulated phone
 
 # imporant
 
-only work in the wire/ directory right now. We are refactoring it to be more real
-and are making breaking changes to other packages.
-
   Real BLE:
   - BLE connections are always unidirectional in role: one device is Central, the other is
   Peripheral for that specific connection
