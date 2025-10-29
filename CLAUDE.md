@@ -16,6 +16,13 @@ the iphone/ and android/ packages use swift/ and kotlin/ to make simulated phone
 only work in the wire/ directory right now. We are refactoring it to be more real
 and are making breaking changes to other packages.
 
+  Real BLE:
+  - BLE connections are always unidirectional in role: one device is Central, the other is
+  Peripheral for that specific connection
+  - A device can be Central to Device A and Peripheral to Device B, but on separate connections
+  - The radio-level connection is asymmetric - Central manages the connection timing
+
+
 # tests
 
 always call util.SetRandom() at the start of each test

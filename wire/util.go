@@ -26,3 +26,16 @@ func randomDelay(min, max time.Duration) time.Duration {
 func connectionIntervalDelay() time.Duration {
 	return randomDelay(MinConnectionInterval, MaxConnectionInterval)
 }
+
+// bytesEqual compares two byte slices for equality
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

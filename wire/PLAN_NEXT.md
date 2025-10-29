@@ -8,14 +8,16 @@
 **Priority**: HIGH
 **Estimated Effort**: Medium
 
-- [ ] Add public `DiscoverServices(peerUUID string)` method to Wire
-- [ ] Add public `DiscoverCharacteristics(peerUUID string, serviceUUID []byte)` method
-- [ ] Add public `DiscoverDescriptors(peerUUID string, charHandle uint16)` method
-- [ ] Replace temporary hash-based UUID-to-handle mapping with discovery cache lookups
-- [ ] Add realistic delays (100-500ms per discovery operation)
-- [ ] Create integration test for full discovery flow
+- [x] Add public `DiscoverServices(peerUUID string)` method to Wire
+- [x] Add public `DiscoverCharacteristics(peerUUID string, serviceUUID []byte)` method
+- [x] Add public `DiscoverDescriptors(peerUUID string, charHandle uint16)` method
+- [x] Replace temporary hash-based UUID-to-handle mapping with discovery cache lookups
+- [x] Add realistic delays (100-500ms per discovery operation)
+- [x] Create integration test for full discovery flow
 
 **Why**: Completes the discovery implementation, enables real usage of discovery protocol
+
+**Status**: ✅ COMPLETED
 
 ---
 
@@ -81,7 +83,7 @@ Before moving to kotlin/ and swift/ integration:
 - ✅ Binary L2CAP + ATT communication working
 - ✅ MTU negotiation and enforcement
 - ✅ GATT discovery protocol (server-side)
-- ⏳ GATT discovery protocol (client-side API)
+- ✅ GATT discovery protocol (client-side API)
 - ⏳ Multiple simultaneous connections
 - ⏳ CCCD writes for subscriptions
 - ⏳ All tests passing with realistic scenarios
