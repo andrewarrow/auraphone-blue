@@ -33,7 +33,7 @@ w.SendGATTMessage("peer-uuid", &wire.GATTMessage{
 
 ## ✅ Current Status
 
-**111/111 tests passing** - Full binary L2CAP + ATT + GATT protocol implementation
+**117/117 tests passing** - Full binary L2CAP + ATT + GATT protocol implementation
 
 ### Implemented Features
 - ✅ Binary L2CAP + ATT communication
@@ -46,9 +46,10 @@ w.SendGATTMessage("peer-uuid", &wire.GATTMessage{
 - ✅ Discovery cache with per-connection isolation
 - ✅ Binary advertising with TLV encoding
 - ✅ Multiple simultaneous connections (tested up to 10 concurrent)
+- ✅ CCCD subscriptions (notifications and indications)
 
-### Next Up
-- ⏳ CCCD writes for subscriptions
+### Ready for Next Phase
+The wire package now has a complete BLE protocol implementation ready for integration with kotlin/ and swift/ packages.
 
 ## 🧪 Testing
 
