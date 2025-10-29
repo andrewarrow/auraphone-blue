@@ -49,6 +49,8 @@ type Connection struct {
 	mtu            int            // Current negotiated MTU (starts at DefaultMTU)
 	fragmenter     interface{}    // ATT fragmenter for long writes (type *att.Fragmenter, avoiding import cycle)
 	requestTracker interface{}    // ATT request tracker (type *att.RequestTracker, avoiding import cycle)
+	params         interface{}    // Connection parameters (type *l2cap.ConnectionParameters, avoiding import cycle)
+	paramsUpdatedAt time.Time     // When parameters were last updated
 }
 
 // GATTMessage represents a GATT operation over the wire

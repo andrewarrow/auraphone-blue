@@ -212,12 +212,14 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 
 	// Store connection with Peripheral role (they initiated)
 	connection := &Connection{
-		conn:           conn,
-		remoteUUID:     peerUUID,
-		role:           RolePeripheral,
-		mtu:            DefaultMTU,                 // Start with default MTU
-		fragmenter:     att.NewFragmenter(),        // Initialize fragmenter for long writes
-		requestTracker: att.NewRequestTracker(0),   // Initialize request tracker with default 30s timeout
+		conn:            conn,
+		remoteUUID:      peerUUID,
+		role:            RolePeripheral,
+		mtu:             DefaultMTU,                            // Start with default MTU
+		fragmenter:      att.NewFragmenter(),                   // Initialize fragmenter for long writes
+		requestTracker:  att.NewRequestTracker(0),              // Initialize request tracker with default 30s timeout
+		params:          l2cap.DefaultConnectionParameters(),   // Start with default connection parameters
+		paramsUpdatedAt: time.Now(),
 	}
 	w.connections[peerUUID] = connection
 	w.mu.Unlock()
@@ -287,12 +289,14 @@ func (w *Wire) Connect(peerUUID string) error {
 
 	// Store connection with Central role (we initiated)
 	connection := &Connection{
-		conn:           conn,
-		remoteUUID:     peerUUID,
-		role:           RoleCentral,
-		mtu:            DefaultMTU,                 // Start with default MTU
-		fragmenter:     att.NewFragmenter(),        // Initialize fragmenter for long writes
-		requestTracker: att.NewRequestTracker(0),   // Initialize request tracker with default 30s timeout
+		conn:            conn,
+		remoteUUID:      peerUUID,
+		role:            RoleCentral,
+		mtu:             DefaultMTU,                            // Start with default MTU
+		fragmenter:      att.NewFragmenter(),                   // Initialize fragmenter for long writes
+		requestTracker:  att.NewRequestTracker(0),              // Initialize request tracker with default 30s timeout
+		params:          l2cap.DefaultConnectionParameters(),   // Start with default connection parameters
+		paramsUpdatedAt: time.Now(),
 	}
 
 	w.mu.Lock()
@@ -467,9 +471,91 @@ func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan ch
 			// Handle ATT packet
 			w.handleATTPacket(peerUUID, connection, attPacket)
 
+		case l2cap.ChannelLESignal:
+			// Handle L2CAP LE signaling channel (connection parameter updates)
+			w.handleL2CAPSignaling(peerUUID, connection, l2capPacket.Payload)
+
 		default:
 			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  Unsupported L2CAP channel 0x%04X from %s", l2capPacket.ChannelID, shortHash(peerUUID))
 		}
+	}
+}
+
+// handleL2CAPSignaling processes L2CAP LE signaling channel packets
+// This handles connection parameter update requests/responses
+func (w *Wire) handleL2CAPSignaling(peerUUID string, connection *Connection, payload []byte) {
+	if len(payload) < 4 {
+		logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  L2CAP signaling packet too short from %s", shortHash(peerUUID))
+		return
+	}
+
+	commandCode := payload[0]
+
+	switch commandCode {
+	case l2cap.CodeConnectionParameterUpdateRequest:
+		// Peer is requesting connection parameter update
+		req, err := l2cap.DecodeConnectionParameterUpdateRequest(payload)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to decode connection parameter request from %s: %v", shortHash(peerUUID), err)
+			return
+		}
+
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📥 Connection parameter update request from %s: interval=%.1f-%.1fms, latency=%d, timeout=%dms",
+			shortHash(peerUUID), req.Params.IntervalMinMs(), req.Params.IntervalMaxMs(),
+			req.Params.SlaveLatency, req.Params.SupervisionTimeoutMs())
+
+		// In real BLE, the Central would decide whether to accept or reject
+		// For simulation, we always accept valid parameters
+		result := l2cap.ConnectionParameterAccepted
+
+		// Update connection parameters
+		connection.params = req.Params
+		connection.paramsUpdatedAt = time.Now()
+
+		// Send response
+		resp := &l2cap.ConnectionParameterUpdateResponse{
+			Identifier: req.Identifier,
+			Result:     result,
+		}
+
+		respData := l2cap.EncodeConnectionParameterUpdateResponse(resp)
+		respPacket := &l2cap.Packet{
+			ChannelID: l2cap.ChannelLESignal,
+			Payload:   respData,
+		}
+
+		if err := w.sendL2CAPPacket(peerUUID, respPacket); err != nil {
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to send connection parameter response to %s: %v", shortHash(peerUUID), err)
+			return
+		}
+
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📤 Connection parameter update response to %s: %s",
+			shortHash(peerUUID), map[uint16]string{
+				l2cap.ConnectionParameterAccepted: "accepted",
+				l2cap.ConnectionParameterRejected: "rejected",
+			}[result])
+
+	case l2cap.CodeConnectionParameterUpdateResponse:
+		// Peer responded to our connection parameter update request
+		resp, err := l2cap.DecodeConnectionParameterUpdateResponse(payload)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to decode connection parameter response from %s: %v", shortHash(peerUUID), err)
+			return
+		}
+
+		resultStr := "rejected"
+		if resp.Result == l2cap.ConnectionParameterAccepted {
+			resultStr = "accepted"
+		}
+
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📥 Connection parameter update response from %s: %s",
+			shortHash(peerUUID), resultStr)
+
+	default:
+		logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  Unsupported L2CAP signaling command 0x%02X from %s", commandCode, shortHash(peerUUID))
 	}
 }
 
@@ -1134,4 +1220,71 @@ func (w *Wire) Disconnect(peerUUID string) error {
 	}
 
 	return nil
+}
+
+// RequestConnectionParameterUpdate requests new connection parameters from the peer
+// This is typically called by the Peripheral to request parameter updates from the Central
+// In real BLE, iOS/Android as Central will accept or reject the request
+func (w *Wire) RequestConnectionParameterUpdate(peerUUID string, params *l2cap.ConnectionParameters) error {
+	if params == nil {
+		return fmt.Errorf("nil connection parameters")
+	}
+
+	if err := params.Validate(); err != nil {
+		return fmt.Errorf("invalid connection parameters: %w", err)
+	}
+
+	w.mu.RLock()
+	_, exists := w.connections[peerUUID]
+	w.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("not connected to %s", peerUUID)
+	}
+
+	// In real BLE, peripherals request parameter updates via L2CAP signaling
+	// The central then accepts or rejects the request
+	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+		"📶 Requesting connection parameters from %s: interval=%.1f-%.1fms, latency=%d, timeout=%dms",
+		shortHash(peerUUID), params.IntervalMinMs(), params.IntervalMaxMs(),
+		params.SlaveLatency, params.SupervisionTimeoutMs())
+
+	// Generate identifier for request/response matching
+	identifier := uint8(time.Now().UnixNano() & 0xFF)
+
+	req := &l2cap.ConnectionParameterUpdateRequest{
+		Identifier: identifier,
+		Params:     params,
+	}
+
+	data, err := l2cap.EncodeConnectionParameterUpdateRequest(req)
+	if err != nil {
+		return fmt.Errorf("failed to encode connection parameter request: %w", err)
+	}
+
+	// Send via L2CAP signaling channel
+	packet := &l2cap.Packet{
+		ChannelID: l2cap.ChannelLESignal,
+		Payload:   data,
+	}
+
+	return w.sendL2CAPPacket(peerUUID, packet)
+}
+
+// GetConnectionParameters returns the current connection parameters for a peer
+func (w *Wire) GetConnectionParameters(peerUUID string) (*l2cap.ConnectionParameters, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	connection, exists := w.connections[peerUUID]
+	if !exists {
+		return nil, fmt.Errorf("not connected to %s", peerUUID)
+	}
+
+	if connection.params == nil {
+		// Return default parameters if none have been negotiated
+		return l2cap.DefaultConnectionParameters(), nil
+	}
+
+	return connection.params.(*l2cap.ConnectionParameters), nil
 }
