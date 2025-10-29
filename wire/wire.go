@@ -15,77 +15,6 @@ import (
 	"github.com/user/auraphone-blue/util"
 )
 
-// ConnectionRole represents the role in a specific connection
-type ConnectionRole string
-
-const (
-	RoleCentral    ConnectionRole = "central"    // We initiated connection
-	RolePeripheral ConnectionRole = "peripheral" // They initiated connection
-)
-
-// AdvertisingData represents BLE advertising packet data (stub for old API compatibility)
-// TODO Step 4: Implement full advertising protocol
-type AdvertisingData struct {
-	DeviceName       string
-	ServiceUUIDs     []string
-	ManufacturerData []byte
-	TxPowerLevel     *int
-	IsConnectable    bool
-}
-
-// GATTTable represents a device's complete GATT database (stub for old API compatibility)
-// TODO Step 4: Implement GATT service discovery
-type GATTTable struct {
-	Services []GATTService
-}
-
-// GATTService represents a BLE service (stub for old API compatibility)
-type GATTService struct {
-	UUID            string
-	Type            string
-	Characteristics []GATTCharacteristic
-}
-
-// GATTCharacteristic represents a BLE characteristic (stub for old API compatibility)
-type GATTCharacteristic struct {
-	UUID       string
-	Properties []string
-	Value      []byte
-}
-
-// CharacteristicMessage is deprecated, use GATTMessage instead
-// Kept for backward compatibility with old swift code
-type CharacteristicMessage = GATTMessage
-
-// Connection represents a single bidirectional BLE connection
-type Connection struct {
-	conn       net.Conn
-	remoteUUID string
-	role       ConnectionRole // Our role in this connection
-	sendMutex  sync.Mutex     // Protects writes to this connection
-}
-
-// GATTMessage represents a GATT operation over the wire
-type GATTMessage struct {
-	Type               string `json:"type"`                         // "gatt_request", "gatt_response", "gatt_notification"
-	RequestID          string `json:"request_id,omitempty"`         // For request/response matching
-	Operation          string `json:"operation,omitempty"`          // "read", "write", "subscribe", "unsubscribe"
-	ServiceUUID        string `json:"service_uuid"`
-	CharacteristicUUID string `json:"characteristic_uuid"`
-	CharUUID           string `json:"char_uuid,omitempty"`          // Alias for CharacteristicUUID (old API compat)
-	Data               []byte `json:"data,omitempty"`
-	Status             string `json:"status,omitempty"`             // "success", "error"
-	SenderUUID         string `json:"sender_uuid,omitempty"`        // Who sent this message
-}
-
-// shortHash safely returns up to the first 8 characters of a string (or the full string if shorter)
-func shortHash(s string) string {
-	if len(s) <= 8 {
-		return s
-	}
-	return s[:8]
-}
-
 // Real BLE behavior: advertising data and GATT tables are stored per-device
 // and discovered via filesystem scanning (simulates over-the-air discovery)
 // No global registries - each device reads/writes its own files
@@ -240,6 +169,9 @@ func (w *Wire) acceptConnections() {
 
 // handleIncomingConnection processes a new incoming connection (we become Peripheral)
 func (w *Wire) handleIncomingConnection(conn net.Conn) {
+	// Simulate connection establishment delay (real BLE takes 30-100ms)
+	time.Sleep(randomDelay(MinConnectionDelay, MaxConnectionDelay))
+
 	// Read UUID length (4 bytes)
 	var uuidLen uint32
 	err := binary.Read(conn, binary.BigEndian, &uuidLen)
@@ -274,6 +206,7 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 		conn:       conn,
 		remoteUUID: peerUUID,
 		role:       RolePeripheral,
+		mtu:        DefaultMTU, // Start with default MTU
 	}
 	w.connections[peerUUID] = connection
 	w.mu.Unlock()
@@ -314,6 +247,9 @@ func (w *Wire) Connect(peerUUID string) error {
 		return fmt.Errorf("already connected to %s", peerUUID)
 	}
 
+	// Simulate connection establishment delay (real BLE takes 30-100ms)
+	time.Sleep(randomDelay(MinConnectionDelay, MaxConnectionDelay))
+
 	// Connect to peer's socket
 	socketDir := util.GetSocketDir()
 	peerSocketPath := filepath.Join(socketDir, fmt.Sprintf("auraphone-%s.sock", peerUUID))
@@ -343,6 +279,7 @@ func (w *Wire) Connect(peerUUID string) error {
 		conn:       conn,
 		remoteUUID: peerUUID,
 		role:       RoleCentral,
+		mtu:        DefaultMTU, // Start with default MTU
 	}
 
 	w.mu.Lock()
@@ -495,6 +432,9 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📡 SendGATTMessage to %s: op=%s, len=%d bytes",
 		shortHash(peerUUID), msg.Operation, len(data))
 
+	// Simulate connection interval latency (real BLE has 7.5-50ms intervals)
+	time.Sleep(connectionIntervalDelay())
+
 	// Lock for thread-safe writes
 	connection.sendMutex.Lock()
 	defer connection.sendMutex.Unlock()
@@ -547,37 +487,6 @@ func (w *Wire) SetDisconnectCallback(callback func(peerUUID string)) {
 	w.callbackMu.Unlock()
 }
 
-// ListAvailableDevices scans socket directory for .sock files and returns hardware UUIDs
-func (w *Wire) ListAvailableDevices() []string {
-	devices := make([]string, 0)
-
-	// Scan socket directory for auraphone-*.sock files
-	socketDir := util.GetSocketDir()
-	pattern := filepath.Join(socketDir, "auraphone-*.sock")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return devices
-	}
-
-	for _, path := range matches {
-		// Extract UUID from filename
-		filename := filepath.Base(path)
-		// Format: auraphone-{UUID}.sock
-		if len(filename) < len("auraphone-") || filepath.Ext(filename) != ".sock" {
-			continue
-		}
-
-		uuid := filename[len("auraphone-") : len(filename)-len(".sock")]
-
-		// Don't include ourselves
-		if uuid != w.hardwareUUID {
-			devices = append(devices, uuid)
-		}
-	}
-
-	return devices
-}
-
 // GetHardwareUUID returns this device's hardware UUID
 func (w *Wire) GetHardwareUUID() string {
 	return w.hardwareUUID
@@ -612,78 +521,6 @@ func (w *Wire) GetConnectedPeers() []string {
 		peers = append(peers, uuid)
 	}
 	return peers
-}
-
-// ============================================================================
-// STUB METHODS FOR OLD API COMPATIBILITY
-// These will be properly implemented in Steps 4-6
-// ============================================================================
-
-// StartDiscovery starts scanning for devices (stub for old API)
-// TODO Step 4: Implement proper discovery with callbacks
-func (w *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
-	stopChan := make(chan struct{})
-
-	go func() {
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-stopChan:
-				return
-			case <-ticker.C:
-				// Use our new ListAvailableDevices
-				devices := w.ListAvailableDevices()
-				for _, deviceUUID := range devices {
-					callback(deviceUUID)
-				}
-			}
-		}
-	}()
-
-	return stopChan
-}
-
-// ReadAdvertisingData reads advertising data for a device from filesystem
-// Real BLE: this simulates discovering advertising packets "over the air"
-func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) {
-	deviceDir := util.GetDeviceCacheDir(deviceUUID)
-	advPath := filepath.Join(deviceDir, "advertising.json")
-
-	// Read from file (simulates discovering advertising packet)
-	data, err := os.ReadFile(advPath)
-	if err != nil {
-		// Return default advertising data if not found
-		return &AdvertisingData{
-			DeviceName:    fmt.Sprintf("Device-%s", shortHash(deviceUUID)),
-			ServiceUUIDs:  []string{},
-			IsConnectable: true,
-		}, nil
-	}
-
-	var advData AdvertisingData
-	if err := json.Unmarshal(data, &advData); err != nil {
-		return nil, fmt.Errorf("failed to parse advertising.json: %w", err)
-	}
-
-	return &advData, nil
-}
-
-// GetRSSI returns simulated RSSI for a device (stub for old API)
-// TODO Step 4: Implement realistic RSSI simulation
-func (w *Wire) GetRSSI(deviceUUID string) float64 {
-	return -45.0 // Good signal strength
-}
-
-// DeviceExists checks if a device exists (stub for old API)
-// TODO Step 4: Implement proper device discovery state tracking
-func (w *Wire) DeviceExists(deviceUUID string) bool {
-	// Check if device socket exists
-	socketDir := util.GetSocketDir()
-	socketPath := filepath.Join(socketDir, fmt.Sprintf("auraphone-%s.sock", deviceUUID))
-	_, err := os.Stat(socketPath)
-	return err == nil
 }
 
 // Disconnect closes connection to a peer (stub for old API)
@@ -725,141 +562,4 @@ func (w *Wire) Disconnect(peerUUID string) error {
 	}
 
 	return nil
-}
-
-// SimulatorStub is a stub for the old Simulator type
-type SimulatorStub struct {
-	ServiceDiscoveryDelay time.Duration
-}
-
-// GetSimulator returns a stub simulator (stub for old API)
-// TODO Step 4: Remove simulator dependency from swift layer
-func (w *Wire) GetSimulator() *SimulatorStub {
-	return &SimulatorStub{
-		ServiceDiscoveryDelay: 100 * time.Millisecond,
-	}
-}
-
-// ReadGATTTable reads GATT table from peer's filesystem
-// Real BLE: this simulates service discovery over the connection
-func (w *Wire) ReadGATTTable(peerUUID string) (*GATTTable, error) {
-	deviceDir := util.GetDeviceCacheDir(peerUUID)
-	gattPath := filepath.Join(deviceDir, "gatt.json")
-
-	// Read from file (simulates GATT service discovery)
-	data, err := os.ReadFile(gattPath)
-	if err != nil {
-		// Return empty GATT table if not found
-		return &GATTTable{
-			Services: []GATTService{},
-		}, nil
-	}
-
-	var table GATTTable
-	if err := json.Unmarshal(data, &table); err != nil {
-		return nil, fmt.Errorf("failed to parse gatt.json: %w", err)
-	}
-
-	return &table, nil
-}
-
-// WriteCharacteristic writes to a characteristic (stub for old API)
-// TODO Step 5: Implement via SendGATTMessage
-func (w *Wire) WriteCharacteristic(peerUUID, serviceUUID, charUUID string, data []byte) error {
-	msg := &GATTMessage{
-		Type:               "gatt_request",
-		Operation:          "write",
-		ServiceUUID:        serviceUUID,
-		CharacteristicUUID: charUUID,
-		Data:               data,
-	}
-	return w.SendGATTMessage(peerUUID, msg)
-}
-
-// WriteCharacteristicNoResponse writes without waiting for response (stub for old API)
-// TODO Step 5: Implement via SendGATTMessage
-func (w *Wire) WriteCharacteristicNoResponse(peerUUID, serviceUUID, charUUID string, data []byte) error {
-	// Same as WriteCharacteristic for now
-	return w.WriteCharacteristic(peerUUID, serviceUUID, charUUID, data)
-}
-
-// ReadCharacteristic reads from a characteristic
-// Response will come via gatt_response message type to the peer's message handler
-func (w *Wire) ReadCharacteristic(peerUUID, serviceUUID, charUUID string) error {
-	msg := &GATTMessage{
-		Type:               "gatt_request",
-		Operation:          "read",
-		ServiceUUID:        serviceUUID,
-		CharacteristicUUID: charUUID,
-	}
-	return w.SendGATTMessage(peerUUID, msg)
-}
-
-
-// WriteGATTTable writes GATT table to device's filesystem
-// Real BLE: this publishes our GATT database for peers to discover
-func (w *Wire) WriteGATTTable(table *GATTTable) error {
-	deviceDir := util.GetDeviceCacheDir(w.hardwareUUID)
-	if err := os.MkdirAll(deviceDir, 0755); err != nil {
-		return fmt.Errorf("failed to create device directory: %w", err)
-	}
-
-	gattPath := filepath.Join(deviceDir, "gatt.json")
-	data, err := json.MarshalIndent(table, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal GATT table: %w", err)
-	}
-
-	if err := os.WriteFile(gattPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write gatt.json: %w", err)
-	}
-
-	return nil
-}
-
-// WriteAdvertisingData writes advertising data to device's filesystem
-// Real BLE: this sets what we broadcast in advertising packets
-func (w *Wire) WriteAdvertisingData(data *AdvertisingData) error {
-	deviceDir := util.GetDeviceCacheDir(w.hardwareUUID)
-	if err := os.MkdirAll(deviceDir, 0755); err != nil {
-		return fmt.Errorf("failed to create device directory: %w", err)
-	}
-
-	advPath := filepath.Join(deviceDir, "advertising.json")
-	jsonData, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal advertising data: %w", err)
-	}
-
-	if err := os.WriteFile(advPath, jsonData, 0644); err != nil {
-		return fmt.Errorf("failed to write advertising.json: %w", err)
-	}
-
-	return nil
-}
-
-// NotifyCharacteristic sends a notification (stub for old API)
-// TODO Step 6: Implement via SendGATTMessage notification
-func (w *Wire) NotifyCharacteristic(peerUUID, serviceUUID, charUUID string, data []byte) error {
-	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📤 NotifyCharacteristic to %s: svc=%s, char=%s, len=%d",
-		shortHash(peerUUID), shortHash(serviceUUID), shortHash(charUUID), len(data))
-	msg := &GATTMessage{
-		Type:               "gatt_notification",
-		Operation:          "notify",
-		ServiceUUID:        serviceUUID,
-		CharacteristicUUID: charUUID,
-		Data:               data,
-	}
-	err := w.SendGATTMessage(peerUUID, msg)
-	if err != nil {
-		logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ NotifyCharacteristic failed: %v", err)
-	}
-	return err
-}
-
-// ReadAndConsumeCharacteristicMessagesFromInbox reads messages (stub for old API)
-// TODO Step 5: Remove inbox polling pattern, use SetGATTMessageHandler instead
-func (w *Wire) ReadAndConsumeCharacteristicMessagesFromInbox(deviceUUID string) ([]*CharacteristicMessage, error) {
-	// Return empty list - new architecture uses callbacks, not polling
-	return []*CharacteristicMessage{}, nil
 }
