@@ -77,6 +77,14 @@ type GATTMessage struct {
 	SenderUUID         string `json:"sender_uuid,omitempty"`        // Who sent this message
 }
 
+// shortHash safely returns up to the first 8 characters of a string (or the full string if shorter)
+func shortHash(s string) string {
+	if len(s) <= 8 {
+		return s
+	}
+	return s[:8]
+}
+
 // Global registry for advertising data (simulates BLE broadcast)
 // In real BLE, advertising data is broadcast over the air
 // In our simulator, devices write here and others read from here
@@ -437,12 +445,12 @@ func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan ch
 		err = json.Unmarshal(msgData, &msg)
 		if err != nil {
 			// Invalid message, skip it
-			logger.Warn(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "❌ Failed to unmarshal GATT message from %s: %v", peerUUID[:8], err)
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to unmarshal GATT message from %s: %v", shortHash(peerUUID), err)
 			continue
 		}
 
-		logger.Debug(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "📥 Received GATT message from %s: op=%s, len=%d bytes",
-			peerUUID[:8], msg.Operation, len(msgData))
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📥 Received GATT message from %s: op=%s, len=%d bytes",
+			shortHash(peerUUID), msg.Operation, len(msgData))
 
 		// Track message received in health monitor
 		socketType := string(connection.role)
@@ -459,10 +467,10 @@ func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan ch
 		w.handlerMu.RUnlock()
 
 		if handler != nil {
-			logger.Debug(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "   ➡️  Calling GATT handler for message from %s", peerUUID[:8])
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "   ➡️  Calling GATT handler for message from %s", shortHash(peerUUID))
 			handler(peerUUID, &msg)
 		} else {
-			logger.Warn(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "⚠️  No GATT handler registered for message from %s", peerUUID[:8])
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  No GATT handler registered for message from %s", shortHash(peerUUID))
 		}
 	}
 }
@@ -485,12 +493,12 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 	w.mu.RUnlock()
 
 	if !exists {
-		logger.Warn(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "❌ SendGATTMessage: not connected to %s", peerUUID[:8])
+		logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ SendGATTMessage: not connected to %s", shortHash(peerUUID))
 		return fmt.Errorf("not connected to %s", peerUUID)
 	}
 
-	logger.Debug(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "📡 SendGATTMessage to %s: op=%s, len=%d bytes",
-		peerUUID[:8], msg.Operation, len(data))
+	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📡 SendGATTMessage to %s: op=%s, len=%d bytes",
+		shortHash(peerUUID), msg.Operation, len(data))
 
 	// Lock for thread-safe writes
 	connection.sendMutex.Lock()
@@ -649,7 +657,7 @@ func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) 
 	if !exists {
 		// Return default advertising data if not found
 		return &AdvertisingData{
-			DeviceName:    fmt.Sprintf("Device-%s", deviceUUID[:8]),
+			DeviceName:    fmt.Sprintf("Device-%s", shortHash(deviceUUID)),
 			ServiceUUIDs:  []string{},
 			IsConnectable: true,
 		}, nil
@@ -843,8 +851,8 @@ func (w *Wire) WriteAdvertisingData(data *AdvertisingData) error {
 // NotifyCharacteristic sends a notification (stub for old API)
 // TODO Step 6: Implement via SendGATTMessage notification
 func (w *Wire) NotifyCharacteristic(peerUUID, serviceUUID, charUUID string, data []byte) error {
-	logger.Debug(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "📤 NotifyCharacteristic to %s: svc=%s, char=%s, len=%d",
-		peerUUID[:8], serviceUUID[:8], charUUID[:8], len(data))
+	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📤 NotifyCharacteristic to %s: svc=%s, char=%s, len=%d",
+		shortHash(peerUUID), shortHash(serviceUUID), shortHash(charUUID), len(data))
 	msg := &GATTMessage{
 		Type:               "gatt_notification",
 		Operation:          "notify",
@@ -854,7 +862,7 @@ func (w *Wire) NotifyCharacteristic(peerUUID, serviceUUID, charUUID string, data
 	}
 	err := w.SendGATTMessage(peerUUID, msg)
 	if err != nil {
-		logger.Warn(fmt.Sprintf("%s Wire", w.hardwareUUID[:8]), "❌ NotifyCharacteristic failed: %v", err)
+		logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ NotifyCharacteristic failed: %v", err)
 	}
 	return err
 }
