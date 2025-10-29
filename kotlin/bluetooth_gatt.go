@@ -1,10 +1,23 @@
 package kotlin
 
 import (
+	"sync"
 	"time"
 
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/wire"
+)
+
+// CCCD UUID constant (Client Characteristic Configuration Descriptor)
+const (
+	CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
+)
+
+// CCCD enable/disable values (matches Android BluetoothGattDescriptor)
+var (
+	ENABLE_NOTIFICATION_VALUE   = []byte{0x01, 0x00} // Enable notifications
+	ENABLE_INDICATION_VALUE     = []byte{0x02, 0x00} // Enable indications
+	DISABLE_NOTIFICATION_VALUE  = []byte{0x00, 0x00} // Disable notifications/indications
 )
 
 // BluetoothGattDescriptor represents a BLE descriptor
@@ -59,6 +72,8 @@ type BluetoothGattCallback interface {
 	OnCharacteristicWrite(gatt *BluetoothGatt, characteristic *BluetoothGattCharacteristic, status int)
 	OnCharacteristicRead(gatt *BluetoothGatt, characteristic *BluetoothGattCharacteristic, status int)
 	OnCharacteristicChanged(gatt *BluetoothGatt, characteristic *BluetoothGattCharacteristic)
+	OnDescriptorWrite(gatt *BluetoothGatt, descriptor *BluetoothGattDescriptor, status int)
+	OnDescriptorRead(gatt *BluetoothGatt, descriptor *BluetoothGattDescriptor, status int)
 }
 
 type BluetoothGatt struct {
@@ -68,6 +83,8 @@ type BluetoothGatt struct {
 	services                 []*BluetoothGattService
 	notifyingCharacteristics map[string]bool // characteristic UUID -> is notifying
 	autoConnect              bool            // Android autoConnect flag for auto-reconnect
+	operationInProgress      bool            // CRITICAL: Android BLE requires operation serialization
+	operationMutex           sync.Mutex      // Protects operationInProgress flag
 }
 
 func (g *BluetoothGatt) DiscoverServices() bool {
@@ -111,6 +128,8 @@ func (g *BluetoothGatt) DiscoverServices() bool {
 			for _, wireChar := range wireService.Characteristics {
 				// Convert property strings to bitmask
 				properties := 0
+				hasNotify := false
+				hasIndicate := false
 				for _, prop := range wireChar.Properties {
 					switch prop {
 					case "read":
@@ -121,18 +140,35 @@ func (g *BluetoothGatt) DiscoverServices() bool {
 						properties |= PROPERTY_WRITE_NO_RESPONSE
 					case "notify":
 						properties |= PROPERTY_NOTIFY
+						hasNotify = true
 					case "indicate":
 						properties |= PROPERTY_INDICATE
+						hasIndicate = true
 					}
 				}
 
 				char := &BluetoothGattCharacteristic{
-					UUID:       wireChar.UUID,
-					Properties: properties,
-					Service:    service,
-					Value:      nil,
-					WriteType:  WRITE_TYPE_DEFAULT, // Default to withResponse
+					UUID:        wireChar.UUID,
+					Properties:  properties,
+					Service:     service,
+					Value:       nil,
+					WriteType:   WRITE_TYPE_DEFAULT, // Default to withResponse
+					Descriptors: make([]*BluetoothGattDescriptor, 0),
 				}
+
+				// CRITICAL: If characteristic has notify or indicate properties,
+				// automatically add CCCD descriptor (0x2902)
+				// This matches real BLE - every notifiable characteristic has a CCCD
+				if hasNotify || hasIndicate {
+					cccdDescriptor := &BluetoothGattDescriptor{
+						UUID:           CCCD_UUID,
+						Value:          []byte{0x00, 0x00}, // Disabled by default
+						Permissions:    PERMISSION_READ | PERMISSION_WRITE,
+						Characteristic: char,
+					}
+					char.Descriptors = append(char.Descriptors, cccdDescriptor)
+				}
+
 				service.Characteristics = append(service.Characteristics, char)
 			}
 
@@ -168,6 +204,17 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 		return false
 	}
 
+	// CRITICAL: Android BLE requires operation serialization
+	// Real Android returns false if an operation is already in progress
+	g.operationMutex.Lock()
+	if g.operationInProgress {
+		g.operationMutex.Unlock()
+		logger.Debug("BluetoothGatt", "❌ WriteCharacteristic rejected - operation already in progress (remote=%s)", g.remoteUUID[:8])
+		return false // Android returns false when busy
+	}
+	g.operationInProgress = true
+	g.operationMutex.Unlock()
+
 	// Copy the value before spawning goroutine to avoid race conditions
 	// (caller might modify characteristic.Value after this call returns)
 	valueCopy := make([]byte, len(characteristic.Value))
@@ -181,6 +228,11 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 		} else {
 			err = g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, valueCopy)
 		}
+
+		// Clear busy flag BEFORE callback (allows next operation to start)
+		g.operationMutex.Lock()
+		g.operationInProgress = false
+		g.operationMutex.Unlock()
 
 		if g.callback != nil {
 			if err != nil {
@@ -202,13 +254,34 @@ func (g *BluetoothGatt) ReadCharacteristic(characteristic *BluetoothGattCharacte
 		return false
 	}
 
-	err := g.wire.ReadCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
-	if err != nil {
-		if g.callback != nil {
-			g.callback.OnCharacteristicRead(g, characteristic, 1) // GATT_FAILURE = 1
-		}
-		return false
+	// CRITICAL: Android BLE requires operation serialization
+	// Real Android returns false if an operation is already in progress
+	g.operationMutex.Lock()
+	if g.operationInProgress {
+		g.operationMutex.Unlock()
+		logger.Debug("BluetoothGatt", "❌ ReadCharacteristic rejected - operation already in progress (remote=%s)", g.remoteUUID[:8])
+		return false // Android returns false when busy
 	}
+	g.operationInProgress = true
+	g.operationMutex.Unlock()
+
+	// Read asynchronously (matches real Android BLE behavior)
+	go func() {
+		err := g.wire.ReadCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
+
+		// Clear busy flag BEFORE callback (allows next operation to start)
+		g.operationMutex.Lock()
+		g.operationInProgress = false
+		g.operationMutex.Unlock()
+
+		if g.callback != nil {
+			if err != nil {
+				g.callback.OnCharacteristicRead(g, characteristic, 1) // GATT_FAILURE = 1
+			} else {
+				g.callback.OnCharacteristicRead(g, characteristic, 0) // GATT_SUCCESS = 0
+			}
+		}
+	}()
 
 	return true
 }
@@ -227,8 +300,24 @@ func (g *BluetoothGatt) GetCharacteristic(serviceUUID, charUUID string) *Bluetoo
 	return nil
 }
 
+// GetDescriptor finds a descriptor within a characteristic
+// This matches real Android API: characteristic.getDescriptor(uuid)
+func (char *BluetoothGattCharacteristic) GetDescriptor(uuid string) *BluetoothGattDescriptor {
+	for _, desc := range char.Descriptors {
+		if desc.UUID == uuid {
+			return desc
+		}
+	}
+	return nil
+}
+
 // SetCharacteristicNotification enables or disables notifications for a characteristic
 // This matches real Android BLE API: gatt.setCharacteristicNotification(characteristic, enable)
+// IMPORTANT: In real Android, this only enables LOCAL notification tracking.
+// You MUST also write to the CCCD descriptor (0x2902) to enable notifications on the peripheral.
+// This is a two-step process:
+//   1. gatt.setCharacteristicNotification(characteristic, true)  // Local tracking
+//   2. gatt.writeDescriptor(cccdDescriptor)                      // Enable on peripheral
 func (g *BluetoothGatt) SetCharacteristicNotification(characteristic *BluetoothGattCharacteristic, enable bool) bool {
 	if g.wire == nil {
 		return false
@@ -241,22 +330,114 @@ func (g *BluetoothGatt) SetCharacteristicNotification(characteristic *BluetoothG
 		g.notifyingCharacteristics = make(map[string]bool)
 	}
 
+	// This ONLY updates local state - does NOT send anything to peripheral
+	// Real Android requires a separate writeDescriptor() call
 	g.notifyingCharacteristics[characteristic.UUID] = enable
 
-	logger.Debug("BluetoothGatt", "🔔 SetCharacteristicNotification: char=%s, enable=%v (remote=%s)",
-		characteristic.UUID[:8], enable, g.remoteUUID[:8])
-	logger.Debug("BluetoothGatt", "   Subscribed characteristics: %v", g.notifyingCharacteristics)
+	logger.Debug("BluetoothGatt", "🔔 SetCharacteristicNotification: char=%s, enable=%v (LOCAL ONLY - must write CCCD!)",
+		characteristic.UUID[:8], enable)
 
-	// Send subscribe/unsubscribe message to peripheral
-	// In real Android, this would also write to the CCCD descriptor
-	var err error
-	if enable {
-		err = g.wire.SubscribeCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
-	} else {
-		err = g.wire.UnsubscribeCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
+	return true
+}
+
+// WriteDescriptor writes a value to a descriptor
+// This matches real Android BLE API: gatt.writeDescriptor(descriptor)
+// CRITICAL: This is how you enable notifications in real Android!
+// After calling setCharacteristicNotification(), you must write 0x01 0x00 to CCCD (0x2902)
+func (g *BluetoothGatt) WriteDescriptor(descriptor *BluetoothGattDescriptor) bool {
+	if g.wire == nil {
+		return false
+	}
+	if descriptor == nil || descriptor.Characteristic == nil || descriptor.Characteristic.Service == nil {
+		return false
 	}
 
-	return err == nil
+	// CRITICAL: Android BLE requires operation serialization
+	g.operationMutex.Lock()
+	if g.operationInProgress {
+		g.operationMutex.Unlock()
+		logger.Debug("BluetoothGatt", "❌ WriteDescriptor rejected - operation already in progress (remote=%s)", g.remoteUUID[:8])
+		return false
+	}
+	g.operationInProgress = true
+	g.operationMutex.Unlock()
+
+	// Copy the value before spawning goroutine
+	valueCopy := make([]byte, len(descriptor.Value))
+	copy(valueCopy, descriptor.Value)
+
+	// Write asynchronously (matches real Android BLE behavior)
+	go func() {
+		// Send descriptor write as a regular characteristic write to the descriptor UUID
+		// Wire layer treats descriptors as special characteristics
+		err := g.wire.WriteCharacteristic(
+			g.remoteUUID,
+			descriptor.Characteristic.Service.UUID,
+			descriptor.UUID, // Descriptor UUID (e.g., 0x2902 for CCCD)
+			valueCopy,
+		)
+
+		// Clear busy flag BEFORE callback
+		g.operationMutex.Lock()
+		g.operationInProgress = false
+		g.operationMutex.Unlock()
+
+		if g.callback != nil {
+			if err != nil {
+				g.callback.OnDescriptorWrite(g, descriptor, 1) // GATT_FAILURE
+			} else {
+				g.callback.OnDescriptorWrite(g, descriptor, 0) // GATT_SUCCESS
+			}
+		}
+	}()
+
+	return true
+}
+
+// ReadDescriptor reads a value from a descriptor
+// This matches real Android BLE API: gatt.readDescriptor(descriptor)
+func (g *BluetoothGatt) ReadDescriptor(descriptor *BluetoothGattDescriptor) bool {
+	if g.wire == nil {
+		return false
+	}
+	if descriptor == nil || descriptor.Characteristic == nil || descriptor.Characteristic.Service == nil {
+		return false
+	}
+
+	// CRITICAL: Android BLE requires operation serialization
+	g.operationMutex.Lock()
+	if g.operationInProgress {
+		g.operationMutex.Unlock()
+		logger.Debug("BluetoothGatt", "❌ ReadDescriptor rejected - operation already in progress (remote=%s)", g.remoteUUID[:8])
+		return false
+	}
+	g.operationInProgress = true
+	g.operationMutex.Unlock()
+
+	// Read asynchronously (matches real Android BLE behavior)
+	go func() {
+		// Send descriptor read as a regular characteristic read from the descriptor UUID
+		err := g.wire.ReadCharacteristic(
+			g.remoteUUID,
+			descriptor.Characteristic.Service.UUID,
+			descriptor.UUID, // Descriptor UUID
+		)
+
+		// Clear busy flag BEFORE callback
+		g.operationMutex.Lock()
+		g.operationInProgress = false
+		g.operationMutex.Unlock()
+
+		if g.callback != nil {
+			if err != nil {
+				g.callback.OnDescriptorRead(g, descriptor, 1) // GATT_FAILURE
+			} else {
+				g.callback.OnDescriptorRead(g, descriptor, 0) // GATT_SUCCESS
+			}
+		}
+	}()
+
+	return true
 }
 
 // HandleGATTMessage is called by android.go when a GATT message arrives for this connection

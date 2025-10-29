@@ -52,9 +52,23 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 	}
 
 	// Subscribe to protocol characteristic for handshake and gossip
+	// CRITICAL: Real Android requires two steps:
+	// 1. setCharacteristicNotification() - local tracking only
+	// 2. writeDescriptor(CCCD) - actually enables notifications on peripheral
 	char := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
 	if char != nil {
+		// Step 1: Enable local notification tracking
 		gatt.SetCharacteristicNotification(char, true)
+
+		// Step 2: Write to CCCD descriptor to enable notifications on peripheral
+		cccdDescriptor := char.GetDescriptor(kotlin.CCCD_UUID)
+		if cccdDescriptor != nil {
+			cccdDescriptor.Value = kotlin.ENABLE_NOTIFICATION_VALUE
+			gatt.WriteDescriptor(cccdDescriptor)
+			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Wrote CCCD for protocol characteristic")
+		} else {
+			logger.Error(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "❌ CCCD descriptor not found for protocol characteristic!")
+		}
 	} else {
 		logger.Error(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "❌ Protocol characteristic not found!")
 	}
@@ -62,7 +76,18 @@ func (a *Android) OnServicesDiscovered(gatt *kotlin.BluetoothGatt, status int) {
 	// Subscribe to photo characteristic for photo transfers
 	photoChar := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraPhotoCharUUID)
 	if photoChar != nil {
+		// Step 1: Enable local notification tracking
 		gatt.SetCharacteristicNotification(photoChar, true)
+
+		// Step 2: Write to CCCD descriptor to enable notifications on peripheral
+		cccdDescriptor := photoChar.GetDescriptor(kotlin.CCCD_UUID)
+		if cccdDescriptor != nil {
+			cccdDescriptor.Value = kotlin.ENABLE_NOTIFICATION_VALUE
+			gatt.WriteDescriptor(cccdDescriptor)
+			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✅ Wrote CCCD for photo characteristic")
+		} else {
+			logger.Error(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "❌ CCCD descriptor not found for photo characteristic!")
+		}
 	} else {
 		logger.Error(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "❌ Photo characteristic not found!")
 	}
@@ -80,6 +105,17 @@ func (a *Android) OnCharacteristicWrite(gatt *kotlin.BluetoothGatt, characterist
 
 func (a *Android) OnCharacteristicRead(gatt *kotlin.BluetoothGatt, characteristic *kotlin.BluetoothGattCharacteristic, status int) {
 	// Read completed (not commonly used in our protocol)
+}
+
+func (a *Android) OnDescriptorWrite(gatt *kotlin.BluetoothGatt, descriptor *kotlin.BluetoothGattDescriptor, status int) {
+	// Descriptor write completed (CCCD write to enable notifications)
+	if status != kotlin.GATT_SUCCESS {
+		logger.Warn(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "⚠️  Descriptor write failed")
+	}
+}
+
+func (a *Android) OnDescriptorRead(gatt *kotlin.BluetoothGatt, descriptor *kotlin.BluetoothGattDescriptor, status int) {
+	// Descriptor read completed (not commonly used)
 }
 
 func (a *Android) OnCharacteristicChanged(gatt *kotlin.BluetoothGatt, characteristic *kotlin.BluetoothGattCharacteristic) {

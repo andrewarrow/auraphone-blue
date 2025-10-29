@@ -74,20 +74,18 @@ func (a *BluetoothAdapter) GetBluetoothLeAdvertiser() *BluetoothLeAdvertiser {
 // GetRemoteDevice returns a BluetoothDevice for the given address
 // Matches: bluetoothAdapter.getRemoteDevice(address)
 // This allows connecting to devices by address without scanning (learned via gossip)
-// In real Android, this always succeeds even if device doesn't exist (connection will fail later)
+// CRITICAL: Real Android NEVER returns nil - it always creates a device object
+// even if the device doesn't exist. The connection attempt fails later when you call connectGatt().
 func (a *BluetoothAdapter) GetRemoteDevice(address string) *BluetoothDevice {
-	// Check if device exists (optional - real Android doesn't check this)
-	if !a.wire.DeviceExists(address) {
-		return nil // Device not reachable
-	}
-
-	// Read advertising data to get device name if available
+	// Try to read advertising data to get device name if available
+	// Real Android doesn't check device existence here - it always returns a device
 	advData, err := a.wire.ReadAdvertisingData(address)
 	deviceName := "Unknown Device"
 	if err == nil && advData.DeviceName != "" {
 		deviceName = advData.DeviceName
 	}
 
+	// Always return a device (matches real Android - never returns nil)
 	device := &BluetoothDevice{
 		Name:    deviceName,
 		Address: address,

@@ -156,6 +156,251 @@ func TestBluetoothGattServer_NotifyCharacteristicChanged(t *testing.T) {
 	t.Logf("✅ GATT server can send notifications")
 }
 
+// TestBluetoothGattServer_PropertyStringConsistency tests that property strings are consistent
+// between GATT table building and parsing
+func TestBluetoothGattServer_PropertyStringConsistency(t *testing.T) {
+	w := wire.NewWire("test-uuid")
+	if err := w.Start(); err != nil {
+		t.Fatalf("Failed to start wire: %v", err)
+	}
+	defer w.Stop()
+
+	callback := &testGattServerCallback{}
+	gattServer := NewBluetoothGattServer("test-uuid", callback, "Test Device", w)
+
+	// Create service with all property types
+	service := &BluetoothGattService{
+		UUID: phone.AuraServiceUUID,
+		Type: SERVICE_TYPE_PRIMARY,
+		Characteristics: []*BluetoothGattCharacteristic{
+			{
+				UUID:       phone.AuraProtocolCharUUID,
+				Properties: PROPERTY_READ,
+			},
+			{
+				UUID:       phone.AuraPhotoCharUUID,
+				Properties: PROPERTY_WRITE,
+			},
+			{
+				UUID:       phone.AuraProfileCharUUID,
+				Properties: PROPERTY_WRITE_NO_RESPONSE,
+			},
+			{
+				UUID:       "00000001-0000-1000-8000-00805f9b34fb",
+				Properties: PROPERTY_NOTIFY,
+			},
+			{
+				UUID:       "00000002-0000-1000-8000-00805f9b34fb",
+				Properties: PROPERTY_INDICATE,
+			},
+		},
+	}
+	gattServer.AddService(service)
+
+	// Build GATT table
+	gattTable := gattServer.buildGATTTable()
+
+	// Verify property strings
+	expectedProperties := map[string][]string{
+		phone.AuraProtocolCharUUID: {"read"},
+		phone.AuraPhotoCharUUID:    {"write"},
+		phone.AuraProfileCharUUID:  {"write_no_response"}, // CRITICAL: Must match bluetooth_gatt.go:120
+		"00000001-0000-1000-8000-00805f9b34fb": {"notify"},
+		"00000002-0000-1000-8000-00805f9b34fb": {"indicate"},
+	}
+
+	for _, wireService := range gattTable.Services {
+		for _, wireChar := range wireService.Characteristics {
+			expected, ok := expectedProperties[wireChar.UUID]
+			if !ok {
+				continue
+			}
+
+			if len(wireChar.Properties) != len(expected) {
+				t.Errorf("Char %s: wrong property count (got %d, expected %d)",
+					wireChar.UUID[:8], len(wireChar.Properties), len(expected))
+				continue
+			}
+
+			for i, prop := range wireChar.Properties {
+				if prop != expected[i] {
+					t.Errorf("Char %s: wrong property (got %s, expected %s)",
+						wireChar.UUID[:8], prop, expected[i])
+				}
+			}
+		}
+	}
+
+	t.Logf("✅ Property string conversion is consistent")
+}
+
+// TestBluetoothGatt_PropertyParsing tests that properties are parsed correctly from strings
+func TestBluetoothGatt_PropertyParsing(t *testing.T) {
+	w1 := wire.NewWire("central-uuid")
+	w2 := wire.NewWire("peripheral-uuid")
+
+	if err := w1.Start(); err != nil {
+		t.Fatalf("Failed to start central wire: %v", err)
+	}
+	defer w1.Stop()
+
+	if err := w2.Start(); err != nil {
+		t.Fatalf("Failed to start peripheral wire: %v", err)
+	}
+	defer w2.Stop()
+
+	// Create peripheral with GATT server
+	callback2 := &testGattServerCallback{}
+	gattServer := NewBluetoothGattServer("peripheral-uuid", callback2, "Test Device", w2)
+
+	service := &BluetoothGattService{
+		UUID: phone.AuraServiceUUID,
+		Type: SERVICE_TYPE_PRIMARY,
+		Characteristics: []*BluetoothGattCharacteristic{
+			{
+				UUID:       phone.AuraProtocolCharUUID,
+				Properties: PROPERTY_READ | PROPERTY_WRITE | PROPERTY_WRITE_NO_RESPONSE | PROPERTY_NOTIFY | PROPERTY_INDICATE,
+			},
+		},
+	}
+	gattServer.AddService(service)
+
+	// Connect central to peripheral
+	if err := w1.Connect("peripheral-uuid"); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Create GATT connection and discover services
+	servicesDiscovered := make(chan bool, 1)
+	callback1 := &testGattCallback{
+		onServicesDiscovered: func(gatt *BluetoothGatt, status int) {
+			servicesDiscovered <- (status == GATT_SUCCESS)
+		},
+	}
+
+	device := &BluetoothDevice{
+		Address: "peripheral-uuid",
+		Name:    "Test Peripheral",
+	}
+	device.SetWire(w1)
+
+	gatt := device.ConnectGatt(nil, false, callback1)
+
+	// Discover services (should parse properties correctly)
+	gatt.DiscoverServices()
+
+	// Wait for discovery
+	select {
+	case success := <-servicesDiscovered:
+		if !success {
+			t.Fatal("Service discovery failed")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for service discovery")
+	}
+
+	// Verify properties were parsed correctly
+	char := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
+	if char == nil {
+		t.Fatal("Failed to get characteristic")
+	}
+
+	// Check all properties are present
+	if char.Properties&PROPERTY_READ == 0 {
+		t.Error("READ property missing")
+	}
+	if char.Properties&PROPERTY_WRITE == 0 {
+		t.Error("WRITE property missing")
+	}
+	if char.Properties&PROPERTY_WRITE_NO_RESPONSE == 0 {
+		t.Error("WRITE_NO_RESPONSE property missing")
+	}
+	if char.Properties&PROPERTY_NOTIFY == 0 {
+		t.Error("NOTIFY property missing")
+	}
+	if char.Properties&PROPERTY_INDICATE == 0 {
+		t.Error("INDICATE property missing")
+	}
+
+	t.Logf("✅ Properties parsed correctly from GATT table")
+}
+
+// TestBluetoothGatt_WriteNoResponseProperty tests that write_no_response property works
+func TestBluetoothGatt_WriteNoResponseProperty(t *testing.T) {
+	w1 := wire.NewWire("central-uuid")
+	w2 := wire.NewWire("peripheral-uuid")
+
+	if err := w1.Start(); err != nil {
+		t.Fatalf("Failed to start central wire: %v", err)
+	}
+	defer w1.Stop()
+
+	if err := w2.Start(); err != nil {
+		t.Fatalf("Failed to start peripheral wire: %v", err)
+	}
+	defer w2.Stop()
+
+	// Connect devices
+	if err := w1.Connect("peripheral-uuid"); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Create GATT connection
+	writeCompleted := make(chan bool, 1)
+	callback := &testGattCallback{
+		onCharacteristicWrite: func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic, status int) {
+			if status == GATT_SUCCESS {
+				writeCompleted <- true
+			}
+		},
+	}
+
+	device := &BluetoothDevice{
+		Address: "peripheral-uuid",
+		Name:    "Test Peripheral",
+	}
+	device.SetWire(w1)
+
+	gatt := device.ConnectGatt(nil, false, callback)
+
+	// Set up GATT table with write_no_response characteristic
+	service := &BluetoothGattService{
+		UUID: phone.AuraServiceUUID,
+		Type: SERVICE_TYPE_PRIMARY,
+		Characteristics: []*BluetoothGattCharacteristic{
+			{
+				UUID:       phone.AuraProtocolCharUUID,
+				Properties: PROPERTY_WRITE_NO_RESPONSE,
+				Service:    nil,
+				Value:      []byte("test write"),
+				WriteType:  WRITE_TYPE_NO_RESPONSE, // CRITICAL: Use write without response
+			},
+		},
+	}
+	service.Characteristics[0].Service = service
+	gatt.services = []*BluetoothGattService{service}
+
+	char := service.Characteristics[0]
+
+	// Write characteristic
+	success := gatt.WriteCharacteristic(char)
+	if !success {
+		t.Fatal("WriteCharacteristic failed")
+	}
+
+	// Wait for write callback
+	select {
+	case <-writeCompleted:
+		t.Logf("✅ Write without response works correctly")
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for write callback")
+	}
+}
+
 // testAdvertiseCallback is a test implementation of AdvertiseCallback
 type testAdvertiseCallback struct {
 	onStartSuccess func(settings *AdvertiseSettings)
