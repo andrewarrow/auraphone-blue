@@ -3,11 +3,14 @@ package swift
 import (
 	"testing"
 
+	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
 )
 
 // TestEdgeCase_WriteToDisconnectedPeripheral tests writing to a disconnected peripheral
 func TestEdgeCase_WriteToDisconnectedPeripheral(t *testing.T) {
+	util.SetRandom()
+
 	w := wire.NewWire("test-uuid")
 	if err := w.Start(); err != nil {
 		t.Fatalf("Failed to start wire: %v", err)
@@ -43,6 +46,8 @@ func TestEdgeCase_WriteToDisconnectedPeripheral(t *testing.T) {
 
 // TestEdgeCase_InvalidCharacteristic tests writing with invalid characteristic
 func TestEdgeCase_InvalidCharacteristic(t *testing.T) {
+	util.SetRandom()
+
 	w := wire.NewWire("test-uuid")
 	if err := w.Start(); err != nil {
 		t.Fatalf("Failed to start wire: %v", err)
@@ -76,6 +81,8 @@ func TestEdgeCase_InvalidCharacteristic(t *testing.T) {
 
 // TestEdgeCase_AddServiceWhileAdvertising tests adding a service while advertising
 func TestEdgeCase_AddServiceWhileAdvertising(t *testing.T) {
+	util.SetRandom()
+
 	w := wire.NewWire("test-uuid")
 	if err := w.Start(); err != nil {
 		t.Fatalf("Failed to start wire: %v", err)

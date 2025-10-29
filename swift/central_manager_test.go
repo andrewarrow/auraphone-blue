@@ -4,10 +4,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
 )
 
 func TestCBCentralManager_ScanForPeripherals_ServiceFiltering(t *testing.T) {
+	util.SetRandom()
+
 	w := wire.NewWire("test-uuid")
 	if err := w.Start(); err != nil {
 		t.Fatalf("Failed to start wire: %v", err)
@@ -62,6 +65,8 @@ func TestCBCentralManager_ScanForPeripherals_ServiceFiltering(t *testing.T) {
 }
 
 func TestCBCentralManager_ShouldInitiateConnection(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 	w2 := wire.NewWire("ffffffff-0000-1111-2222-333333333333")
 
@@ -102,6 +107,8 @@ func TestCBCentralManager_ShouldInitiateConnection(t *testing.T) {
 }
 
 func TestCBCentralManager_AutoReconnect(t *testing.T) {
+	util.SetRandom()
+
 	centralWire := wire.NewWire("central-uuid")
 	peripheralWire := wire.NewWire("peripheral-uuid")
 
@@ -191,6 +198,8 @@ func TestCBCentralManager_AutoReconnect(t *testing.T) {
 }
 
 func TestCBCentralManager_CancelPeripheralConnection(t *testing.T) {
+	util.SetRandom()
+
 	centralWire := wire.NewWire("central-uuid")
 	peripheralWire := wire.NewWire("peripheral-uuid")
 

@@ -4,11 +4,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
 )
 
 // TestGATTWriteRequest tests that Central can write to Peripheral's characteristic
 func TestGATTWriteRequest(t *testing.T) {
+	util.SetRandom()
+
 	// Create two devices with wire layers
 	centralWire := wire.NewWire("central-uuid")
 	peripheralWire := wire.NewWire("peripheral-uuid")
@@ -167,6 +170,8 @@ func TestGATTWriteRequest(t *testing.T) {
 
 // TestGATTNotification tests that Peripheral can send notifications to Central
 func TestGATTNotification(t *testing.T) {
+	util.SetRandom()
+
 	// Create two devices with wire layers
 	centralWire := wire.NewWire("central-uuid")
 	peripheralWire := wire.NewWire("peripheral-uuid")
@@ -349,6 +354,8 @@ func TestGATTNotification(t *testing.T) {
 // - B subscribes to A's characteristics and receives notifications
 // This is the exact scenario that fails in the bug report
 func TestReversePeripheralNotifications(t *testing.T) {
+	util.SetRandom()
+
 	// Create two devices
 	deviceAWire := wire.NewWire("device-a-uuid")
 	deviceBWire := wire.NewWire("device-b-uuid")

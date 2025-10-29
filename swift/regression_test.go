@@ -21,6 +21,8 @@ import (
 // TestNoDualSockets verifies that only ONE socket file exists per device
 // Regression Prevention: Old code had peripheral.sock + central.sock per device
 func TestNoDualSockets(t *testing.T) {
+	util.SetRandom()
+
 	deviceUUID := "test-device-uuid"
 	w := wire.NewWire(deviceUUID)
 
@@ -58,6 +60,8 @@ func TestNoDualSockets(t *testing.T) {
 // TestSingleConnectionBothSides verifies that both devices see only ONE connection
 // Regression Prevention: Old DualConnection had asCentral + asPeripheral fields
 func TestSingleConnectionBothSides(t *testing.T) {
+	util.SetRandom()
+
 	wireA := wire.NewWire("device-a")
 	wireB := wire.NewWire("device-b")
 
@@ -146,6 +150,8 @@ func TestSingleConnectionBothSides(t *testing.T) {
 // TestWireLayerOnlyUsesHardwareUUID verifies that wire layer never sees DeviceID
 // Regression Prevention: Old code mixed Hardware UUIDs with base36 DeviceIDs in routing
 func TestWireLayerOnlyUsesHardwareUUID(t *testing.T) {
+	util.SetRandom()
+
 	// Valid Hardware UUID format (from testdata/hardware_uuids.txt)
 	validUUID := "550E8400-E29B-41D4-A716-446655440000"
 
@@ -187,6 +193,8 @@ func TestWireLayerOnlyUsesHardwareUUID(t *testing.T) {
 // TestDirectDelegateFlow verifies message flow has ≤4 layers (no callback hell)
 // Regression Prevention: Old code had 8 layers (wire → phone → handlers → coordinators → callbacks → wire)
 func TestDirectDelegateFlow(t *testing.T) {
+	util.SetRandom()
+
 	// This test verifies the call stack depth for message delivery
 	// Expected flow (4 layers max):
 	// 1. wire.readLoop() receives bytes
@@ -305,6 +313,8 @@ func (d *callStackDelegate) CentralDidUnsubscribe(pm *CBPeripheralManager, centr
 // TestNoCircularDependencies verifies message flow is unidirectional (wire → swift → delegate)
 // Regression Prevention: Old code had circular flow (wire → phone → handlers → wire)
 func TestNoCircularDependencies(t *testing.T) {
+	util.SetRandom()
+
 	// This test ensures delegates don't call back into wire layer during message handling
 	// Expected: wire → swift → delegate (STOP - delegate does NOT call wire)
 	// Old architecture: wire → phone → handlers → coordinator → callback → wire (circular!)
@@ -415,6 +425,8 @@ func (d *circularTestDelegate) CentralDidUnsubscribe(pm *CBPeripheralManager, ce
 // TestDisconnectFullyClosesConnection verifies disconnect closes completely (not partial)
 // Regression Prevention: Old DualConnection could have one connection alive, other dead
 func TestDisconnectFullyClosesConnection(t *testing.T) {
+	util.SetRandom()
+
 	wireA := wire.NewWire("device-a")
 	wireB := wire.NewWire("device-b")
 
@@ -480,6 +492,8 @@ func TestDisconnectFullyClosesConnection(t *testing.T) {
 
 // TestCleanupRemovesSocketFiles verifies socket cleanup on Stop()
 func TestCleanupRemovesSocketFiles(t *testing.T) {
+	util.SetRandom()
+
 	deviceUUID := "cleanup-test-uuid"
 	socketDir := util.GetSocketDir()
 	socketPath := filepath.Join(socketDir, fmt.Sprintf("auraphone-%s.sock", deviceUUID))
@@ -515,6 +529,8 @@ func TestCleanupRemovesSocketFiles(t *testing.T) {
 //        - A cannot subscribe to B's photos ❌ (bug - "not connected" error)
 // Fix: When Central connects, Peripheral creates reverse CBPeripheral object
 func TestBidirectionalPhotoSubscription(t *testing.T) {
+	util.SetRandom()
+
 	wireA := wire.NewWire("device-a")
 	wireB := wire.NewWire("device-b")
 

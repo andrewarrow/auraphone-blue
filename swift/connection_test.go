@@ -4,11 +4,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
 )
 
 // TestCentralPeripheralConnection tests that Central and Peripheral can connect via wire
 func TestCentralPeripheralConnection(t *testing.T) {
+	util.SetRandom()
+
 	// Create two wires
 	centralWire := wire.NewWire("central-uuid")
 	peripheralWire := wire.NewWire("peripheral-uuid")
@@ -71,6 +74,8 @@ func TestCentralPeripheralConnection(t *testing.T) {
 
 // TestRoleAssignment tests that roles are correctly assigned based on who initiates
 func TestRoleAssignment(t *testing.T) {
+	util.SetRandom()
+
 	// Create two wires
 	wireA := wire.NewWire("device-a")
 	wireB := wire.NewWire("device-b")
@@ -118,6 +123,8 @@ func TestRoleAssignment(t *testing.T) {
 
 // TestBidirectionalCommunication verifies both directions work over single connection
 func TestBidirectionalCommunication(t *testing.T) {
+	util.SetRandom()
+
 	// Create two wires
 	wireA := wire.NewWire("device-a")
 	wireB := wire.NewWire("device-b")
@@ -209,6 +216,8 @@ func TestBidirectionalCommunication(t *testing.T) {
 
 // TestGATTMessageFormat tests that GATT messages are properly formatted
 func TestGATTMessageFormat(t *testing.T) {
+	util.SetRandom()
+
 	// Create two wires
 	wireA := wire.NewWire("device-a")
 	wireB := wire.NewWire("device-b")

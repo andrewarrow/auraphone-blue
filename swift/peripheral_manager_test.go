@@ -4,10 +4,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
 )
 
 func TestCBPeripheralManager_AddService(t *testing.T) {
+	util.SetRandom()
+
 	w := wire.NewWire("test-uuid")
 	if err := w.Start(); err != nil {
 		t.Fatalf("Failed to start wire: %v", err)
@@ -59,6 +62,8 @@ func TestCBPeripheralManager_AddService(t *testing.T) {
 }
 
 func TestCBPeripheralManager_StartAdvertising(t *testing.T) {
+	util.SetRandom()
+
 	w := wire.NewWire("test-uuid")
 	if err := w.Start(); err != nil {
 		t.Fatalf("Failed to start wire: %v", err)
@@ -132,6 +137,8 @@ func TestCBPeripheralManager_StartAdvertising(t *testing.T) {
 }
 
 func TestCBPeripheralManager_UpdateValue_MultipleSubscribers(t *testing.T) {
+	util.SetRandom()
+
 	peripheralWire := wire.NewWire("peripheral-uuid")
 	central1Wire := wire.NewWire("central1-uuid")
 	central2Wire := wire.NewWire("central2-uuid")

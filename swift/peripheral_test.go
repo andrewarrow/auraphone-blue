@@ -5,10 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
 )
 
 func TestCBPeripheral_WriteQueue(t *testing.T) {
+	util.SetRandom()
+
 	w := wire.NewWire("test-uuid")
 	if err := w.Start(); err != nil {
 		t.Fatalf("Failed to start wire: %v", err)
@@ -89,6 +92,8 @@ func TestCBPeripheral_WriteQueue(t *testing.T) {
 }
 
 func TestCBPeripheral_WriteWithoutResponse(t *testing.T) {
+	util.SetRandom()
+
 	w := wire.NewWire("test-uuid")
 	if err := w.Start(); err != nil {
 		t.Fatalf("Failed to start wire: %v", err)
