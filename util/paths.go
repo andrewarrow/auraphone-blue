@@ -5,6 +5,14 @@ import (
 	"path/filepath"
 )
 
+func SetRandom() {
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, ".apb")
+	os.MkdirAll(path, 0755)
+	tempDir, _ := os.MkdirTemp("/Users/aa/.apb", "t*")
+	os.Setenv("AURAPHONE_BLUE_DIR", tempDir)
+}
+
 // GetDataDir returns the data directory path
 func GetDataDir() string {
 	if envDir := os.Getenv("AURAPHONE_BLUE_DIR"); envDir != "" {

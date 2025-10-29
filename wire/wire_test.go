@@ -4,10 +4,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/user/auraphone-blue/util"
 )
 
 // TestSingleConnection verifies that two devices create a single bidirectional connection
 func TestSingleConnection(t *testing.T) {
+	util.SetRandom()
+
 	// Create two devices
 	deviceA := NewWire("device-a-uuid")
 	deviceB := NewWire("device-b-uuid")
@@ -59,6 +63,7 @@ func TestSingleConnection(t *testing.T) {
 
 // TestConnectionRoles verifies that roles are assigned correctly
 func TestConnectionRoles(t *testing.T) {
+	util.SetRandom()
 	// Create two devices
 	deviceA := NewWire("device-a-uuid")
 	deviceB := NewWire("device-b-uuid")
@@ -135,6 +140,7 @@ func TestConnectionRoles(t *testing.T) {
 
 // TestBidirectionalGATTMessages verifies that GATT messages can flow both directions
 func TestBidirectionalGATTMessages(t *testing.T) {
+	util.SetRandom()
 	// Create two devices
 	deviceA := NewWire("device-a-uuid")
 	deviceB := NewWire("device-b-uuid")
@@ -240,6 +246,7 @@ func TestBidirectionalGATTMessages(t *testing.T) {
 
 // TestDisconnectCallback verifies that disconnect callbacks are triggered
 func TestDisconnectCallback(t *testing.T) {
+	util.SetRandom()
 	// Create two devices
 	deviceA := NewWire("device-a-uuid")
 	deviceB := NewWire("device-b-uuid")
@@ -313,6 +320,7 @@ func TestDisconnectCallback(t *testing.T) {
 
 // TestNoDoubleConnection verifies that connecting twice doesn't create two connections
 func TestNoDoubleConnection(t *testing.T) {
+	util.SetRandom()
 	// Create two devices
 	deviceA := NewWire("device-a-uuid")
 	deviceB := NewWire("device-b-uuid")
