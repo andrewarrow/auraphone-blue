@@ -22,6 +22,39 @@ and are making breaking changes to other packages.
   - A device can be Central to Device A and Peripheral to Device B, but on separate connections
   - The radio-level connection is asymmetric - Central manages the connection timing
 
+Single Socket is CORRECT
+
+  Here's why:
+
+  ✅ Single Socket Matches Real BLE:
+
+  1. One BLE connection = One socket ✅
+    - Real BLE: One L2CAP channel per connection
+    - Your model: One Unix socket per connection
+  2. Full-duplex communication ✅
+    - Real BLE: Both sides can send on the same connection
+    - Your model: Both sides can read/write same socket
+  3. Separate connections for mutual connectivity ✅
+    - Real BLE: A→B and B→A are two connections
+    - Your model: A→B and B→A are two sockets
+  4. Connection asymmetry ✅
+    - Real BLE: Central/Peripheral roles per connection
+    - Your model: Each socket has role assignment
+
+  ❌ Dual Socket Would Be WRONG:
+
+  1. Over-complicated setup
+    - Need handshake to establish second socket
+    - Race conditions during setup
+    - Coordination problems
+  2. Not how real BLE works
+    - Real BLE has ONE radio link per connection
+    - Not two separate channels
+  3. Confusion about "bidirectional"
+    - Real BLE IS bidirectional (both can send/receive)
+    - But roles are asymmetric (different allowed operations)
+    - Single socket captures this correctly
+
 
 # tests
 
