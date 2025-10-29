@@ -25,12 +25,14 @@
 **Priority**: HIGH
 **Estimated Effort**: Medium
 
-- [ ] Test multiple connections to the same device
-- [ ] Verify per-connection state isolation (MTU, discovery cache, request tracker)
-- [ ] Add tests for concurrent discovery on multiple connections
-- [ ] Test connection limits (iOS typically 7-10, Android varies)
+- [x] Test multiple connections to the same device
+- [x] Verify per-connection state isolation (MTU, discovery cache, request tracker)
+- [x] Add tests for concurrent discovery on multiple connections
+- [x] Test connection limits (iOS typically 7-10, Android varies)
 
 **Why**: Critical for realistic BLE scenarios, many apps connect to multiple peripherals
+
+**Status**: ✅ COMPLETED
 
 ---
 
@@ -69,10 +71,9 @@
 
 ## 📝 Known Limitations to Address
 
-1. **UUID-to-handle mapping**: Still uses hash-based temporary approach
+1. ~~**UUID-to-handle mapping**: Still uses hash-based temporary approach~~ ✅ FIXED - Now uses discovery cache
 2. **Execute Write**: Doesn't deliver reassembled data to GATT handler yet
-3. **Discovery cache**: Service tracking needs refinement (parent service association)
-4. **No CCCD support**: Subscriptions not yet implemented
+3. **No CCCD support**: Subscriptions not yet implemented
 
 ---
 
@@ -84,6 +85,6 @@ Before moving to kotlin/ and swift/ integration:
 - ✅ MTU negotiation and enforcement
 - ✅ GATT discovery protocol (server-side)
 - ✅ GATT discovery protocol (client-side API)
-- ⏳ Multiple simultaneous connections
+- ✅ Multiple simultaneous connections
 - ⏳ CCCD writes for subscriptions
-- ⏳ All tests passing with realistic scenarios
+- ✅ All tests passing with realistic scenarios (111 tests total)

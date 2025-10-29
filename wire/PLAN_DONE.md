@@ -1,6 +1,6 @@
 # Wire Package - Completed Work
 
-**Last Updated**: 2025-10-29
+**Last Updated**: 2025-10-29 (Updated with Phase 5)
 
 ## ✅ Completed Phases
 
@@ -33,10 +33,20 @@
   - JSON logs: `l2cap_packets.jsonl`, `att_packets.jsonl`, `gatt_operations.jsonl`
   - Write-only (never read in production)
 
+### Phase 5: Multiple Simultaneous Connections ✅
+- **5.1**: Test multiple centrals connecting to same peripheral
+- **5.2**: Verify per-connection state isolation:
+  - MTU negotiation independent per connection
+  - Discovery cache isolated per connection
+  - Request tracker isolated per connection
+- **5.3**: Concurrent discovery operations across multiple connections
+- **5.4**: Connection limits testing (10 concurrent connections verified)
+- **5.5**: Request tracking isolation under concurrent load
+
 ## 📊 Test Coverage
 
-**106/106 tests passing** across 6 packages:
-- wire: 12 tests
+**111/111 tests passing** across 6 packages:
+- wire: 17 tests (added 5 new multi-connection tests)
 - l2cap: 17 tests
 - att: 27 tests
 - gatt: 25 tests (including 9 discovery tests)
@@ -51,8 +61,10 @@
 - ✅ Automatic fragmentation for long writes
 - ✅ Connection parameter updates
 - ✅ GATT discovery protocol (server-side)
-- ✅ Discovery cache (client-side)
+- ✅ GATT discovery protocol (client-side API)
+- ✅ Discovery cache with per-connection isolation
 - ✅ Binary advertising with TLV encoding
+- ✅ Multiple simultaneous connections (tested up to 10 concurrent)
 - ✅ Comprehensive debug logging
 
 ## 📁 Files Created (2025-10-29)
@@ -79,4 +91,10 @@
 - All packages have comprehensive test coverage
 - `wire/mtu_enforcement_test.go` - MTU verification
 - `wire/connection_params_test.go` - Connection params
-- `gatt/discovery_test.go` - Discovery protocol ⭐ NEW!
+- `wire/discovery_integration_test.go` - Discovery protocol integration
+- `wire/multiple_connections_test.go` - Multi-connection scenarios ⭐ NEW!
+  - Multiple connections to same peripheral
+  - Per-connection state isolation
+  - Concurrent discovery operations
+  - Connection limits testing
+  - Request tracker isolation

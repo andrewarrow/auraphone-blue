@@ -33,7 +33,7 @@ w.SendGATTMessage("peer-uuid", &wire.GATTMessage{
 
 ## ✅ Current Status
 
-**106/106 tests passing** - Full binary L2CAP + ATT + GATT protocol implementation
+**111/111 tests passing** - Full binary L2CAP + ATT + GATT protocol implementation
 
 ### Implemented Features
 - ✅ Binary L2CAP + ATT communication
@@ -42,12 +42,12 @@ w.SendGATTMessage("peer-uuid", &wire.GATTMessage{
 - ✅ Automatic fragmentation for long writes
 - ✅ Connection parameter updates
 - ✅ GATT discovery protocol (server-side)
-- ✅ Discovery cache (client-side)
+- ✅ GATT discovery protocol (client-side API)
+- ✅ Discovery cache with per-connection isolation
 - ✅ Binary advertising with TLV encoding
+- ✅ Multiple simultaneous connections (tested up to 10 concurrent)
 
 ### Next Up
-- ⏳ Client-side discovery API (DiscoverServices, etc.)
-- ⏳ Multiple simultaneous connections
 - ⏳ CCCD writes for subscriptions
 
 ## 🧪 Testing
