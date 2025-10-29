@@ -28,6 +28,11 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 		// Update connection MTU
 		connection.mtu = negotiatedMTU
 
+		// Mark MTU exchange as completed (for Peripheral that receives request)
+		connection.mtuMutex.Lock()
+		connection.mtuExchangeCompleted = true
+		connection.mtuMutex.Unlock()
+
 		// Send MTU response
 		response := &att.ExchangeMTUResponse{
 			ServerRxMTU: uint16(negotiatedMTU),
@@ -62,6 +67,12 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 
 		// Update connection MTU
 		connection.mtu = negotiatedMTU
+
+		// Mark MTU exchange as completed (for Central that receives response)
+		connection.mtuMutex.Lock()
+		connection.mtuExchangeCompleted = true
+		connection.mtuMutex.Unlock()
+
 		logger.Debug(shortHash(w.hardwareUUID)+" Wire", "✅ MTU negotiated with %s: %d bytes", shortHash(peerUUID), negotiatedMTU)
 
 	case *att.PrepareWriteRequest:

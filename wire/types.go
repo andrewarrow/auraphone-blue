@@ -42,19 +42,21 @@ type CharacteristicMessage = GATTMessage
 
 // Connection represents a single bidirectional BLE connection
 type Connection struct {
-	conn              net.Conn
-	remoteUUID        string
-	role              ConnectionRole // Our role in this connection
-	sendMutex         sync.Mutex     // Protects writes to this connection
-	mtu               int            // Current negotiated MTU (starts at DefaultMTU)
-	fragmenter        interface{}    // ATT fragmenter for long writes (type *att.Fragmenter, avoiding import cycle)
-	requestTracker    interface{}    // ATT request tracker (type *att.RequestTracker, avoiding import cycle)
-	params            interface{}    // Connection parameters (type *l2cap.ConnectionParameters, avoiding import cycle)
-	paramsUpdatedAt   time.Time      // When parameters were last updated
-	discoveryCache    interface{}    // GATT discovery cache (type *gatt.DiscoveryCache, avoiding import cycle)
-	cccdManager       interface{}    // CCCD subscription manager (type *gatt.CCCDManager, avoiding import cycle)
-	eventScheduler    *ConnectionEventScheduler // Simulates discrete BLE connection events
-	eventSchedulerMux sync.Mutex     // Protects event scheduler access
+	conn                 net.Conn
+	remoteUUID           string
+	role                 ConnectionRole // Our role in this connection
+	sendMutex            sync.Mutex     // Protects writes to this connection
+	mtu                  int            // Current negotiated MTU (starts at DefaultMTU)
+	mtuExchangeCompleted bool           // True when MTU exchange has completed (or is not needed)
+	mtuMutex             sync.RWMutex   // Protects mtuExchangeCompleted flag
+	fragmenter           interface{}    // ATT fragmenter for long writes (type *att.Fragmenter, avoiding import cycle)
+	requestTracker       interface{}    // ATT request tracker (type *att.RequestTracker, avoiding import cycle)
+	params               interface{}    // Connection parameters (type *l2cap.ConnectionParameters, avoiding import cycle)
+	paramsUpdatedAt      time.Time      // When parameters were last updated
+	discoveryCache       interface{}    // GATT discovery cache (type *gatt.DiscoveryCache, avoiding import cycle)
+	cccdManager          interface{}    // CCCD subscription manager (type *gatt.CCCDManager, avoiding import cycle)
+	eventScheduler       *ConnectionEventScheduler // Simulates discrete BLE connection events
+	eventSchedulerMux    sync.Mutex     // Protects event scheduler access
 }
 
 // GATTMessage represents a GATT operation over the wire

@@ -521,7 +521,11 @@ func TestCCCDInvalidValue(t *testing.T) {
 		t.Fatalf("Failed to connect: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for MTU negotiation to complete
+	err = central.WaitForMTUNegotiation("peripheral-cccd-6", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Failed to wait for MTU negotiation: %v", err)
+	}
 
 	// Try to write invalid CCCD value (wrong length)
 	writeReq := &att.WriteRequest{

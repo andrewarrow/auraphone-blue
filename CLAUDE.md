@@ -1,3 +1,13 @@
+# ultra important
+
+when you make a fix, make it in a realistic BLE way that is inline with how real bluetooth radio works.
+not just a hack for this simulator.
+
+# most important
+
+when you make a fix, make it in a realistic BLE way that is inline with how real bluetooth radio works.
+not just a hack for this simulator.
+
 # rules
 
 always do what is realistic for real BLE communication on ios and android.

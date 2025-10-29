@@ -77,17 +77,18 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 	// Store connection with Peripheral role (they initiated)
 	defaultParams := l2cap.DefaultConnectionParameters()
 	connection := &Connection{
-		conn:            conn,
-		remoteUUID:      peerUUID,
-		role:            RolePeripheral,
-		mtu:             DefaultMTU,                            // Start with default MTU
-		fragmenter:      att.NewFragmenter(),                   // Initialize fragmenter for long writes
-		requestTracker:  att.NewRequestTracker(0),              // Initialize request tracker with default 30s timeout
-		params:          defaultParams,                         // Start with default connection parameters
-		paramsUpdatedAt: time.Now(),
-		discoveryCache:  gatt.NewDiscoveryCache(),              // Initialize discovery cache for client-side discovery
-		cccdManager:     gatt.NewCCCDManager(),                 // Initialize CCCD subscription manager
-		eventScheduler:  NewConnectionEventScheduler(RolePeripheral, defaultParams.IntervalMaxMs()), // Initialize connection event scheduler
+		conn:                 conn,
+		remoteUUID:           peerUUID,
+		role:                 RolePeripheral,
+		mtu:                  DefaultMTU,                            // Start with default MTU
+		mtuExchangeCompleted: true,                                  // Peripheral is ready immediately (doesn't initiate MTU exchange)
+		fragmenter:           att.NewFragmenter(),                   // Initialize fragmenter for long writes
+		requestTracker:       att.NewRequestTracker(0),              // Initialize request tracker with default 30s timeout
+		params:               defaultParams,                         // Start with default connection parameters
+		paramsUpdatedAt:      time.Now(),
+		discoveryCache:       gatt.NewDiscoveryCache(),              // Initialize discovery cache for client-side discovery
+		cccdManager:          gatt.NewCCCDManager(),                 // Initialize CCCD subscription manager
+		eventScheduler:       NewConnectionEventScheduler(RolePeripheral, defaultParams.IntervalMaxMs()), // Initialize connection event scheduler
 	}
 	w.connections[peerUUID] = connection
 	w.mu.Unlock()
@@ -158,17 +159,18 @@ func (w *Wire) Connect(peerUUID string) error {
 	// Store connection with Central role (we initiated)
 	defaultParams := l2cap.DefaultConnectionParameters()
 	connection := &Connection{
-		conn:            conn,
-		remoteUUID:      peerUUID,
-		role:            RoleCentral,
-		mtu:             DefaultMTU,                            // Start with default MTU
-		fragmenter:      att.NewFragmenter(),                   // Initialize fragmenter for long writes
-		requestTracker:  att.NewRequestTracker(0),              // Initialize request tracker with default 30s timeout
-		params:          defaultParams,                         // Start with default connection parameters
-		paramsUpdatedAt: time.Now(),
-		discoveryCache:  gatt.NewDiscoveryCache(),              // Initialize discovery cache for client-side discovery
-		cccdManager:     gatt.NewCCCDManager(),                 // Initialize CCCD subscription manager
-		eventScheduler:  NewConnectionEventScheduler(RoleCentral, defaultParams.IntervalMaxMs()), // Initialize connection event scheduler
+		conn:                 conn,
+		remoteUUID:           peerUUID,
+		role:                 RoleCentral,
+		mtu:                  DefaultMTU,                            // Start with default MTU
+		mtuExchangeCompleted: false,                                 // Central will initiate MTU exchange
+		fragmenter:           att.NewFragmenter(),                   // Initialize fragmenter for long writes
+		requestTracker:       att.NewRequestTracker(0),              // Initialize request tracker with default 30s timeout
+		params:               defaultParams,                         // Start with default connection parameters
+		paramsUpdatedAt:      time.Now(),
+		discoveryCache:       gatt.NewDiscoveryCache(),              // Initialize discovery cache for client-side discovery
+		cccdManager:          gatt.NewCCCDManager(),                 // Initialize CCCD subscription manager
+		eventScheduler:       NewConnectionEventScheduler(RoleCentral, defaultParams.IntervalMaxMs()), // Initialize connection event scheduler
 	}
 
 	w.mu.Lock()
@@ -240,8 +242,17 @@ func (w *Wire) Connect(peerUUID string) error {
 		case resp := <-responseC:
 			if resp.Error != nil {
 				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ MTU exchange with %s failed: %v", shortHash(peerUUID), resp.Error)
+				// Mark MTU exchange as completed even on failure (connection continues with default MTU)
+				w.mu.RLock()
+				conn := w.connections[peerUUID]
+				w.mu.RUnlock()
+				if conn != nil {
+					conn.mtuMutex.Lock()
+					conn.mtuExchangeCompleted = true
+					conn.mtuMutex.Unlock()
+				}
 			}
-			// Success is already logged in handleATTPacket
+			// Success is already logged in handleATTPacket, and flag is set there
 		}
 	}()
 
@@ -359,16 +370,15 @@ func (w *Wire) WaitForMTUNegotiation(peerUUID string, timeout time.Duration) err
 			return fmt.Errorf("not connected to %s", peerUUID)
 		}
 
-		// Check if there's a pending MTU request
-		if connection.requestTracker != nil {
-			tracker := connection.requestTracker.(*att.RequestTracker)
-			opcode, _, _, hasPending := tracker.GetPendingInfo()
+		// Check if MTU exchange has completed
+		// For Peripheral role: Always true (set during connection initialization)
+		// For Central role: Set to true when MTU exchange completes (or fails)
+		connection.mtuMutex.RLock()
+		completed := connection.mtuExchangeCompleted
+		connection.mtuMutex.RUnlock()
 
-			// If there's no pending request, or the pending request is not an MTU exchange,
-			// then MTU negotiation has completed
-			if !hasPending || opcode != att.OpExchangeMTURequest {
-				return nil
-			}
+		if completed {
+			return nil
 		}
 
 		// Sleep briefly before checking again
