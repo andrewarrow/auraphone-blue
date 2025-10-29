@@ -2,6 +2,7 @@ package swift
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/user/auraphone-blue/wire"
@@ -47,6 +48,7 @@ type CBPeripheral struct {
 	Delegate                 CBPeripheralDelegate
 	Name                     string
 	UUID                     string
+	State                    CBPeripheralState // REALISTIC: Track connection state
 	Services                 []*CBService
 	wire                     *wire.Wire
 	remoteUUID               string
@@ -54,6 +56,7 @@ type CBPeripheral struct {
 	notifyingCharacteristics map[string]bool // characteristic UUID -> is notifying
 	writeQueue               chan writeRequest
 	writeQueueStop           chan struct{}
+	mu                       sync.RWMutex // Protect state changes
 }
 
 func (p *CBPeripheral) DiscoverServices(serviceUUIDs []string) {
@@ -123,10 +126,31 @@ func (p *CBPeripheral) DiscoverServices(serviceUUIDs []string) {
 }
 
 func (p *CBPeripheral) DiscoverCharacteristics(characteristicUUIDs []string, service *CBService) {
-	// Characteristics are already discovered with services in this implementation
-	if p.Delegate != nil {
-		p.Delegate.DidDiscoverCharacteristics(p, service, nil)
-	}
+	// REALISTIC iOS BEHAVIOR: Characteristic discovery is asynchronous, even if services are already known
+	// Real iOS takes 20-100ms to discover characteristics
+	go func() {
+		// Simulate realistic discovery delay
+		time.Sleep(50 * time.Millisecond)
+
+		// Characteristics are already discovered with services in this implementation
+		// Just filter by requested UUIDs if specified
+		if len(characteristicUUIDs) > 0 && service != nil {
+			filteredChars := make([]*CBCharacteristic, 0)
+			for _, char := range service.Characteristics {
+				for _, uuid := range characteristicUUIDs {
+					if char.UUID == uuid {
+						filteredChars = append(filteredChars, char)
+						break
+					}
+				}
+			}
+			service.Characteristics = filteredChars
+		}
+
+		if p.Delegate != nil {
+			p.Delegate.DidDiscoverCharacteristics(p, service, nil)
+		}
+	}()
 }
 
 // StartWriteQueue initializes the async write queue (matches real BLE behavior)
@@ -326,7 +350,20 @@ func (p *CBPeripheral) HandleGATTMessage(peerUUID string, msg *wire.GATTMessage)
 		return true
 	}
 
-	// TODO: Handle gatt_response for read operations
+	// Handle gatt_response for read operations
+	if msg.Type == "gatt_response" && msg.Operation == "read_response" {
+		// Update characteristic value
+		dataCopy := make([]byte, len(msg.Data))
+		copy(dataCopy, msg.Data)
+		char.Value = dataCopy
+
+		// Deliver callback
+		if p.Delegate != nil {
+			p.Delegate.DidUpdateValueForCharacteristic(p, char, nil)
+		}
+		return true
+	}
+
 	return false
 }
 

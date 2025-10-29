@@ -10,8 +10,8 @@ import (
 	"github.com/user/auraphone-blue/phone"
 )
 
-// CBConnectionEvent represents a CoreBluetooth-level connection lifecycle event
-type CBConnectionEvent struct {
+// CBConnectionLifecycleEvent represents a CoreBluetooth-level connection lifecycle event (renamed to avoid conflict with CBConnectionEvent enum)
+type CBConnectionLifecycleEvent struct {
 	Timestamp         int64             `json:"timestamp"` // nanoseconds since epoch
 	Event             string            `json:"event"`     // connect_called, connect_blocked, connect_started, connect_completed, etc.
 	PeripheralUUID    string            `json:"peripheral_uuid"`
@@ -47,7 +47,7 @@ func NewCBConnectionLifecycleLogger(localUUID string, enabled bool) *CBConnectio
 }
 
 // Log writes a CB connection event to the JSONL file
-func (log *CBConnectionLifecycleLogger) Log(event CBConnectionEvent) {
+func (log *CBConnectionLifecycleLogger) Log(event CBConnectionLifecycleEvent) {
 	if !log.enabled {
 		return
 	}
@@ -81,7 +81,7 @@ func (log *CBConnectionLifecycleLogger) Log(event CBConnectionEvent) {
 
 // LogConnectCalled logs when Connect() is called
 func (log *CBConnectionLifecycleLogger) LogConnectCalled(uuid string, alreadyConnecting, alreadyConnected bool, connectingCount, pendingCount int) {
-	log.Log(CBConnectionEvent{
+	log.Log(CBConnectionLifecycleEvent{
 		Event:             "connect_called",
 		PeripheralUUID:    uuid,
 		AlreadyConnecting: alreadyConnecting,
@@ -93,7 +93,7 @@ func (log *CBConnectionLifecycleLogger) LogConnectCalled(uuid string, alreadyCon
 
 // LogConnectBlocked logs when Connect() is blocked due to existing connection
 func (log *CBConnectionLifecycleLogger) LogConnectBlocked(uuid string, reason string) {
-	log.Log(CBConnectionEvent{
+	log.Log(CBConnectionLifecycleEvent{
 		Event:          "connect_blocked",
 		PeripheralUUID: uuid,
 		Details:        map[string]string{"reason": reason},
@@ -102,7 +102,7 @@ func (log *CBConnectionLifecycleLogger) LogConnectBlocked(uuid string, reason st
 
 // LogConnectStarted logs when Connect() actually starts a new connection attempt
 func (log *CBConnectionLifecycleLogger) LogConnectStarted(uuid string) {
-	log.Log(CBConnectionEvent{
+	log.Log(CBConnectionLifecycleEvent{
 		Event:          "connect_started",
 		PeripheralUUID: uuid,
 	})
@@ -114,7 +114,7 @@ func (log *CBConnectionLifecycleLogger) LogConnectCompleted(uuid string, success
 	if !success {
 		eventType = "connect_failed"
 	}
-	log.Log(CBConnectionEvent{
+	log.Log(CBConnectionLifecycleEvent{
 		Event:          eventType,
 		PeripheralUUID: uuid,
 	})
@@ -122,7 +122,7 @@ func (log *CBConnectionLifecycleLogger) LogConnectCompleted(uuid string, success
 
 // LogConnectingFlagCleared logs when the connecting flag is removed
 func (log *CBConnectionLifecycleLogger) LogConnectingFlagCleared(uuid string) {
-	log.Log(CBConnectionEvent{
+	log.Log(CBConnectionLifecycleEvent{
 		Event:          "connecting_flag_cleared",
 		PeripheralUUID: uuid,
 	})

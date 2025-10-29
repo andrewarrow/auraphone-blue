@@ -17,7 +17,7 @@ type CBCentralManagerDelegate interface {
 
 type CBCentralManager struct {
 	Delegate            CBCentralManagerDelegate
-	State               string
+	State               CBManagerState // Use enum instead of string
 	uuid                string
 	wire                *wire.Wire
 	mu                  sync.RWMutex
@@ -27,20 +27,39 @@ type CBCentralManager struct {
 	discoveredDevices   map[string]bool          // Track devices already reported to delegate (per scan session)
 	connectingDevices   map[string]bool          // Track devices with connection in progress (prevents duplicate Connect calls)
 	lifecycleLog        *CBConnectionLifecycleLogger // Debug logging for connection lifecycle
+	connectedPeripherals map[string]bool         // Track peripherals we've connected to (for RetrievePeripheralsByIdentifiers)
 }
 
 func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedWire *wire.Wire) *CBCentralManager {
 	cm := &CBCentralManager{
-		Delegate:            delegate,
-		State:               "poweredOn",
-		uuid:                uuid,
-		wire:                sharedWire,
-		pendingPeripherals:  make(map[string]*CBPeripheral),
-		autoReconnectActive: true,                  // iOS auto-reconnect is always active
-		discoveredDevices:   make(map[string]bool), // Initialize discovery tracking
-		connectingDevices:   make(map[string]bool), // Initialize connection tracking
-		lifecycleLog:        NewCBConnectionLifecycleLogger(uuid, true), // Enable connection lifecycle logging
+		Delegate:             delegate,
+		State:                CBManagerStateUnknown, // REALISTIC: Start in unknown state, not poweredOn
+		uuid:                 uuid,
+		wire:                 sharedWire,
+		pendingPeripherals:   make(map[string]*CBPeripheral),
+		autoReconnectActive:  true,                  // iOS auto-reconnect is always active
+		discoveredDevices:    make(map[string]bool), // Initialize discovery tracking
+		connectingDevices:    make(map[string]bool), // Initialize connection tracking
+		lifecycleLog:         NewCBConnectionLifecycleLogger(uuid, true), // Enable connection lifecycle logging
+		connectedPeripherals: make(map[string]bool), // Track connection history
 	}
+
+	// REALISTIC iOS BEHAVIOR: Bluetooth initialization takes time (50-200ms)
+	// Notify delegate of state transition after initialization delay
+	go func() {
+		// Simulate BLE stack initialization delay
+		time.Sleep(100 * time.Millisecond)
+
+		cm.mu.Lock()
+		cm.State = CBManagerStatePoweredOn
+		cm.mu.Unlock()
+
+		// CRITICAL: Always call DidUpdateCentralState when state changes
+		// Real iOS apps rely on this callback to know when they can start scanning
+		if delegate != nil {
+			delegate.DidUpdateCentralState(*cm)
+		}
+	}()
 
 	// Set up disconnect callback
 	sharedWire.SetDisconnectCallback(func(deviceUUID string) {
@@ -48,9 +67,17 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedW
 		cm.mu.RLock()
 		var peripheralCopy CBPeripheral
 		if peripheral, exists := cm.pendingPeripherals[deviceUUID]; exists {
+			// REALISTIC iOS BEHAVIOR: Set peripheral state to disconnected
+			peripheral.mu.Lock()
+			peripheral.State = CBPeripheralStateDisconnected
+			peripheral.mu.Unlock()
+
 			peripheralCopy = *peripheral
 		} else {
-			peripheralCopy = CBPeripheral{UUID: deviceUUID}
+			peripheralCopy = CBPeripheral{
+				UUID:  deviceUUID,
+				State: CBPeripheralStateDisconnected,
+			}
 		}
 		autoReconnect := cm.autoReconnectActive
 		cm.mu.RUnlock()
@@ -190,14 +217,29 @@ func (c *CBCentralManager) StopScan() {
 
 // RetrievePeripheralsByIdentifiers retrieves known peripherals by their identifiers
 // Matches: centralManager.retrievePeripherals(withIdentifiers:)
-// This allows connecting to peripherals without scanning (critical for iOS-to-iOS connections)
-// In real iOS, this returns peripherals that the system knows about (previously connected or discovered)
-// In our simulator, we check if the device exists in the wire layer (socket file exists)
+// REALISTIC iOS BEHAVIOR: Returns peripherals the system knows about:
+// - Peripherals currently connected to this app
+// - Peripherals previously connected to this app (iOS remembers them)
+// - Does NOT return peripherals you've never connected to, even if they're nearby
 func (c *CBCentralManager) RetrievePeripheralsByIdentifiers(identifiers []string) []*CBPeripheral {
 	peripherals := make([]*CBPeripheral, 0, len(identifiers))
 
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	for _, uuid := range identifiers {
-		// Check if this device exists (has a socket file or is known to wire layer)
+		// REALISTIC: Only return peripherals we've connected to before
+		if !c.connectedPeripherals[uuid] {
+			continue
+		}
+
+		// Check if we have a pending peripheral (currently connected or remembered for auto-reconnect)
+		if existingPeripheral, exists := c.pendingPeripherals[uuid]; exists {
+			peripherals = append(peripherals, existingPeripheral)
+			continue
+		}
+
+		// Create new peripheral object for previously connected device
 		if c.wire.DeviceExists(uuid) {
 			// Read advertising data to get device name if available
 			advData, err := c.wire.ReadAdvertisingData(uuid)
@@ -206,11 +248,19 @@ func (c *CBCentralManager) RetrievePeripheralsByIdentifiers(identifiers []string
 				deviceName = advData.DeviceName
 			}
 
+			// Determine current state
+			state := CBPeripheralStateDisconnected
+			if c.wire.IsConnected(uuid) {
+				state = CBPeripheralStateConnected
+			}
+
 			peripheral := &CBPeripheral{
 				UUID:       uuid,
 				Name:       deviceName,
+				State:      state,
 				wire:       c.wire,
 				remoteUUID: uuid,
+				notifyingCharacteristics: make(map[string]bool),
 			}
 			peripherals = append(peripherals, peripheral)
 		}
@@ -262,6 +312,11 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 	peripheral.wire = c.wire
 	peripheral.remoteUUID = peripheral.UUID
 
+	// REALISTIC iOS BEHAVIOR: Set peripheral state to connecting
+	peripheral.mu.Lock()
+	peripheral.State = CBPeripheralStateConnecting
+	peripheral.mu.Unlock()
+
 	// iOS remembers this peripheral for auto-reconnect
 	c.mu.Lock()
 	c.pendingPeripherals[peripheral.UUID] = peripheral
@@ -278,7 +333,12 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 		c.lifecycleLog.LogConnectingFlagCleared(peripheral.UUID)
 
 		if err != nil {
-			// Connection failed - pass copy to delegate
+			// Connection failed - set peripheral state to disconnected
+			peripheral.mu.Lock()
+			peripheral.State = CBPeripheralStateDisconnected
+			peripheral.mu.Unlock()
+
+			// Pass copy to delegate
 			c.lifecycleLog.LogConnectCompleted(peripheral.UUID, false)
 			peripheralCopy := *peripheral
 			c.Delegate.DidFailToConnectPeripheral(*c, peripheralCopy, err)
@@ -294,7 +354,18 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 			return
 		}
 
-		// Connection succeeded - pass copy to delegate
+		// Connection succeeded
+		// REALISTIC iOS BEHAVIOR: Set peripheral state to connected
+		peripheral.mu.Lock()
+		peripheral.State = CBPeripheralStateConnected
+		peripheral.mu.Unlock()
+
+		// Track that we've connected to this peripheral (for RetrievePeripheralsByIdentifiers)
+		c.mu.Lock()
+		c.connectedPeripherals[peripheral.UUID] = true
+		c.mu.Unlock()
+
+		// Pass copy to delegate
 		c.lifecycleLog.LogConnectCompleted(peripheral.UUID, true)
 		peripheralCopy := *peripheral
 		c.Delegate.DidConnectPeripheral(*c, peripheralCopy)

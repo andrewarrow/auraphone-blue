@@ -790,11 +790,16 @@ func (w *Wire) WriteCharacteristicNoResponse(peerUUID, serviceUUID, charUUID str
 	return w.WriteCharacteristic(peerUUID, serviceUUID, charUUID, data)
 }
 
-// ReadCharacteristic reads from a characteristic (stub for old API)
-// TODO Step 5: Implement via SendGATTMessage request/response
+// ReadCharacteristic reads from a characteristic
+// Response will come via gatt_response message type to the peer's message handler
 func (w *Wire) ReadCharacteristic(peerUUID, serviceUUID, charUUID string) error {
-	// Not implemented yet - return error for now
-	return fmt.Errorf("ReadCharacteristic not implemented in Step 3")
+	msg := &GATTMessage{
+		Type:               "gatt_request",
+		Operation:          "read",
+		ServiceUUID:        serviceUUID,
+		CharacteristicUUID: charUUID,
+	}
+	return w.SendGATTMessage(peerUUID, msg)
 }
 
 // SubscribeCharacteristic subscribes to notifications (stub for old API)

@@ -88,7 +88,7 @@ const (
 // Matches iOS CoreBluetooth CBPeripheralManager API
 type CBPeripheralManager struct {
 	Delegate        CBPeripheralManagerDelegate
-	State           string // "poweredOn", "poweredOff", etc.
+	State           CBManagerState // Use enum instead of string
 	IsAdvertising   bool
 	uuid            string
 	wire            *wire.Wire
@@ -103,7 +103,7 @@ type CBPeripheralManager struct {
 func NewCBPeripheralManager(delegate CBPeripheralManagerDelegate, uuid string, deviceName string, sharedWire *wire.Wire) *CBPeripheralManager {
 	pm := &CBPeripheralManager{
 		Delegate:          delegate,
-		State:             "poweredOn",
+		State:             CBManagerStateUnknown, // REALISTIC: Start in unknown state
 		uuid:              uuid,
 		wire:              sharedWire,
 		services:          make([]*CBMutableService, 0),
@@ -111,11 +111,16 @@ func NewCBPeripheralManager(delegate CBPeripheralManagerDelegate, uuid string, d
 		connectedCentrals: make(map[string]CBCentral),
 	}
 
-	// Notify delegate of initial state
+	// REALISTIC iOS BEHAVIOR: Bluetooth initialization takes time (50-200ms)
+	// Notify delegate of state transition after initialization delay
 	if delegate != nil {
 		go func() {
-			// Small delay to match real iOS behavior
-			time.Sleep(10 * time.Millisecond)
+			// Simulate BLE stack initialization delay
+			time.Sleep(100 * time.Millisecond)
+
+			pm.State = CBManagerStatePoweredOn
+
+			// CRITICAL: Always call DidUpdatePeripheralState when state changes
 			delegate.DidUpdatePeripheralState(pm)
 		}()
 	}
@@ -309,9 +314,27 @@ func (pm *CBPeripheralManager) UpdateValue(value []byte, characteristic *CBMutab
 // RespondToRequest responds to a read/write request from a central
 // Matches: peripheralManager.respond(to:withResult:)
 func (pm *CBPeripheralManager) RespondToRequest(request *CBATTRequest, result int) {
-	// In the simulator, we handle requests synchronously
-	// Real iOS would send ATT response packets back to the central
-	logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📨 Responded to request from central %s (result=%d)", request.Central.UUID[:8], result)
+	// REALISTIC iOS BEHAVIOR: Send ATT response back to the central
+	if result == int(CBATTErrorSuccess) && request.Characteristic != nil {
+		// Success - send characteristic value back
+		msg := &wire.GATTMessage{
+			Type:               "gatt_response",
+			Operation:          "read_response",
+			ServiceUUID:        request.Characteristic.Service.UUID,
+			CharacteristicUUID: request.Characteristic.UUID,
+			Data:               request.Characteristic.Value,
+		}
+
+		err := pm.wire.SendGATTMessage(request.Central.UUID, msg)
+		if err != nil {
+			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "⚠️  Failed to send read response to central %s: %v", request.Central.UUID[:8], err)
+		} else {
+			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📨 Sent read response to central %s (%d bytes)", request.Central.UUID[:8], len(request.Characteristic.Value))
+		}
+	} else {
+		// Error response
+		logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📨 Responded to request from central %s with error (result=%d)", request.Central.UUID[:8], result)
+	}
 }
 
 // buildGATTTable converts services to wire.GATTTable format
