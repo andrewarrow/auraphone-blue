@@ -185,6 +185,18 @@ func (d *photoTransferDelegate) DidUpdateValueForCharacteristic(peripheral *swif
 	}
 }
 
+func (d *photoTransferDelegate) DidDiscoverDescriptorsForCharacteristic(peripheral *swift.CBPeripheral, characteristic *swift.CBCharacteristic, err error) {
+	// Not needed for photo transfer
+}
+
+func (d *photoTransferDelegate) DidWriteValueForDescriptor(peripheral *swift.CBPeripheral, descriptor *swift.CBDescriptor, err error) {
+	// Not needed for photo transfer
+}
+
+func (d *photoTransferDelegate) DidUpdateValueForDescriptor(peripheral *swift.CBPeripheral, descriptor *swift.CBDescriptor, err error) {
+	// Not needed for photo transfer
+}
+
 // sendPhotoChunks sends photo chunks to a peer who subscribed
 // sendPhotoChunks sends OUR photo (convenience wrapper)
 func (ip *IPhone) sendPhotoChunks(peerUUID string) {

@@ -3,6 +3,7 @@ package android
 import (
 	"fmt"
 
+	"github.com/user/auraphone-blue/kotlin"
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
 	pb "github.com/user/auraphone-blue/proto"
