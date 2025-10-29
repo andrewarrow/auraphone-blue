@@ -473,31 +473,32 @@ func TestRequestTrackerIsolation(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Both centrals discover services multiple times concurrently
+	// Both centrals discover services multiple times, but sequentially per connection
 	// This tests that request tracking doesn't interfere between connections
+	// Real BLE: only ONE ATT request can be pending per connection at a time
 	numRequests := 5
 	var wg sync.WaitGroup
 	errors1 := make([]error, numRequests)
 	errors2 := make([]error, numRequests)
 
-	for i := 0; i < numRequests; i++ {
-		wg.Add(2)
+	// Launch sequential discoveries for each central (in parallel with each other)
+	wg.Add(2)
 
-		go func(idx int) {
-			defer wg.Done()
-			errors1[idx] = central1.DiscoverServices("peripheral-tracker")
-		}(i)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < numRequests; i++ {
+			errors1[i] = central1.DiscoverServices("peripheral-tracker")
+		}
+	}()
 
-		go func(idx int) {
-			defer wg.Done()
-			errors2[idx] = central2.DiscoverServices("peripheral-tracker")
-		}(i)
-
-		time.Sleep(20 * time.Millisecond) // Slight delay between batches
-	}
+	go func() {
+		defer wg.Done()
+		for i := 0; i < numRequests; i++ {
+			errors2[i] = central2.DiscoverServices("peripheral-tracker")
+		}
+	}()
 
 	wg.Wait()
-	time.Sleep(2000 * time.Millisecond) // Wait for all responses (increased for concurrent load)
 
 	// Count successes
 	success1 := 0
