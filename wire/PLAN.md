@@ -1,14 +1,4 @@
 
-  2. ✅ FIXED: Error Response Opcode is Hardcoded (wire_gatt.go)
-
-  Fixed in wire_gatt.go:89-117
-  - Now maps msg.Operation to correct request opcode
-  - read → OpReadRequest
-  - write → OpWriteRequest
-  - subscribe/unsubscribe → OpWriteRequest (CCCD writes)
-  - Also resolves handle from UUID for error responses
-  - Added comprehensive tests in error_response_test.go
-
   3. No Graceful Disconnect Protocol
 
   - Current: Socket just closes abruptly

@@ -76,6 +76,12 @@ type BluetoothGattCallback interface {
 	OnDescriptorRead(gatt *BluetoothGatt, descriptor *BluetoothGattDescriptor, status int)
 }
 
+// gattOperation represents a queued GATT operation
+type gattOperation struct {
+	operationType string      // "read", "write", "writeDescriptor", "readDescriptor"
+	execute       func() error // The actual operation to execute
+}
+
 type BluetoothGatt struct {
 	callback                 BluetoothGattCallback
 	wire                     *wire.Wire
@@ -83,8 +89,73 @@ type BluetoothGatt struct {
 	services                 []*BluetoothGattService
 	notifyingCharacteristics map[string]bool // characteristic UUID -> is notifying
 	autoConnect              bool            // Android autoConnect flag for auto-reconnect
-	operationInProgress      bool            // CRITICAL: Android BLE requires operation serialization
-	operationMutex           sync.Mutex      // Protects operationInProgress flag
+
+	// CRITICAL: Android BLE requires operation serialization via queue
+	// Real Android queues operations internally and processes them one at a time
+	operationQueue           chan *gattOperation // Queue for GATT operations
+	queueDone                chan struct{}       // Signal to stop queue processor
+	operationQueueStarted    bool
+	operationQueueMutex      sync.Mutex
+}
+
+// startOperationQueue starts the operation queue processor if not already started
+// This ensures all GATT operations are serialized (one at a time)
+func (g *BluetoothGatt) startOperationQueue() {
+	g.operationQueueMutex.Lock()
+	defer g.operationQueueMutex.Unlock()
+
+	if g.operationQueueStarted {
+		return
+	}
+
+	// Create queue channel (buffered to allow queueing multiple operations)
+	// Real Android can queue multiple operations, but they execute one at a time
+	g.operationQueue = make(chan *gattOperation, 100)
+	g.queueDone = make(chan struct{})
+	g.operationQueueStarted = true
+
+	// Start queue processor goroutine
+	go g.processOperationQueue()
+
+	logger.Debug("BluetoothGatt", "✅ Operation queue started for connection to %s", g.remoteUUID[:8])
+}
+
+// processOperationQueue processes queued operations one at a time
+// This matches real Android BLE behavior where only one operation can be in progress
+func (g *BluetoothGatt) processOperationQueue() {
+	for {
+		select {
+		case op := <-g.operationQueue:
+			// Execute the operation (blocks until complete)
+			// This serialization is the key to matching Android BLE behavior
+			err := op.execute()
+			if err != nil {
+				logger.Debug("BluetoothGatt", "Operation failed: %v", err)
+			}
+		case <-g.queueDone:
+			// Stop processing
+			return
+		}
+	}
+}
+
+// enqueueOperation adds an operation to the queue for serial execution
+func (g *BluetoothGatt) enqueueOperation(opType string, execute func() error) bool {
+	g.startOperationQueue() // Ensure queue is started
+
+	op := &gattOperation{
+		operationType: opType,
+		execute:       execute,
+	}
+
+	select {
+	case g.operationQueue <- op:
+		return true
+	default:
+		// Queue is full - this is an error condition
+		logger.Warn("BluetoothGatt", "❌ Operation queue full - dropping %s operation", opType)
+		return false
+	}
 }
 
 func (g *BluetoothGatt) DiscoverServices() bool {
@@ -204,24 +275,14 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 		return false
 	}
 
-	// CRITICAL: Android BLE requires operation serialization
-	// Real Android returns false if an operation is already in progress
-	g.operationMutex.Lock()
-	if g.operationInProgress {
-		g.operationMutex.Unlock()
-		logger.Debug("BluetoothGatt", "❌ WriteCharacteristic rejected - operation already in progress (remote=%s)", g.remoteUUID[:8])
-		return false // Android returns false when busy
-	}
-	g.operationInProgress = true
-	g.operationMutex.Unlock()
-
-	// Copy the value before spawning goroutine to avoid race conditions
+	// Copy the value before queueing to avoid race conditions
 	// (caller might modify characteristic.Value after this call returns)
 	valueCopy := make([]byte, len(characteristic.Value))
 	copy(valueCopy, characteristic.Value)
 
-	// Write asynchronously (matches real Android BLE behavior)
-	go func() {
+	// CRITICAL: Enqueue operation instead of rejecting
+	// Real Android queues operations and processes them serially
+	return g.enqueueOperation("write", func() error {
 		var err error
 		if characteristic.WriteType == WRITE_TYPE_NO_RESPONSE {
 			err = g.wire.WriteCharacteristicNoResponse(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, valueCopy)
@@ -229,11 +290,7 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 			err = g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, valueCopy)
 		}
 
-		// Clear busy flag BEFORE callback (allows next operation to start)
-		g.operationMutex.Lock()
-		g.operationInProgress = false
-		g.operationMutex.Unlock()
-
+		// Callback after operation completes
 		if g.callback != nil {
 			if err != nil {
 				g.callback.OnCharacteristicWrite(g, characteristic, 1) // GATT_FAILURE = 1
@@ -241,9 +298,9 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 				g.callback.OnCharacteristicWrite(g, characteristic, 0) // GATT_SUCCESS = 0
 			}
 		}
-	}()
 
-	return true
+		return err
+	})
 }
 
 func (g *BluetoothGatt) ReadCharacteristic(characteristic *BluetoothGattCharacteristic) bool {
@@ -254,26 +311,12 @@ func (g *BluetoothGatt) ReadCharacteristic(characteristic *BluetoothGattCharacte
 		return false
 	}
 
-	// CRITICAL: Android BLE requires operation serialization
-	// Real Android returns false if an operation is already in progress
-	g.operationMutex.Lock()
-	if g.operationInProgress {
-		g.operationMutex.Unlock()
-		logger.Debug("BluetoothGatt", "❌ ReadCharacteristic rejected - operation already in progress (remote=%s)", g.remoteUUID[:8])
-		return false // Android returns false when busy
-	}
-	g.operationInProgress = true
-	g.operationMutex.Unlock()
-
-	// Read asynchronously (matches real Android BLE behavior)
-	go func() {
+	// CRITICAL: Enqueue operation instead of rejecting
+	// Real Android queues operations and processes them serially
+	return g.enqueueOperation("read", func() error {
 		err := g.wire.ReadCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
 
-		// Clear busy flag BEFORE callback (allows next operation to start)
-		g.operationMutex.Lock()
-		g.operationInProgress = false
-		g.operationMutex.Unlock()
-
+		// Callback after operation completes
 		if g.callback != nil {
 			if err != nil {
 				g.callback.OnCharacteristicRead(g, characteristic, 1) // GATT_FAILURE = 1
@@ -281,9 +324,9 @@ func (g *BluetoothGatt) ReadCharacteristic(characteristic *BluetoothGattCharacte
 				g.callback.OnCharacteristicRead(g, characteristic, 0) // GATT_SUCCESS = 0
 			}
 		}
-	}()
 
-	return true
+		return err
+	})
 }
 
 // GetCharacteristic finds a characteristic by UUID
@@ -352,22 +395,13 @@ func (g *BluetoothGatt) WriteDescriptor(descriptor *BluetoothGattDescriptor) boo
 		return false
 	}
 
-	// CRITICAL: Android BLE requires operation serialization
-	g.operationMutex.Lock()
-	if g.operationInProgress {
-		g.operationMutex.Unlock()
-		logger.Debug("BluetoothGatt", "❌ WriteDescriptor rejected - operation already in progress (remote=%s)", g.remoteUUID[:8])
-		return false
-	}
-	g.operationInProgress = true
-	g.operationMutex.Unlock()
-
-	// Copy the value before spawning goroutine
+	// Copy the value before queueing
 	valueCopy := make([]byte, len(descriptor.Value))
 	copy(valueCopy, descriptor.Value)
 
-	// Write asynchronously (matches real Android BLE behavior)
-	go func() {
+	// CRITICAL: Enqueue operation instead of rejecting
+	// Real Android queues operations and processes them serially
+	return g.enqueueOperation("writeDescriptor", func() error {
 		// Send descriptor write as a regular characteristic write to the descriptor UUID
 		// Wire layer treats descriptors as special characteristics
 		err := g.wire.WriteCharacteristic(
@@ -377,11 +411,7 @@ func (g *BluetoothGatt) WriteDescriptor(descriptor *BluetoothGattDescriptor) boo
 			valueCopy,
 		)
 
-		// Clear busy flag BEFORE callback
-		g.operationMutex.Lock()
-		g.operationInProgress = false
-		g.operationMutex.Unlock()
-
+		// Callback after operation completes
 		if g.callback != nil {
 			if err != nil {
 				g.callback.OnDescriptorWrite(g, descriptor, 1) // GATT_FAILURE
@@ -389,9 +419,9 @@ func (g *BluetoothGatt) WriteDescriptor(descriptor *BluetoothGattDescriptor) boo
 				g.callback.OnDescriptorWrite(g, descriptor, 0) // GATT_SUCCESS
 			}
 		}
-	}()
 
-	return true
+		return err
+	})
 }
 
 // ReadDescriptor reads a value from a descriptor
@@ -404,18 +434,9 @@ func (g *BluetoothGatt) ReadDescriptor(descriptor *BluetoothGattDescriptor) bool
 		return false
 	}
 
-	// CRITICAL: Android BLE requires operation serialization
-	g.operationMutex.Lock()
-	if g.operationInProgress {
-		g.operationMutex.Unlock()
-		logger.Debug("BluetoothGatt", "❌ ReadDescriptor rejected - operation already in progress (remote=%s)", g.remoteUUID[:8])
-		return false
-	}
-	g.operationInProgress = true
-	g.operationMutex.Unlock()
-
-	// Read asynchronously (matches real Android BLE behavior)
-	go func() {
+	// CRITICAL: Enqueue operation instead of rejecting
+	// Real Android queues operations and processes them serially
+	return g.enqueueOperation("readDescriptor", func() error {
 		// Send descriptor read as a regular characteristic read from the descriptor UUID
 		err := g.wire.ReadCharacteristic(
 			g.remoteUUID,
@@ -423,11 +444,7 @@ func (g *BluetoothGatt) ReadDescriptor(descriptor *BluetoothGattDescriptor) bool
 			descriptor.UUID, // Descriptor UUID
 		)
 
-		// Clear busy flag BEFORE callback
-		g.operationMutex.Lock()
-		g.operationInProgress = false
-		g.operationMutex.Unlock()
-
+		// Callback after operation completes
 		if g.callback != nil {
 			if err != nil {
 				g.callback.OnDescriptorRead(g, descriptor, 1) // GATT_FAILURE
@@ -435,9 +452,9 @@ func (g *BluetoothGatt) ReadDescriptor(descriptor *BluetoothGattDescriptor) bool
 				g.callback.OnDescriptorRead(g, descriptor, 0) // GATT_SUCCESS
 			}
 		}
-	}()
 
-	return true
+		return err
+	})
 }
 
 // HandleGATTMessage is called by android.go when a GATT message arrives for this connection
@@ -498,7 +515,14 @@ func (g *BluetoothGatt) Disconnect() {
 // Matches Android's BluetoothGatt.close() - releases resources
 func (g *BluetoothGatt) Close() {
 	g.Disconnect()
-	// Additional cleanup would go here if needed
+
+	// Stop the operation queue processor
+	g.operationQueueMutex.Lock()
+	if g.operationQueueStarted {
+		close(g.queueDone)
+		g.operationQueueStarted = false
+	}
+	g.operationQueueMutex.Unlock()
 }
 
 // attemptReconnect implements Android's autoConnect=true behavior

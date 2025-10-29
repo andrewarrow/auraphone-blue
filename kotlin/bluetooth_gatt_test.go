@@ -153,8 +153,10 @@ func TestBluetoothGatt_WriteCharacteristic(t *testing.T) {
 	}
 }
 
-// TestBluetoothGatt_OperationSerialization tests that only one GATT operation can run at a time
-// This is CRITICAL Android BLE behavior - operations must be serialized
+// TestBluetoothGatt_OperationSerialization tests that GATT operations are queued (not rejected)
+// This is CRITICAL Android BLE behavior - operations are queued and executed serially
+// OLD BEHAVIOR: Rejected operations when busy
+// NEW BEHAVIOR: Queues operations for serial execution
 func TestBluetoothGatt_OperationSerialization(t *testing.T) {
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")
@@ -178,7 +180,6 @@ func TestBluetoothGatt_OperationSerialization(t *testing.T) {
 
 	// Create GATT connection
 	writeCompleted := make(chan bool, 10)
-	writeRejected := make(chan bool, 10)
 	callback := &testGattCallback{
 		onCharacteristicWrite: func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic, status int) {
 			if status == GATT_SUCCESS {
@@ -231,15 +232,15 @@ func TestBluetoothGatt_OperationSerialization(t *testing.T) {
 		t.Fatal("First WriteCharacteristic should succeed")
 	}
 
-	// Immediately try second write (should fail - operation in progress)
+	// Immediately try second write (should be queued, not rejected)
 	char2 := service.Characteristics[1]
 	success2 := gatt.WriteCharacteristic(char2)
-	if success2 {
-		t.Fatal("Second WriteCharacteristic should fail - operation already in progress!")
+	if !success2 {
+		t.Fatal("Second WriteCharacteristic should be queued (not rejected)!")
 	}
-	writeRejected <- true
+	// OLD: writeRejected <- true (no longer applies with queueing)
 
-	// Wait for first operation to complete
+	// Wait for both operations to complete (they should execute serially)
 	select {
 	case <-writeCompleted:
 		t.Logf("✅ First write completed")
@@ -247,29 +248,19 @@ func TestBluetoothGatt_OperationSerialization(t *testing.T) {
 		t.Fatal("Timeout waiting for first write")
 	}
 
-	// Now second write should succeed
-	success3 := gatt.WriteCharacteristic(char2)
-	if !success3 {
-		t.Fatal("Third WriteCharacteristic should succeed after first completes")
-	}
-
 	select {
 	case <-writeCompleted:
-		t.Logf("✅ Second write completed after first finished")
+		t.Logf("✅ Second write completed (was queued, not rejected)")
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for second write")
 	}
 
-	// Verify rejection happened
-	select {
-	case <-writeRejected:
-		t.Logf("✅ Concurrent write was rejected (matches real Android BLE)")
-	default:
-		t.Fatal("Expected write rejection did not occur")
-	}
+	t.Logf("✅ Operations were queued and executed serially (matches real Android BLE)")
 }
 
-// TestBluetoothGatt_ReadWriteSerialization tests that read and write operations are serialized
+// TestBluetoothGatt_ReadWriteSerialization tests that read and write operations are queued
+// OLD BEHAVIOR: Write was rejected when read in progress
+// NEW BEHAVIOR: Write is queued and executes after read completes
 func TestBluetoothGatt_ReadWriteSerialization(t *testing.T) {
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")
@@ -293,6 +284,7 @@ func TestBluetoothGatt_ReadWriteSerialization(t *testing.T) {
 
 	// Create GATT connection
 	readCompleted := make(chan bool, 10)
+	writeCompleted := make(chan bool, 10)
 	callback := &testGattCallback{
 		onCharacteristicRead: func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic, status int) {
 			// Simulate slow read operation
@@ -300,8 +292,8 @@ func TestBluetoothGatt_ReadWriteSerialization(t *testing.T) {
 			readCompleted <- true
 		},
 		onCharacteristicWrite: func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic, status int) {
-			// Should not be called in this test
-			t.Error("Write should have been rejected")
+			// Now called because write is queued (not rejected)
+			writeCompleted <- true
 		},
 	}
 
@@ -338,22 +330,32 @@ func TestBluetoothGatt_ReadWriteSerialization(t *testing.T) {
 		t.Fatal("ReadCharacteristic should succeed")
 	}
 
-	// Immediately try write (should fail - read in progress)
+	// Immediately try write (should be queued, not rejected)
 	writeSuccess := gatt.WriteCharacteristic(char)
-	if writeSuccess {
-		t.Fatal("WriteCharacteristic should fail - read operation in progress!")
+	if !writeSuccess {
+		t.Fatal("WriteCharacteristic should be queued (not rejected)!")
 	}
 
 	// Wait for read to complete
 	select {
 	case <-readCompleted:
-		t.Logf("✅ Read completed, write was blocked (matches real Android)")
+		t.Logf("✅ Read completed")
 	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for read")
 	}
+
+	// Wait for write to complete (was queued)
+	select {
+	case <-writeCompleted:
+		t.Logf("✅ Write completed after read (was queued, matches real Android)")
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for write")
+	}
 }
 
-// TestBluetoothGatt_MultipleReadsBlocked tests that multiple reads cannot run concurrently
+// TestBluetoothGatt_MultipleReadsBlocked tests that multiple reads are queued (not rejected)
+// OLD BEHAVIOR: Reads rejected when one already in progress
+// NEW BEHAVIOR: All reads queued and executed serially
 func TestBluetoothGatt_MultipleReadsBlocked(t *testing.T) {
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")
@@ -414,21 +416,18 @@ func TestBluetoothGatt_MultipleReadsBlocked(t *testing.T) {
 		if gatt.ReadCharacteristic(char) {
 			successCount++
 		}
-		// No delay - fire rapidly to test serialization
+		// No delay - fire rapidly to test queueing
 	}
 
-	// Due to goroutine scheduling, 1-2 reads may succeed before serialization kicks in
-	// The important thing is that NOT ALL reads succeed (which would mean no serialization)
-	if successCount >= 5 {
-		t.Errorf("All 5 reads succeeded - serialization not working! (successCount=%d)", successCount)
-	} else if successCount < 1 {
-		t.Errorf("No reads succeeded - unexpected behavior! (successCount=%d)", successCount)
+	// NEW BEHAVIOR: All reads should be queued (not rejected)
+	if successCount != 5 {
+		t.Errorf("Expected all 5 reads to be queued, got %d", successCount)
 	} else {
-		t.Logf("✅ Operation serialization working: %d/5 reads accepted (%d blocked)", successCount, 5-successCount)
+		t.Logf("✅ Operation queueing working: all %d/5 reads queued (none rejected)", successCount)
 	}
 
 	// Wait for operations to complete
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 }
 
 // ============================================================================
