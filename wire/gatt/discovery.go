@@ -433,7 +433,37 @@ func DiscoverCharacteristicsFromDatabase(db *AttributeDatabase, startHandle, end
 func DiscoverDescriptorsFromDatabase(db *AttributeDatabase, startHandle, endHandle uint16) []DiscoveredDescriptor {
 	descriptors := []DiscoveredDescriptor{}
 
-	// Iterate through all handles in the range
+	// Get the actual database handle range to avoid iterating through empty space
+	_, lastHandle := db.GetHandleRange()
+	if endHandle > lastHandle {
+		endHandle = lastHandle
+	}
+
+	// Track characteristic value handles to exclude them from descriptor list
+	charValueHandles := make(map[uint16]bool)
+
+	// First pass: find all characteristic declarations and their value handles
+	for h := uint16(0x0001); h <= endHandle; h++ {
+		attr, err := db.GetAttribute(h)
+		if err != nil {
+			continue
+		}
+
+		// If this is a characteristic declaration, parse it to get the value handle
+		if bytesEqual(attr.Type, UUIDCharacteristic) {
+			// Characteristic declaration format: [Properties: 1][ValueHandle: 2][UUID: N]
+			if len(attr.Value) >= 3 {
+				valueHandle := uint16(attr.Value[1]) | (uint16(attr.Value[2]) << 8)
+				charValueHandles[valueHandle] = true
+			}
+		}
+	}
+
+	// Second pass: collect descriptors in the requested range
+	// Descriptors are attributes that are NOT:
+	// - Service declarations (0x2800, 0x2801)
+	// - Characteristic declarations (0x2803)
+	// - Characteristic values (tracked above)
 	for handle := startHandle; handle <= endHandle; handle++ {
 		attr, err := db.GetAttribute(handle)
 		if err != nil {
@@ -447,9 +477,12 @@ func DiscoverDescriptorsFromDatabase(db *AttributeDatabase, startHandle, endHand
 			continue
 		}
 
-		// This is a descriptor or characteristic value
-		// We want descriptors only, which typically have well-known descriptor UUIDs
-		// For simplicity, we'll include all non-declaration attributes
+		// Skip characteristic values (they're not descriptors)
+		if charValueHandles[handle] {
+			continue
+		}
+
+		// This is a descriptor - include it
 		descriptors = append(descriptors, DiscoveredDescriptor{
 			UUID:   attr.Type,
 			Handle: handle,

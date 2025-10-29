@@ -571,6 +571,55 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 			// Send write response
 			resp := &att.WriteResponse{}
 			w.sendATTPacket(peerUUID, resp)
+
+			// REALISTIC iOS: Notify the GATT layer (peripheral manager) about the subscription change
+			// This triggers the CentralDidSubscribe/CentralDidUnsubscribe delegate callbacks
+			operation := "subscribe"
+			if p.Value[0] == 0x00 && p.Value[1] == 0x00 {
+				operation = "unsubscribe"
+			}
+
+			// Look up the characteristic UUID from the attribute database
+			// We need to find the service and characteristic that this CCCD belongs to
+			var charUUIDStr string
+			var serviceUUIDStr string
+			w.dbMu.RLock()
+			if charAttr, err := w.attributeDB.GetAttribute(charHandle); err == nil {
+				// The characteristic value attribute's Type field contains the characteristic UUID
+				charUUIDStr = string(charAttr.Type)
+
+				// Find the service by looking backwards for a service declaration
+				for h := charHandle; h >= 1; h-- {
+					if attr, err := w.attributeDB.GetAttribute(h); err == nil {
+						if bytesEqual(attr.Type, gatt.UUIDPrimaryService) || bytesEqual(attr.Type, gatt.UUIDSecondaryService) {
+							serviceUUIDStr = string(attr.Value)
+							break
+						}
+					}
+				}
+			}
+			w.dbMu.RUnlock()
+
+			// Create a GATT message for the subscription change
+			// This will be delivered to the peripheral manager
+			msg := &GATTMessage{
+				Type:               "gatt_request",
+				Operation:          operation,
+				ServiceUUID:        serviceUUIDStr,
+				CharacteristicUUID: charUUIDStr, // The actual characteristic UUID, not CCCD
+				Data:               p.Value,
+				SenderUUID:         peerUUID,
+			}
+
+			w.handlerMu.RLock()
+			handler := w.gattHandler
+			w.handlerMu.RUnlock()
+
+			if handler != nil {
+				logger.Debug(shortHash(w.hardwareUUID)+" Wire", "   ➡️  Calling GATT handler for CCCD write (subscription change) from %s: svc=%s, char=%s, op=%s",
+					shortHash(peerUUID), shortHash(serviceUUIDStr), shortHash(charUUIDStr), operation)
+				handler(peerUUID, msg)
+			}
 		} else {
 			// Regular write - pass to GATT handler
 			msg := w.attToGATTMessage(packet)

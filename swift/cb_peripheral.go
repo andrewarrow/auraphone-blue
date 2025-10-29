@@ -612,9 +612,23 @@ func (p *CBPeripheral) SetNotifyValue(enabled bool, characteristic *CBCharacteri
 
 	// Write to CCCD descriptor (this is the realistic BLE way!)
 	// Real iOS sends this as a descriptor write operation
-	err := p.wire.WriteCharacteristic(p.remoteUUID, characteristic.Service.UUID, CBUUID_CCCD, cccdValue)
+	// In the wire protocol, this is handled via subscribe/unsubscribe operations
+	// which automatically write to the CCCD at the correct handle
 
-	return err
+	msg := &wire.GATTMessage{
+		Type:               "gatt_request",
+		ServiceUUID:        characteristic.Service.UUID,
+		CharacteristicUUID: characteristic.UUID,
+		Data:               cccdValue,
+	}
+
+	if enabled {
+		msg.Operation = "subscribe"
+	} else {
+		msg.Operation = "unsubscribe"
+	}
+
+	return p.wire.SendGATTMessage(p.remoteUUID, msg)
 }
 
 // GetCharacteristic finds a characteristic by UUID within the peripheral's services
