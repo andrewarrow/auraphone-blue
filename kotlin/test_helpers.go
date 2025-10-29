@@ -8,6 +8,8 @@ type testGattCallback struct {
 	onCharacteristicRead    func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic, status int)
 	onCharacteristicWrite   func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic, status int)
 	onCharacteristicChanged func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic)
+	onDescriptorRead        func(gatt *BluetoothGatt, descriptor *BluetoothGattDescriptor, status int)
+	onDescriptorWrite       func(gatt *BluetoothGatt, descriptor *BluetoothGattDescriptor, status int)
 }
 
 func (c *testGattCallback) OnConnectionStateChange(gatt *BluetoothGatt, status int, newState int) {
@@ -37,5 +39,17 @@ func (c *testGattCallback) OnCharacteristicWrite(gatt *BluetoothGatt, char *Blue
 func (c *testGattCallback) OnCharacteristicChanged(gatt *BluetoothGatt, char *BluetoothGattCharacteristic) {
 	if c.onCharacteristicChanged != nil {
 		c.onCharacteristicChanged(gatt, char)
+	}
+}
+
+func (c *testGattCallback) OnDescriptorRead(gatt *BluetoothGatt, descriptor *BluetoothGattDescriptor, status int) {
+	if c.onDescriptorRead != nil {
+		c.onDescriptorRead(gatt, descriptor, status)
+	}
+}
+
+func (c *testGattCallback) OnDescriptorWrite(gatt *BluetoothGatt, descriptor *BluetoothGattDescriptor, status int) {
+	if c.onDescriptorWrite != nil {
+		c.onDescriptorWrite(gatt, descriptor, status)
 	}
 }

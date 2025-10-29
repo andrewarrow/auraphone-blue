@@ -471,40 +471,64 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 		}
 
 	case "write", "write_no_response":
-		// Write request from central
-		responseNeeded := msg.Operation == "write"
-		if s.callback != nil {
-			s.callback.OnCharacteristicWriteRequest(device, requestId, targetChar, false, responseNeeded, 0, msg.Data)
+		// Write request from central - could be to characteristic OR descriptor!
 
-			// Update characteristic value
-			targetChar.Value = msg.Data
-		}
-
-	case "subscribe":
-		// Central is subscribing to notifications
-		// In real BLE, this would write to the CCCD descriptor (0x2902)
-		// Simulate CCCD write by calling OnDescriptorWriteRequest
-		centralID := device.Address
-		if len(centralID) > 8 {
-			centralID = centralID[:8]
-		}
-		charID := targetChar.UUID
-		if len(charID) > 8 {
-			charID = charID[:8]
-		}
-		logger.Debug(fmt.Sprintf("%s Android", s.uuid[:8]), "📲 Central %s subscribed to characteristic %s", centralID, charID)
-
-		// Simulate CCCD descriptor write (0x01 0x00 = enable notifications)
-		if s.callback != nil {
-			cccdDescriptor := &BluetoothGattDescriptor{
-				UUID:           "00002902-0000-1000-8000-00805f9b34fb", // CCCD UUID
-				Characteristic: targetChar,
+		// Check if this is a write to CCCD descriptor (0x2902)
+		if msg.CharacteristicUUID == CCCD_UUID {
+			// This is a CCCD descriptor write - central is enabling/disabling notifications
+			centralID := device.Address
+			if len(centralID) > 8 {
+				centralID = centralID[:8]
 			}
-			s.callback.OnDescriptorWriteRequest(device, requestId, cccdDescriptor, false, true, 0, []byte{0x01, 0x00})
+			charID := targetChar.UUID
+			if len(charID) > 8 {
+				charID = charID[:8]
+			}
+
+			// Parse CCCD value
+			isEnable := len(msg.Data) >= 2 && (msg.Data[0] == 0x01 || msg.Data[0] == 0x02)
+			if isEnable {
+				logger.Debug(fmt.Sprintf("%s Android", s.uuid[:8]), "📲 Central %s subscribed to characteristic %s (CCCD write)", centralID, charID)
+			} else {
+				logger.Debug(fmt.Sprintf("%s Android", s.uuid[:8]), "📲 Central %s unsubscribed from characteristic %s (CCCD write)", centralID, charID)
+			}
+
+			// Find or create CCCD descriptor
+			cccdDescriptor := targetChar.GetDescriptor(CCCD_UUID)
+			if cccdDescriptor == nil {
+				// Create CCCD descriptor if it doesn't exist
+				cccdDescriptor = &BluetoothGattDescriptor{
+					UUID:           CCCD_UUID,
+					Characteristic: targetChar,
+					Permissions:    PERMISSION_READ | PERMISSION_WRITE,
+				}
+				targetChar.Descriptors = append(targetChar.Descriptors, cccdDescriptor)
+			}
+
+			// Call descriptor write callback
+			responseNeeded := msg.Operation == "write"
+			if s.callback != nil {
+				s.callback.OnDescriptorWriteRequest(device, requestId, cccdDescriptor, false, responseNeeded, 0, msg.Data)
+			}
+
+			// Update descriptor value
+			cccdDescriptor.Value = msg.Data
+
+		} else {
+			// Regular characteristic write
+			responseNeeded := msg.Operation == "write"
+			if s.callback != nil {
+				s.callback.OnCharacteristicWriteRequest(device, requestId, targetChar, false, responseNeeded, 0, msg.Data)
+
+				// Update characteristic value
+				targetChar.Value = msg.Data
+			}
 		}
 
-	case "unsubscribe":
-		// Central is unsubscribing from notifications
+	case "subscribe", "unsubscribe":
+		// DEPRECATED: Handle old "subscribe"/"unsubscribe" operations for iOS backward compatibility
+		// Real Android would never receive these - only CCCD descriptor writes
+		// TODO: Remove this once iOS is updated to use CCCD descriptor writes
 		centralID := device.Address
 		if len(centralID) > 8 {
 			centralID = centralID[:8]
@@ -513,7 +537,38 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 		if len(charID) > 8 {
 			charID = charID[:8]
 		}
-		logger.Debug(fmt.Sprintf("%s Android", s.uuid[:8]), "📲 Central %s unsubscribed from characteristic %s", centralID, charID)
+
+		isSubscribe := msg.Operation == "subscribe"
+		if isSubscribe {
+			logger.Warn(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Received deprecated 'subscribe' operation from %s (iOS?) - should use CCCD write", centralID)
+		} else {
+			logger.Warn(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Received deprecated 'unsubscribe' operation from %s (iOS?) - should use CCCD write", centralID)
+		}
+
+		// Simulate CCCD descriptor write for backward compatibility
+		cccdDescriptor := targetChar.GetDescriptor(CCCD_UUID)
+		if cccdDescriptor == nil {
+			cccdDescriptor = &BluetoothGattDescriptor{
+				UUID:           CCCD_UUID,
+				Characteristic: targetChar,
+				Permissions:    PERMISSION_READ | PERMISSION_WRITE,
+			}
+			targetChar.Descriptors = append(targetChar.Descriptors, cccdDescriptor)
+		}
+
+		// Call descriptor write callback with appropriate value
+		var cccdValue []byte
+		if isSubscribe {
+			cccdValue = []byte{0x01, 0x00} // Enable notifications
+		} else {
+			cccdValue = []byte{0x00, 0x00} // Disable notifications
+		}
+
+		if s.callback != nil {
+			s.callback.OnDescriptorWriteRequest(device, requestId, cccdDescriptor, false, true, 0, cccdValue)
+		}
+
+		cccdDescriptor.Value = cccdValue
 	}
 }
 

@@ -797,24 +797,34 @@ func (w *Wire) ReadCharacteristic(peerUUID, serviceUUID, charUUID string) error 
 	return fmt.Errorf("ReadCharacteristic not implemented in Step 3")
 }
 
-// SubscribeCharacteristic subscribes to notifications (stub for old API)
-// TODO Step 6: Implement via SendGATTMessage subscribe operation
+// DEPRECATED: SubscribeCharacteristic is not realistic BLE behavior
+// Real BLE requires writing to CCCD descriptor (0x2902) with value 0x01 0x00
+// Use WriteCharacteristic() to write to CCCD descriptor instead
+// This function remains for iOS compatibility until iOS is updated
 func (w *Wire) SubscribeCharacteristic(peerUUID, serviceUUID, charUUID string) error {
+	// DEPRECATED: This is not how real BLE works!
+	// Real BLE requires:
+	//   1. setCharacteristicNotification(char, true) - local tracking
+	//   2. writeDescriptor(cccd, 0x01 0x00) - enable on peripheral
+	// We send a fake "subscribe" message for backward compatibility with iOS
 	msg := &GATTMessage{
 		Type:               "gatt_request",
-		Operation:          "subscribe",
+		Operation:          "subscribe",  // ⚠️ NOT A REAL BLE OPERATION!
 		ServiceUUID:        serviceUUID,
 		CharacteristicUUID: charUUID,
 	}
 	return w.SendGATTMessage(peerUUID, msg)
 }
 
-// UnsubscribeCharacteristic unsubscribes from notifications (stub for old API)
-// TODO Step 6: Implement via SendGATTMessage unsubscribe operation
+// DEPRECATED: UnsubscribeCharacteristic is not realistic BLE behavior
+// Real BLE requires writing to CCCD descriptor (0x2902) with value 0x00 0x00
+// Use WriteCharacteristic() to write to CCCD descriptor instead
+// This function remains for iOS compatibility until iOS is updated
 func (w *Wire) UnsubscribeCharacteristic(peerUUID, serviceUUID, charUUID string) error {
+	// DEPRECATED: This is not how real BLE works!
 	msg := &GATTMessage{
 		Type:               "gatt_request",
-		Operation:          "unsubscribe",
+		Operation:          "unsubscribe",  // ⚠️ NOT A REAL BLE OPERATION!
 		ServiceUUID:        serviceUUID,
 		CharacteristicUUID: charUUID,
 	}

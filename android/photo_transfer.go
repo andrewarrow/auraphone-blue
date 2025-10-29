@@ -134,10 +134,19 @@ func (a *Android) requestAndReceivePhoto(peerUUID string, photoHash string, devi
 		return
 	}
 
-	// Subscribe to photo notifications (this triggers the sender to start sending chunks)
+	// Subscribe to photo notifications using proper two-step process
+	// Step 1: Enable local notification tracking
 	gatt.SetCharacteristicNotification(photoChar, true)
 
-	logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📸 Subscribed to photo characteristic from %s", shortHash(peerUUID))
+	// Step 2: Write to CCCD descriptor to enable notifications on peripheral
+	cccdDescriptor := photoChar.GetDescriptor(kotlin.CCCD_UUID)
+	if cccdDescriptor != nil {
+		cccdDescriptor.Value = kotlin.ENABLE_NOTIFICATION_VALUE
+		gatt.WriteDescriptor(cccdDescriptor)
+		logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "📸 Subscribed to photo characteristic from %s (wrote CCCD)", shortHash(peerUUID))
+	} else {
+		logger.Error(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "❌ CCCD descriptor not found for photo characteristic!")
+	}
 }
 
 // sendPhotoChunks sends photo chunks to a peer who subscribed
