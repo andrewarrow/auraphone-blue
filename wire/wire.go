@@ -219,6 +219,7 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 	}
 
 	// Store connection with Peripheral role (they initiated)
+	defaultParams := l2cap.DefaultConnectionParameters()
 	connection := &Connection{
 		conn:            conn,
 		remoteUUID:      peerUUID,
@@ -226,9 +227,10 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 		mtu:             DefaultMTU,                            // Start with default MTU
 		fragmenter:      att.NewFragmenter(),                   // Initialize fragmenter for long writes
 		requestTracker:  att.NewRequestTracker(0),              // Initialize request tracker with default 30s timeout
-		params:          l2cap.DefaultConnectionParameters(),   // Start with default connection parameters
+		params:          defaultParams,                         // Start with default connection parameters
 		paramsUpdatedAt: time.Now(),
 		discoveryCache:  gatt.NewDiscoveryCache(),              // Initialize discovery cache for client-side discovery
+		eventScheduler:  NewConnectionEventScheduler(RolePeripheral, defaultParams.IntervalMaxMs()), // Initialize connection event scheduler
 	}
 	w.connections[peerUUID] = connection
 	w.mu.Unlock()
@@ -297,6 +299,7 @@ func (w *Wire) Connect(peerUUID string) error {
 	}
 
 	// Store connection with Central role (we initiated)
+	defaultParams := l2cap.DefaultConnectionParameters()
 	connection := &Connection{
 		conn:            conn,
 		remoteUUID:      peerUUID,
@@ -304,9 +307,10 @@ func (w *Wire) Connect(peerUUID string) error {
 		mtu:             DefaultMTU,                            // Start with default MTU
 		fragmenter:      att.NewFragmenter(),                   // Initialize fragmenter for long writes
 		requestTracker:  att.NewRequestTracker(0),              // Initialize request tracker with default 30s timeout
-		params:          l2cap.DefaultConnectionParameters(),   // Start with default connection parameters
+		params:          defaultParams,                         // Start with default connection parameters
 		paramsUpdatedAt: time.Now(),
 		discoveryCache:  gatt.NewDiscoveryCache(),              // Initialize discovery cache for client-side discovery
+		eventScheduler:  NewConnectionEventScheduler(RoleCentral, defaultParams.IntervalMaxMs()), // Initialize connection event scheduler
 	}
 
 	w.mu.Lock()
@@ -524,6 +528,12 @@ func (w *Wire) handleL2CAPSignaling(peerUUID string, connection *Connection, pay
 			result = l2cap.ConnectionParameterAccepted
 			connection.params = req.Params
 			connection.paramsUpdatedAt = time.Now()
+
+			// Update event scheduler with new interval
+			if connection.eventScheduler != nil {
+				connection.eventScheduler.UpdateInterval(req.Params.IntervalMaxMs())
+			}
+
 			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
 				"✅ Central accepted parameter update from %s", shortHash(peerUUID))
 		} else {
@@ -1175,8 +1185,13 @@ func (w *Wire) sendL2CAPPacket(peerUUID string, packet *l2cap.Packet) error {
 	// Debug log: L2CAP packet sent
 	w.debugLogger.LogL2CAPPacket("tx", peerUUID, packet)
 
-	// Simulate connection interval latency (real BLE has 7.5-50ms intervals)
-	time.Sleep(connectionIntervalDelay())
+	// Real BLE: Wait for next connection event (discrete time slots)
+	// - Central controls timing and schedules events at connection interval
+	// - Peripheral can ONLY send during scheduled connection events
+	// - This enforces realistic connection event boundaries
+	if connection.eventScheduler != nil {
+		connection.eventScheduler.WaitForNextEvent()
+	}
 
 	// Lock for thread-safe writes
 	connection.sendMutex.Lock()
@@ -1625,6 +1640,11 @@ func (w *Wire) SetConnectionParameters(peerUUID string, params *l2cap.Connection
 
 	connection.params = params
 	connection.paramsUpdatedAt = time.Now()
+
+	// Update event scheduler with new interval
+	if connection.eventScheduler != nil {
+		connection.eventScheduler.UpdateInterval(params.IntervalMaxMs())
+	}
 
 	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
 		"📶 Central set connection parameters for %s: interval=%.1f-%.1fms, latency=%d, timeout=%dms",
