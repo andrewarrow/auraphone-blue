@@ -55,6 +55,10 @@ func (d *testPeripheralDelegate) DidDiscoverServices(peripheral *CBPeripheral, s
 func (d *testPeripheralDelegate) DidDiscoverCharacteristics(peripheral *CBPeripheral, service *CBService, err error) {
 }
 
+func (d *testPeripheralDelegate) DidDiscoverDescriptorsForCharacteristic(peripheral *CBPeripheral, characteristic *CBCharacteristic, err error) {
+	// Stub for new descriptor discovery method
+}
+
 func (d *testPeripheralDelegate) DidWriteValueForCharacteristic(peripheral *CBPeripheral, characteristic *CBCharacteristic, err error) {
 	if err != nil {
 		d.t.Errorf("Write error: %v", err)
@@ -63,6 +67,10 @@ func (d *testPeripheralDelegate) DidWriteValueForCharacteristic(peripheral *CBPe
 	if d.didWriteValue != nil {
 		d.didWriteValue <- characteristic
 	}
+}
+
+func (d *testPeripheralDelegate) DidWriteValueForDescriptor(peripheral *CBPeripheral, descriptor *CBDescriptor, err error) {
+	// Stub for new descriptor write method
 }
 
 func (d *testPeripheralDelegate) DidUpdateValueForCharacteristic(peripheral *CBPeripheral, characteristic *CBCharacteristic, err error) {
@@ -76,6 +84,10 @@ func (d *testPeripheralDelegate) DidUpdateValueForCharacteristic(peripheral *CBP
 		copy(dataCopy, characteristic.Value)
 		d.didUpdateValue <- dataCopy
 	}
+}
+
+func (d *testPeripheralDelegate) DidUpdateValueForDescriptor(peripheral *CBPeripheral, descriptor *CBDescriptor, err error) {
+	// Stub for new descriptor update method
 }
 
 type testPeripheralManagerDelegate struct {

@@ -8,6 +8,14 @@ import (
 	"github.com/user/auraphone-blue/wire"
 )
 
+// shortUUID safely truncates a UUID for logging (max 8 chars)
+func shortUUID(s string) string {
+	if len(s) <= 8 {
+		return s
+	}
+	return s[:8]
+}
+
 // CBPeripheralManagerDelegate matches iOS CoreBluetooth peripheral manager delegate
 type CBPeripheralManagerDelegate interface {
 	DidUpdatePeripheralState(peripheralManager *CBPeripheralManager)
@@ -88,7 +96,7 @@ const (
 // Matches iOS CoreBluetooth CBPeripheralManager API
 type CBPeripheralManager struct {
 	Delegate        CBPeripheralManagerDelegate
-	State           string // "poweredOn", "poweredOff", etc.
+	State           CBManagerState // Use enum instead of string
 	IsAdvertising   bool
 	uuid            string
 	wire            *wire.Wire
@@ -103,7 +111,7 @@ type CBPeripheralManager struct {
 func NewCBPeripheralManager(delegate CBPeripheralManagerDelegate, uuid string, deviceName string, sharedWire *wire.Wire) *CBPeripheralManager {
 	pm := &CBPeripheralManager{
 		Delegate:          delegate,
-		State:             "poweredOn",
+		State:             CBManagerStateUnknown, // REALISTIC: Start in unknown state
 		uuid:              uuid,
 		wire:              sharedWire,
 		services:          make([]*CBMutableService, 0),
@@ -111,11 +119,16 @@ func NewCBPeripheralManager(delegate CBPeripheralManagerDelegate, uuid string, d
 		connectedCentrals: make(map[string]CBCentral),
 	}
 
-	// Notify delegate of initial state
+	// REALISTIC iOS BEHAVIOR: Bluetooth initialization takes time (50-200ms)
+	// Notify delegate of state transition after initialization delay
 	if delegate != nil {
 		go func() {
-			// Small delay to match real iOS behavior
-			time.Sleep(10 * time.Millisecond)
+			// Simulate BLE stack initialization delay
+			time.Sleep(100 * time.Millisecond)
+
+			pm.State = CBManagerStatePoweredOn
+
+			// CRITICAL: Always call DidUpdatePeripheralState when state changes
 			delegate.DidUpdatePeripheralState(pm)
 		}()
 	}
@@ -309,9 +322,27 @@ func (pm *CBPeripheralManager) UpdateValue(value []byte, characteristic *CBMutab
 // RespondToRequest responds to a read/write request from a central
 // Matches: peripheralManager.respond(to:withResult:)
 func (pm *CBPeripheralManager) RespondToRequest(request *CBATTRequest, result int) {
-	// In the simulator, we handle requests synchronously
-	// Real iOS would send ATT response packets back to the central
-	logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📨 Responded to request from central %s (result=%d)", request.Central.UUID[:8], result)
+	// REALISTIC iOS BEHAVIOR: Send ATT response back to the central
+	if result == int(CBATTErrorSuccess) && request.Characteristic != nil {
+		// Success - send characteristic value back
+		msg := &wire.GATTMessage{
+			Type:               "gatt_response",
+			Operation:          "read_response",
+			ServiceUUID:        request.Characteristic.Service.UUID,
+			CharacteristicUUID: request.Characteristic.UUID,
+			Data:               request.Characteristic.Value,
+		}
+
+		err := pm.wire.SendGATTMessage(request.Central.UUID, msg)
+		if err != nil {
+			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "⚠️  Failed to send read response to central %s: %v", request.Central.UUID[:8], err)
+		} else {
+			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📨 Sent read response to central %s (%d bytes)", request.Central.UUID[:8], len(request.Characteristic.Value))
+		}
+	} else {
+		// Error response
+		logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📨 Responded to request from central %s with error (result=%d)", request.Central.UUID[:8], result)
+	}
 }
 
 // buildGATTTable converts services to wire.GATTTable format
@@ -401,14 +432,35 @@ func (pm *CBPeripheralManager) HandleGATTMessage(peerUUID string, msg *wire.GATT
 
 // handleCharacteristicMessage processes incoming GATT messages (internal)
 func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.CharacteristicMessage) {
+	// REALISTIC BLE: Check if this is a CCCD descriptor write FIRST
+	// CCCD writes have msg.CharacteristicUUID == "00002902-..."
+	// For CCCD writes, we need to find the notifiable characteristic in the service
+	isCCCDWrite := (msg.CharacteristicUUID == CBUUID_CCCD || msg.CharacteristicUUID == "00002902-0000-1000-8000-00805f9b34fb")
+
 	// Find the characteristic
 	var targetChar *CBMutableCharacteristic
 	for _, service := range pm.services {
 		if service.UUID == msg.ServiceUUID {
-			for _, char := range service.Characteristics {
-				if char.UUID == msg.CharacteristicUUID {
-					targetChar = char
-					break
+			if isCCCDWrite {
+				// For CCCD writes, find the first notifiable characteristic in this service
+				// (In real BLE, each characteristic has its own CCCD, but our simplified protocol
+				//  assumes one notifiable char per service for now)
+				for _, char := range service.Characteristics {
+					// Check if characteristic has notify or indicate properties (bitmask)
+					hasNotify := (char.Properties&CBCharacteristicPropertyNotify != 0) ||
+						(char.Properties&CBCharacteristicPropertyIndicate != 0)
+					if hasNotify {
+						targetChar = char
+						break
+					}
+				}
+			} else {
+				// Regular characteristic lookup by UUID
+				for _, char := range service.Characteristics {
+					if char.UUID == msg.CharacteristicUUID {
+						targetChar = char
+						break
+					}
 				}
 			}
 		}
@@ -418,7 +470,11 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 	}
 
 	if targetChar == nil {
-		logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "⚠️  Received request for unknown characteristic %s (service: %s, op: %s)", msg.CharacteristicUUID, msg.ServiceUUID, msg.Operation)
+		if isCCCDWrite {
+			logger.Trace(fmt.Sprintf("%s iOS", shortUUID(pm.uuid)), "⚠️  Received CCCD write for service %s, but no notifiable characteristic found", shortUUID(msg.ServiceUUID))
+		} else {
+			logger.Trace(fmt.Sprintf("%s iOS", shortUUID(pm.uuid)), "⚠️  Received request for unknown characteristic %s (service: %s, op: %s)", msg.CharacteristicUUID, msg.ServiceUUID, msg.Operation)
+		}
 		return
 	}
 
@@ -445,29 +501,55 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 		}
 
 	case "write", "write_no_response":
-		// Write request from central
-		if pm.Delegate != nil {
-			request := &CBATTRequest{
-				Central:        central,
-				Characteristic: targetChar,
-				Offset:         0,
-				Value:          msg.Data,
+		// REALISTIC BLE: Check if this is a CCCD descriptor write (0x2902)
+		// Real BLE enables notifications by writing 0x01 0x00 or 0x02 0x00 to CCCD descriptor
+		if msg.CharacteristicUUID == CBUUID_CCCD || msg.CharacteristicUUID == "00002902-0000-1000-8000-00805f9b34fb" {
+			// This is a CCCD write - find the characteristic from the service UUID
+			// (CCCD writes use the service UUID to identify which characteristic)
+			if targetChar != nil && len(msg.Data) >= 2 {
+				// Check the CCCD value
+				if msg.Data[0] == 0x01 || msg.Data[0] == 0x02 { // 0x01 = notify, 0x02 = indicate
+					// Subscribe
+					targetChar.subscribedCentrals[msg.SenderUUID] = true
+					logger.Trace(fmt.Sprintf("%s iOS", shortUUID(pm.uuid)), "🔔 Central %s subscribed to characteristic %s via CCCD", shortUUID(msg.SenderUUID), shortUUID(targetChar.UUID))
+					if pm.Delegate != nil {
+						pm.Delegate.CentralDidSubscribe(pm, central, targetChar)
+					}
+				} else if msg.Data[0] == 0x00 && msg.Data[1] == 0x00 {
+					// Unsubscribe
+					delete(targetChar.subscribedCentrals, msg.SenderUUID)
+					logger.Trace(fmt.Sprintf("%s iOS", shortUUID(pm.uuid)), "🔕 Central %s unsubscribed from characteristic %s via CCCD", shortUUID(msg.SenderUUID), shortUUID(targetChar.UUID))
+					if pm.Delegate != nil {
+						pm.Delegate.CentralDidUnsubscribe(pm, central, targetChar)
+					}
+				}
 			}
-			pm.Delegate.DidReceiveWriteRequests(pm, []*CBATTRequest{request})
+		} else {
+			// Regular characteristic write
+			if pm.Delegate != nil {
+				request := &CBATTRequest{
+					Central:        central,
+					Characteristic: targetChar,
+					Offset:         0,
+					Value:          msg.Data,
+				}
+				pm.Delegate.DidReceiveWriteRequests(pm, []*CBATTRequest{request})
 
-			// Update characteristic value
-			targetChar.Value = msg.Data
+				// Update characteristic value
+				targetChar.Value = msg.Data
+			}
 		}
 
 	case "subscribe":
-		// Central subscribed to notifications
+		// DEPRECATED: Old-style subscribe message (kept for backward compatibility)
+		// Real BLE uses CCCD descriptor writes (handled in "write" case above)
 		targetChar.subscribedCentrals[msg.SenderUUID] = true
 		if pm.Delegate != nil {
 			pm.Delegate.CentralDidSubscribe(pm, central, targetChar)
 		}
 
 	case "unsubscribe":
-		// Central unsubscribed from notifications
+		// DEPRECATED: Old-style unsubscribe message (kept for backward compatibility)
 		delete(targetChar.subscribedCentrals, msg.SenderUUID)
 		if pm.Delegate != nil {
 			pm.Delegate.CentralDidUnsubscribe(pm, central, targetChar)

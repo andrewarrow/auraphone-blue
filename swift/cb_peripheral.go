@@ -2,6 +2,7 @@ package swift
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/user/auraphone-blue/wire"
@@ -15,12 +16,33 @@ const (
 	CBCharacteristicWriteWithoutResponse CBCharacteristicWriteType = 1 // Fire and forget (fast)
 )
 
+// CCCD UUID constant (Client Characteristic Configuration Descriptor)
+// This is the standard BLE descriptor UUID for enabling notifications/indications
+const (
+	CBUUID_CCCD = "00002902-0000-1000-8000-00805f9b34fb"
+)
+
+// CCCD enable/disable values (matches iOS CoreBluetooth)
+var (
+	CBCCCDEnableNotificationValue  = []byte{0x01, 0x00} // Enable notifications
+	CBCCCDEnableIndicationValue    = []byte{0x02, 0x00} // Enable indications
+	CBCCCDDisableNotificationValue = []byte{0x00, 0x00} // Disable notifications/indications
+)
+
+// CBDescriptor represents a BLE descriptor (matches iOS CoreBluetooth CBDescriptor)
+type CBDescriptor struct {
+	UUID           string
+	Value          []byte
+	Characteristic *CBCharacteristic // Parent characteristic
+}
+
 // CBCharacteristic represents a BLE characteristic
 type CBCharacteristic struct {
-	UUID       string
-	Properties []string // "read", "write", "notify", "indicate", etc.
-	Service    *CBService
-	Value      []byte
+	UUID        string
+	Properties  []string // "read", "write", "notify", "indicate", etc.
+	Service     *CBService
+	Value       []byte
+	Descriptors []*CBDescriptor // Descriptors for this characteristic
 }
 
 // CBService represents a BLE service
@@ -33,8 +55,11 @@ type CBService struct {
 type CBPeripheralDelegate interface {
 	DidDiscoverServices(peripheral *CBPeripheral, services []*CBService, err error)
 	DidDiscoverCharacteristics(peripheral *CBPeripheral, service *CBService, err error)
+	DidDiscoverDescriptorsForCharacteristic(peripheral *CBPeripheral, characteristic *CBCharacteristic, err error)
 	DidWriteValueForCharacteristic(peripheral *CBPeripheral, characteristic *CBCharacteristic, err error)
+	DidWriteValueForDescriptor(peripheral *CBPeripheral, descriptor *CBDescriptor, err error)
 	DidUpdateValueForCharacteristic(peripheral *CBPeripheral, characteristic *CBCharacteristic, err error)
+	DidUpdateValueForDescriptor(peripheral *CBPeripheral, descriptor *CBDescriptor, err error)
 }
 
 type writeRequest struct {
@@ -47,6 +72,7 @@ type CBPeripheral struct {
 	Delegate                 CBPeripheralDelegate
 	Name                     string
 	UUID                     string
+	State                    CBPeripheralState // REALISTIC: Track connection state
 	Services                 []*CBService
 	wire                     *wire.Wire
 	remoteUUID               string
@@ -54,6 +80,7 @@ type CBPeripheral struct {
 	notifyingCharacteristics map[string]bool // characteristic UUID -> is notifying
 	writeQueue               chan writeRequest
 	writeQueueStop           chan struct{}
+	mu                       sync.RWMutex // Protect state changes
 }
 
 func (p *CBPeripheral) DiscoverServices(serviceUUIDs []string) {
@@ -105,11 +132,36 @@ func (p *CBPeripheral) DiscoverServices(serviceUUIDs []string) {
 			// Convert characteristics
 			for _, wireChar := range wireService.Characteristics {
 				char := &CBCharacteristic{
-					UUID:       wireChar.UUID,
-					Properties: wireChar.Properties,
-					Service:    service,
-					Value:      nil,
+					UUID:        wireChar.UUID,
+					Properties:  wireChar.Properties,
+					Service:     service,
+					Value:       nil,
+					Descriptors: make([]*CBDescriptor, 0),
 				}
+
+				// CRITICAL: If characteristic has notify or indicate properties,
+				// automatically add CCCD descriptor (0x2902)
+				// This matches real BLE - every notifiable characteristic has a CCCD
+				hasNotify := false
+				hasIndicate := false
+				for _, prop := range wireChar.Properties {
+					if prop == "notify" {
+						hasNotify = true
+					}
+					if prop == "indicate" {
+						hasIndicate = true
+					}
+				}
+
+				if hasNotify || hasIndicate {
+					cccdDescriptor := &CBDescriptor{
+						UUID:           CBUUID_CCCD,
+						Value:          []byte{0x00, 0x00}, // Disabled by default
+						Characteristic: char,
+					}
+					char.Descriptors = append(char.Descriptors, cccdDescriptor)
+				}
+
 				service.Characteristics = append(service.Characteristics, char)
 			}
 
@@ -123,10 +175,31 @@ func (p *CBPeripheral) DiscoverServices(serviceUUIDs []string) {
 }
 
 func (p *CBPeripheral) DiscoverCharacteristics(characteristicUUIDs []string, service *CBService) {
-	// Characteristics are already discovered with services in this implementation
-	if p.Delegate != nil {
-		p.Delegate.DidDiscoverCharacteristics(p, service, nil)
-	}
+	// REALISTIC iOS BEHAVIOR: Characteristic discovery is asynchronous, even if services are already known
+	// Real iOS takes 20-100ms to discover characteristics
+	go func() {
+		// Simulate realistic discovery delay
+		time.Sleep(50 * time.Millisecond)
+
+		// Characteristics are already discovered with services in this implementation
+		// Just filter by requested UUIDs if specified
+		if len(characteristicUUIDs) > 0 && service != nil {
+			filteredChars := make([]*CBCharacteristic, 0)
+			for _, char := range service.Characteristics {
+				for _, uuid := range characteristicUUIDs {
+					if char.UUID == uuid {
+						filteredChars = append(filteredChars, char)
+						break
+					}
+				}
+			}
+			service.Characteristics = filteredChars
+		}
+
+		if p.Delegate != nil {
+			p.Delegate.DidDiscoverCharacteristics(p, service, nil)
+		}
+	}()
 }
 
 // StartWriteQueue initializes the async write queue (matches real BLE behavior)
@@ -242,8 +315,87 @@ func (p *CBPeripheral) ReadValue(characteristic *CBCharacteristic) error {
 	return p.wire.ReadCharacteristic(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
 }
 
+// DiscoverDescriptors discovers descriptors for a characteristic
+// This matches real iOS CoreBluetooth API: peripheral.discoverDescriptors(for:)
+func (p *CBPeripheral) DiscoverDescriptors(characteristic *CBCharacteristic) {
+	if p.wire == nil {
+		if p.Delegate != nil {
+			p.Delegate.DidDiscoverDescriptorsForCharacteristic(p, characteristic, fmt.Errorf("peripheral not connected"))
+		}
+		return
+	}
+
+	// REALISTIC iOS BEHAVIOR: Descriptor discovery is asynchronous
+	// Real iOS takes 20-100ms to discover descriptors
+	go func() {
+		// Simulate realistic discovery delay
+		time.Sleep(50 * time.Millisecond)
+
+		// Descriptors are already discovered with characteristics in this implementation
+		// (we auto-generate CCCD descriptors for notifiable characteristics)
+		// Just deliver the callback
+		if p.Delegate != nil {
+			p.Delegate.DidDiscoverDescriptorsForCharacteristic(p, characteristic, nil)
+		}
+	}()
+}
+
+// WriteValueForDescriptor writes a value to a descriptor
+// This matches real iOS CoreBluetooth API: peripheral.writeValue(_:for:)
+func (p *CBPeripheral) WriteValueForDescriptor(data []byte, descriptor *CBDescriptor) error {
+	if p.wire == nil {
+		return fmt.Errorf("peripheral not connected")
+	}
+	if descriptor == nil || descriptor.Characteristic == nil || descriptor.Characteristic.Service == nil {
+		return fmt.Errorf("invalid descriptor")
+	}
+
+	// Write descriptor value via wire layer
+	err := p.wire.WriteCharacteristic(
+		p.remoteUUID,
+		descriptor.Characteristic.Service.UUID,
+		descriptor.UUID, // Descriptor UUID (e.g., 0x2902 for CCCD)
+		data,
+	)
+
+	// Update local descriptor value if successful
+	if err == nil {
+		valueCopy := make([]byte, len(data))
+		copy(valueCopy, data)
+		descriptor.Value = valueCopy
+	}
+
+	// Deliver callback
+	if p.Delegate != nil {
+		p.Delegate.DidWriteValueForDescriptor(p, descriptor, err)
+	}
+
+	return err
+}
+
+// ReadValueForDescriptor reads a value from a descriptor
+// This matches real iOS CoreBluetooth API: peripheral.readValue(for:)
+func (p *CBPeripheral) ReadValueForDescriptor(descriptor *CBDescriptor) error {
+	if p.wire == nil {
+		return fmt.Errorf("peripheral not connected")
+	}
+	if descriptor == nil || descriptor.Characteristic == nil || descriptor.Characteristic.Service == nil {
+		return fmt.Errorf("invalid descriptor")
+	}
+
+	// Read descriptor value via wire layer
+	// Note: wire layer doesn't distinguish between characteristic and descriptor reads
+	// Both use ReadCharacteristic with the appropriate UUID
+	return p.wire.ReadCharacteristic(
+		p.remoteUUID,
+		descriptor.Characteristic.Service.UUID,
+		descriptor.UUID,
+	)
+}
+
 // SetNotifyValue enables or disables notifications for a characteristic
 // This matches real iOS CoreBluetooth API: peripheral.setNotifyValue(_:for:)
+// REALISTIC BLE BEHAVIOR: This writes to the CCCD descriptor (0x2902) to enable/disable notifications
 func (p *CBPeripheral) SetNotifyValue(enabled bool, characteristic *CBCharacteristic) error {
 	if p.wire == nil {
 		return fmt.Errorf("peripheral not connected")
@@ -256,16 +408,47 @@ func (p *CBPeripheral) SetNotifyValue(enabled bool, characteristic *CBCharacteri
 		p.notifyingCharacteristics = make(map[string]bool)
 	}
 
+	// Update local tracking
 	p.notifyingCharacteristics[characteristic.UUID] = enabled
 
-	// Send subscribe/unsubscribe message to peripheral
-	// In real iOS, this would write to the CCCD descriptor
-	var err error
-	if enabled {
-		err = p.wire.SubscribeCharacteristic(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
-	} else {
-		err = p.wire.UnsubscribeCharacteristic(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
+	// REALISTIC BLE: Find the CCCD descriptor (0x2902) and write to it
+	// Real iOS CoreBluetooth does this automatically when you call setNotifyValue
+	var cccdDescriptor *CBDescriptor
+	for _, descriptor := range characteristic.Descriptors {
+		if descriptor.UUID == CBUUID_CCCD {
+			cccdDescriptor = descriptor
+			break
+		}
 	}
+
+	if cccdDescriptor == nil {
+		return fmt.Errorf("characteristic does not have CCCD descriptor (not notifiable)")
+	}
+
+	// Determine the value to write (0x01 0x00 for notify, 0x00 0x00 for disable)
+	var cccdValue []byte
+	if enabled {
+		// Check if characteristic has indicate property
+		hasIndicate := false
+		for _, prop := range characteristic.Properties {
+			if prop == "indicate" {
+				hasIndicate = true
+				break
+			}
+		}
+
+		if hasIndicate {
+			cccdValue = CBCCCDEnableIndicationValue // 0x02 0x00
+		} else {
+			cccdValue = CBCCCDEnableNotificationValue // 0x01 0x00
+		}
+	} else {
+		cccdValue = CBCCCDDisableNotificationValue // 0x00 0x00
+	}
+
+	// Write to CCCD descriptor (this is the realistic BLE way!)
+	// Real iOS sends this as a descriptor write operation
+	err := p.wire.WriteCharacteristic(p.remoteUUID, characteristic.Service.UUID, CBUUID_CCCD, cccdValue)
 
 	return err
 }
@@ -326,7 +509,20 @@ func (p *CBPeripheral) HandleGATTMessage(peerUUID string, msg *wire.GATTMessage)
 		return true
 	}
 
-	// TODO: Handle gatt_response for read operations
+	// Handle gatt_response for read operations
+	if msg.Type == "gatt_response" && msg.Operation == "read_response" {
+		// Update characteristic value
+		dataCopy := make([]byte, len(msg.Data))
+		copy(dataCopy, msg.Data)
+		char.Value = dataCopy
+
+		// Deliver callback
+		if p.Delegate != nil {
+			p.Delegate.DidUpdateValueForCharacteristic(p, char, nil)
+		}
+		return true
+	}
+
 	return false
 }
 
