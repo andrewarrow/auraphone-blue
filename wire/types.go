@@ -47,6 +47,7 @@ type Connection struct {
 	role       ConnectionRole // Our role in this connection
 	sendMutex  sync.Mutex     // Protects writes to this connection
 	mtu        int            // Current negotiated MTU (starts at DefaultMTU)
+	fragmenter interface{}    // ATT fragmenter for long writes (type *att.Fragmenter, avoiding import cycle)
 }
 
 // GATTMessage represents a GATT operation over the wire

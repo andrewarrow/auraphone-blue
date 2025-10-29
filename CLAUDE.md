@@ -16,6 +16,10 @@ the iphone/ and android/ packages use swift/ and kotlin/ to make simulated phone
 only work in the wire/ directory right now. We are refactoring it to be more real
 and are making breaking changes to other packages.
 
+# tests
+
+always call util.SetRandom() at the start of each test
+
 # ios vs android
 
 **BLE itself is standardized at the protocol level**, both iOS and Android speak the same *over-the-air binary protocol*, but they expose it through **very different software abstractions, lifecycles, and caching behavior**.

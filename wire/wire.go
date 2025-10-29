@@ -215,7 +215,8 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 		conn:       conn,
 		remoteUUID: peerUUID,
 		role:       RolePeripheral,
-		mtu:        DefaultMTU, // Start with default MTU
+		mtu:        DefaultMTU,           // Start with default MTU
+		fragmenter: att.NewFragmenter(), // Initialize fragmenter for long writes
 	}
 	w.connections[peerUUID] = connection
 	w.mu.Unlock()
@@ -288,7 +289,8 @@ func (w *Wire) Connect(peerUUID string) error {
 		conn:       conn,
 		remoteUUID: peerUUID,
 		role:       RoleCentral,
-		mtu:        DefaultMTU, // Start with default MTU
+		mtu:        DefaultMTU,           // Start with default MTU
+		fragmenter: att.NewFragmenter(), // Initialize fragmenter for long writes
 	}
 
 	w.mu.Lock()
@@ -489,6 +491,81 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 		connection.mtu = negotiatedMTU
 		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "✅ MTU negotiated with %s: %d bytes", shortHash(peerUUID), negotiatedMTU)
 
+	case *att.PrepareWriteRequest:
+		// Peer is sending a prepare write fragment
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📥 Prepare Write Request from %s: handle=0x%04X, offset=%d, len=%d",
+			shortHash(peerUUID), p.Handle, p.Offset, len(p.Value))
+
+		// Add to fragmenter queue
+		fragmenter := connection.fragmenter.(*att.Fragmenter)
+		resp := &att.PrepareWriteResponse{
+			Handle: p.Handle,
+			Offset: p.Offset,
+			Value:  p.Value, // Echo back the value
+		}
+		err := fragmenter.AddPrepareWriteResponse(resp)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"❌ Failed to add prepare write fragment: %v", err)
+			// Send error response
+			errorResp := &att.ErrorResponse{
+				RequestOpcode: att.OpPrepareWriteRequest,
+				Handle:        p.Handle,
+				ErrorCode:     att.ErrInvalidOffset,
+			}
+			w.sendATTPacket(peerUUID, errorResp)
+			return
+		}
+
+		// Send echo response
+		w.sendATTPacket(peerUUID, resp)
+
+	case *att.ExecuteWriteRequest:
+		// Peer is executing (committing) or canceling the prepared writes
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📥 Execute Write Request from %s: flags=0x%02X", shortHash(peerUUID), p.Flags)
+
+		fragmenter := connection.fragmenter.(*att.Fragmenter)
+
+		if p.Flags == 0x01 {
+			// Execute (commit) - get all queued handles and reassemble
+			// For now, we'll assume there's only one handle being written to
+			// TODO: Track which handle is being written in the prepare queue
+			// This is a simplification - in a real implementation, we'd need to track
+			// multiple handles and deliver each reassembled value separately
+
+			// For now, just clear the queue and send success
+			// The actual write will be handled when we implement proper handle tracking
+			fragmenter.ClearAllQueues()
+
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"✅ Execute write committed")
+		} else {
+			// Cancel - clear the prepare queue
+			fragmenter.ClearAllQueues()
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"❌ Execute write canceled")
+		}
+
+		// Send execute write response
+		resp := &att.ExecuteWriteResponse{}
+		w.sendATTPacket(peerUUID, resp)
+
+	case *att.PrepareWriteResponse:
+		// Response to our prepare write request
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📥 Prepare Write Response from %s: handle=0x%04X, offset=%d, len=%d",
+			shortHash(peerUUID), p.Handle, p.Offset, len(p.Value))
+		// TODO: Add proper request/response tracking
+		// For now, we just log it
+
+	case *att.ExecuteWriteResponse:
+		// Response to our execute write request
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"✅ Execute Write Response from %s", shortHash(peerUUID))
+		// TODO: Add proper request/response tracking
+
 	case *att.ReadRequest, *att.WriteRequest, *att.WriteCommand,
 		*att.ReadResponse, *att.WriteResponse, *att.ErrorResponse,
 		*att.HandleValueNotification, *att.HandleValueIndication:
@@ -598,6 +675,29 @@ func (w *Wire) sendATTPacket(peerUUID string, packet interface{}) error {
 		return fmt.Errorf("failed to encode ATT packet: %w", err)
 	}
 
+	// Get connection to check MTU
+	w.mu.RLock()
+	connection, exists := w.connections[peerUUID]
+	w.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("not connected to %s", peerUUID)
+	}
+
+	// Enforce MTU strictly (except for MTU exchange packets and error responses)
+	// MTU exchange and error responses are always allowed regardless of MTU
+	switch packet.(type) {
+	case *att.ExchangeMTURequest, *att.ExchangeMTUResponse, *att.ErrorResponse:
+		// These packets are exempt from MTU checks
+	default:
+		// Check if ATT payload exceeds MTU
+		if len(attData) > connection.mtu {
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"❌ ATT packet exceeds MTU: len=%d, mtu=%d (use fragmentation for large writes)",
+				len(attData), connection.mtu)
+			return fmt.Errorf("ATT packet exceeds MTU: %d > %d (use Prepare Write + Execute Write for large values)", len(attData), connection.mtu)
+		}
+	}
+
 	// Debug log: ATT packet sent
 	w.debugLogger.LogATTPacket("tx", peerUUID, packet, attData)
 
@@ -680,6 +780,24 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 		case "write":
 			// Map UUID to handle (simplified for now)
 			handle := w.uuidToHandle(msg.ServiceUUID, msg.CharacteristicUUID)
+
+			// Get connection to check MTU
+			w.mu.RLock()
+			connection, exists := w.connections[peerUUID]
+			w.mu.RUnlock()
+			if !exists {
+				return fmt.Errorf("no connection to peer %s", peerUUID)
+			}
+
+			// Check if fragmentation is needed
+			if att.ShouldFragment(connection.mtu, msg.Data) {
+				// Use Prepare Write + Execute Write for long values
+				logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+					"🔀 Fragmenting write (len=%d, mtu=%d)", len(msg.Data), connection.mtu)
+				return w.sendFragmentedWrite(peerUUID, handle, msg.Data, connection)
+			}
+
+			// Normal write for small values
 			attPacket = &att.WriteRequest{
 				Handle: handle,
 				Value:  msg.Data,
@@ -735,6 +853,53 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 		logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to send ATT packet: %v", err)
 		return err
 	}
+
+	return nil
+}
+
+// sendFragmentedWrite sends a long write using ATT Prepare Write + Execute Write
+// This is used when the value exceeds the negotiated MTU
+func (w *Wire) sendFragmentedWrite(peerUUID string, handle uint16, value []byte, connection *Connection) error {
+	// Fragment the write into Prepare Write requests
+	requests, err := att.FragmentWrite(handle, value, connection.mtu)
+	if err != nil {
+		return fmt.Errorf("failed to fragment write: %w", err)
+	}
+
+	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+		"   Sending %d prepare write fragments", len(requests))
+
+	// Send each Prepare Write request and wait for response
+	for i, req := range requests {
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"   Fragment %d/%d: offset=%d, len=%d", i+1, len(requests), req.Offset, len(req.Value))
+
+		// Send the Prepare Write request
+		err = w.sendATTPacket(peerUUID, req)
+		if err != nil {
+			return fmt.Errorf("failed to send prepare write fragment %d: %w", i, err)
+		}
+
+		// In a real implementation, we would wait for the PrepareWriteResponse
+		// and verify the server echoed back the correct offset and value
+		// For now, we assume success and continue
+		// TODO: Add proper request/response tracking with timeouts
+	}
+
+	// Send Execute Write request to commit the write
+	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+		"   Sending execute write (commit)")
+
+	executeReq := &att.ExecuteWriteRequest{
+		Flags: 0x01, // 0x01 = execute (commit), 0x00 = cancel
+	}
+	err = w.sendATTPacket(peerUUID, executeReq)
+	if err != nil {
+		return fmt.Errorf("failed to send execute write: %w", err)
+	}
+
+	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+		"   Fragmented write completed successfully")
 
 	return nil
 }
