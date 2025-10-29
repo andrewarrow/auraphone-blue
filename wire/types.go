@@ -42,12 +42,13 @@ type CharacteristicMessage = GATTMessage
 
 // Connection represents a single bidirectional BLE connection
 type Connection struct {
-	conn       net.Conn
-	remoteUUID string
-	role       ConnectionRole // Our role in this connection
-	sendMutex  sync.Mutex     // Protects writes to this connection
-	mtu        int            // Current negotiated MTU (starts at DefaultMTU)
-	fragmenter interface{}    // ATT fragmenter for long writes (type *att.Fragmenter, avoiding import cycle)
+	conn           net.Conn
+	remoteUUID     string
+	role           ConnectionRole // Our role in this connection
+	sendMutex      sync.Mutex     // Protects writes to this connection
+	mtu            int            // Current negotiated MTU (starts at DefaultMTU)
+	fragmenter     interface{}    // ATT fragmenter for long writes (type *att.Fragmenter, avoiding import cycle)
+	requestTracker interface{}    // ATT request tracker (type *att.RequestTracker, avoiding import cycle)
 }
 
 // GATTMessage represents a GATT operation over the wire

@@ -4,7 +4,7 @@
 Convert wire/ from JSON-over-length-prefix to real binary BLE protocols (L2CAP + ATT/GATT), while maintaining human-readable JSON debug files that are never used in the actual data flow.
 
 ## Current Status
-**Phase 1, 2.1-2.4, 3.1, 4.1 COMPLETED** ✅ (2025-10-29)
+**Phase 1, 2.1-2.4, 2.5, 3.1, 4.1 COMPLETED** ✅ (2025-10-29)
 
 ### ✅ Completed Today
 - **Phase 1**: Binary protocol foundation (L2CAP, ATT, GATT layers)
@@ -12,13 +12,15 @@ Convert wire/ from JSON-over-length-prefix to real binary BLE protocols (L2CAP +
 - **Phase 2.2**: GATT operations converted to binary ATT packets
 - **Phase 2.3**: MTU negotiation on connection establishment
 - **Phase 2.4**: Fragmentation for large writes using Prepare Write + Execute Write
+- **Phase 2.5**: Request/response tracking with timeouts (NEW!)
 - **Phase 3.1**: Binary advertising packets with TLV encoding
 - **Phase 4.1**: Debug logging infrastructure with human-readable JSON
 
 ### 📊 Current State
-- **Tests**: 68/68 passing across 5 packages (wire, l2cap, att, gatt, advertising)
+- **Tests**: 77/77 passing across 5 packages (wire, l2cap, att, gatt, advertising)
 - **Binary Protocol**: Fully functional L2CAP + ATT communication
-- **MTU Negotiation**: Working, negotiates to 512 bytes
+- **MTU Negotiation**: Working with request/response tracking, negotiates to 512 bytes
+- **Request/Response Tracking**: ✅ Implemented with 30s default timeout
 - **Fragmentation**: Automatic for writes > MTU-3, uses Prepare Write + Execute Write
 - **MTU Enforcement**: Strict validation, rejects oversized packets with error
 - **Advertising**: Binary PDU encoding with 31-byte limit, TLV AD structures
@@ -28,19 +30,21 @@ Convert wire/ from JSON-over-length-prefix to real binary BLE protocols (L2CAP +
 ### 🔧 Implementation Details
 - Wire now sends/receives binary L2CAP packets (little-endian)
 - ATT packets properly encoded with opcodes 0x02 (MTU Request), 0x03 (MTU Response)
+- **Request Tracker**: Enforces one-request-at-a-time ATT constraint, matches responses, handles timeouts
+- **Timeout Handling**: Pending requests automatically timeout after 30s, callbacks supported
+- **Connection Cleanup**: Pending requests cancelled on disconnect
 - Temporary UUID-to-handle mapping (hash-based, will be replaced with discovery)
 - Debug logging enabled by default (disable with `WIRE_DEBUG=0`)
 
 ### 📝 Known Limitations
 - UUID-to-handle mapping is hash-based (needs proper GATT discovery)
-- Request/response tracking not yet implemented (fire-and-forget for now)
 - Execute Write doesn't deliver reassembled data to GATT handler yet
 - Subscription/CCCD writes not yet implemented
 
 ### 🎯 Next Steps
-**Immediate**: Phase 3.2 (Update discovery mechanism) - mostly complete, may need RSSI simulation
-**Then**: Request/response tracking with timeouts
-**Future**: Proper GATT service discovery, CCCD writes, improved error handling
+**Immediate**: Phase 3.2 (RSSI simulation for discovery mechanism)
+**Then**: Proper GATT service discovery (Phase 1.4/2.4)
+**Future**: CCCD writes for subscriptions, improved error handling
 
 ### 📦 Binary Protocol Stack (Current)
 ```
@@ -265,6 +269,48 @@ connection.mtu = 512
 - [x] Add MTU enforcement to reject oversized packets
 - [x] Comprehensive test coverage (7 test functions, all passing)
 
+### 2.5 Implement Request/Response Tracking ✅ COMPLETED
+- [x] Create `att/request_tracker.go`:
+  - Manages pending ATT requests (only one at a time per connection)
+  - Matches responses to requests by opcode
+  - Automatic timeout handling (default 30 seconds)
+  - Thread-safe request tracking
+  - Support for timeout callbacks
+
+- [x] Integrate request tracker into Wire:
+  - Initialize tracker for each connection (Central and Peripheral)
+  - Track MTU exchange requests/responses
+  - Track Prepare Write requests/responses
+  - Track Execute Write requests/responses
+  - Track Read/Write requests/responses
+  - Cancel pending requests on disconnect
+
+- [x] Add timeout handling:
+  - Pending requests timeout after 30 seconds
+  - Timeout delivers error to caller
+  - Optional callback on timeout
+
+- [x] Add error handling:
+  - ATT Error Response completes pending request
+  - Connection errors fail pending request
+  - Wrong response opcode rejected with error
+
+- [x] Comprehensive test coverage:
+  - Single request/response flow
+  - Only one request at a time enforcement
+  - Timeout scenarios
+  - Timeout callbacks
+  - Error responses
+  - Failed requests
+  - Pending request cancellation
+  - Wrong response opcode handling
+  - Response opcode mapping
+  - 9 test functions, all passing
+
+**Files Created:**
+- `att/request_tracker.go` (215 lines) - Request tracking with timeout handling
+- `att/request_tracker_test.go` (9 tests) - Full test coverage
+
 ---
 
 ## Phase 3: Advertising & Discovery Binary Protocol ✅ COMPLETED (Phase 3.1)
@@ -384,8 +430,12 @@ connection.mtu = 512
 - [ ] Test connection parameters
 - [ ] Test advertising packet parsing
 
-### 6.4 Performance Testing
+### 6.4 Misc
 - [ ] Verify MTU enforcement
+- [ ] Connection parameter updates
+- [ ] Physical layer simulation
+- [ ] Link Layer control PDUs
+- [ ] Multiple simultaneous connections to same device
 
 ## Success Criteria
 
@@ -408,17 +458,6 @@ connection.mtu = 512
 - [ ] GATT discovery protocol (service/characteristic/descriptor discovery) (Phase 2.4/3)
 - [ ] Binary advertising packets (Phase 3)
 - [ ] Ready for kotlin/ and swift/ integration (future work)
-
----
-
-- Connection parameter updates
-- Channel hopping simulation
-- Physical layer simulation
-- Link Layer control PDUs
-- Multiple simultaneous connections to same device
-- Changes to kotlin/ and swift/ packages (will break until they're updated)
-
----
 
 ## Notes
 
@@ -445,7 +484,9 @@ wire/
 │   ├── packet.go          (451 lines) - ATT packet encoding/decoding
 │   ├── packet_test.go     (11 tests) - ATT tests
 │   ├── fragmenter.go      (152 lines) - Write fragmentation/reassembly
-│   └── fragmenter_test.go (7 tests) - Fragmentation tests
+│   ├── fragmenter_test.go (7 tests) - Fragmentation tests
+│   ├── request_tracker.go (215 lines) - Request/response tracking with timeouts
+│   └── request_tracker_test.go (9 tests) - Request tracker tests
 ├── gatt/
 │   ├── handles.go         (155 lines) - Attribute database
 │   ├── handles_test.go    (9 tests) - Handle tests
@@ -472,8 +513,10 @@ wire/
 │   ├── Modified SendGATTMessage() to detect and fragment long writes
 │   ├── Added attToGATTMessage() for backward compat
 │   ├── Added uuidToHandle() for handle mapping
-│   ├── Added MTU negotiation in Connect()
-│   └── Connection initialization with fragmenter
+│   ├── Added MTU negotiation in Connect() with request tracking
+│   ├── Connection initialization with fragmenter and request tracker
+│   ├── Added request/response completion in handleATTPacket()
+│   └── Cancel pending requests in Disconnect()
 ├── discovery.go          - Binary advertising packet support
 │   ├── Added import: advertising package
 │   ├── Modified ReadAdvertisingData() to parse binary PDU and AD structures
@@ -481,7 +524,7 @@ wire/
 │   ├── Stores binary packets in advertising.bin
 │   └── Writes debug JSON to debug/advertising.json
 ├── constants.go          - Already had MTU constants (no changes needed)
-└── types.go             - Added fragmenter field to Connection struct
+└── types.go             - Added fragmenter and requestTracker fields to Connection struct
 ```
 
 ### Test Results
@@ -490,12 +533,12 @@ Package                  Tests    Status
 ────────────────────────────────────────
 wire                     1/1      ✅ PASS
 wire/l2cap              6/6      ✅ PASS
-wire/att               18/18     ✅ PASS (11 packet + 7 fragmenter)
+wire/att               27/27     ✅ PASS (11 packet + 7 fragmenter + 9 tracker)
 wire/gatt              16/16     ✅ PASS
 wire/advertising       25/25     ✅ PASS
 wire/debug               -       (no test files)
 ────────────────────────────────────────
-Total                  68/68     ✅ ALL PASSING
+Total                  77/77     ✅ ALL PASSING
 ```
 
 ### Debug Output Example

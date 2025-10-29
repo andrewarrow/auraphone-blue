@@ -212,11 +212,12 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 
 	// Store connection with Peripheral role (they initiated)
 	connection := &Connection{
-		conn:       conn,
-		remoteUUID: peerUUID,
-		role:       RolePeripheral,
-		mtu:        DefaultMTU,           // Start with default MTU
-		fragmenter: att.NewFragmenter(), // Initialize fragmenter for long writes
+		conn:           conn,
+		remoteUUID:     peerUUID,
+		role:           RolePeripheral,
+		mtu:            DefaultMTU,                 // Start with default MTU
+		fragmenter:     att.NewFragmenter(),        // Initialize fragmenter for long writes
+		requestTracker: att.NewRequestTracker(0),   // Initialize request tracker with default 30s timeout
 	}
 	w.connections[peerUUID] = connection
 	w.mu.Unlock()
@@ -286,11 +287,12 @@ func (w *Wire) Connect(peerUUID string) error {
 
 	// Store connection with Central role (we initiated)
 	connection := &Connection{
-		conn:       conn,
-		remoteUUID: peerUUID,
-		role:       RoleCentral,
-		mtu:        DefaultMTU,           // Start with default MTU
-		fragmenter: att.NewFragmenter(), // Initialize fragmenter for long writes
+		conn:           conn,
+		remoteUUID:     peerUUID,
+		role:           RoleCentral,
+		mtu:            DefaultMTU,                 // Start with default MTU
+		fragmenter:     att.NewFragmenter(),        // Initialize fragmenter for long writes
+		requestTracker: att.NewRequestTracker(0),   // Initialize request tracker with default 30s timeout
 	}
 
 	w.mu.Lock()
@@ -330,14 +332,40 @@ func (w *Wire) Connect(peerUUID string) error {
 	// In real BLE, the Central typically initiates MTU negotiation
 	go func() {
 		time.Sleep(10 * time.Millisecond) // Small delay to ensure read loop is running
+
+		// Start request tracking
+		w.mu.RLock()
+		conn := w.connections[peerUUID]
+		w.mu.RUnlock()
+		if conn == nil || conn.requestTracker == nil {
+			return
+		}
+		tracker := conn.requestTracker.(*att.RequestTracker)
+		responseC, err := tracker.StartRequest(att.OpExchangeMTURequest, 0, 0)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to start MTU request tracking: %v", err)
+			return
+		}
+
+		// Send MTU request
 		mtuReq := &att.ExchangeMTURequest{
 			ClientRxMTU: uint16(MaxMTU), // Request our maximum MTU
 		}
-		err := w.sendATTPacket(peerUUID, mtuReq)
+		err = w.sendATTPacket(peerUUID, mtuReq)
 		if err != nil {
 			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to send MTU request to %s: %v", shortHash(peerUUID), err)
-		} else {
-			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📤 MTU Request to %s: client_mtu=%d", shortHash(peerUUID), MaxMTU)
+			tracker.FailRequest(err)
+			return
+		}
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📤 MTU Request to %s: client_mtu=%d", shortHash(peerUUID), MaxMTU)
+
+		// Wait for response (with timeout)
+		select {
+		case resp := <-responseC:
+			if resp.Error != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ MTU exchange with %s failed: %v", shortHash(peerUUID), resp.Error)
+			}
+			// Success is already logged in handleATTPacket
 		}
 	}()
 
@@ -478,6 +506,15 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 		// Peer responded to our MTU request
 		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📥 MTU Response from %s: server_mtu=%d", shortHash(peerUUID), p.ServerRxMTU)
 
+		// Complete the pending MTU request
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+			err := tracker.CompleteRequest(att.OpExchangeMTUResponse, p)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  MTU response without pending request: %v", err)
+			}
+		}
+
 		// Determine the MTU to use (minimum of server and our request)
 		negotiatedMTU := int(p.ServerRxMTU)
 		if negotiatedMTU > MaxMTU {
@@ -557,17 +594,91 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
 			"📥 Prepare Write Response from %s: handle=0x%04X, offset=%d, len=%d",
 			shortHash(peerUUID), p.Handle, p.Offset, len(p.Value))
-		// TODO: Add proper request/response tracking
-		// For now, we just log it
+
+		// Complete the pending prepare write request
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+			err := tracker.CompleteRequest(att.OpPrepareWriteResponse, p)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  Prepare write response without pending request: %v", err)
+			}
+		}
 
 	case *att.ExecuteWriteResponse:
 		// Response to our execute write request
 		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
 			"✅ Execute Write Response from %s", shortHash(peerUUID))
-		// TODO: Add proper request/response tracking
+
+		// Complete the pending execute write request
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+			err := tracker.CompleteRequest(att.OpExecuteWriteResponse, p)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  Execute write response without pending request: %v", err)
+			}
+		}
+
+	case *att.ReadResponse:
+		// Complete pending read request
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+			err := tracker.CompleteRequest(att.OpReadResponse, p)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  Read response without pending request: %v", err)
+			}
+		}
+		// Also pass to GATT handler for backward compatibility
+		msg := w.attToGATTMessage(packet)
+		if msg != nil {
+			w.handlerMu.RLock()
+			handler := w.gattHandler
+			w.handlerMu.RUnlock()
+			if handler != nil {
+				handler(peerUUID, msg)
+			}
+		}
+
+	case *att.WriteResponse:
+		// Complete pending write request
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+			err := tracker.CompleteRequest(att.OpWriteResponse, p)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  Write response without pending request: %v", err)
+			}
+		}
+		// Also pass to GATT handler for backward compatibility
+		msg := w.attToGATTMessage(packet)
+		if msg != nil {
+			w.handlerMu.RLock()
+			handler := w.gattHandler
+			w.handlerMu.RUnlock()
+			if handler != nil {
+				handler(peerUUID, msg)
+			}
+		}
+
+	case *att.ErrorResponse:
+		// Complete pending request with error
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+			err := tracker.CompleteRequest(att.OpErrorResponse, p)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "⚠️  Error response without pending request: %v", err)
+			}
+		}
+		// Also pass to GATT handler for backward compatibility
+		msg := w.attToGATTMessage(packet)
+		if msg != nil {
+			w.handlerMu.RLock()
+			handler := w.gattHandler
+			w.handlerMu.RUnlock()
+			if handler != nil {
+				handler(peerUUID, msg)
+			}
+		}
 
 	case *att.ReadRequest, *att.WriteRequest, *att.WriteCommand,
-		*att.ReadResponse, *att.WriteResponse, *att.ErrorResponse,
 		*att.HandleValueNotification, *att.HandleValueIndication:
 		// These are GATT operations - convert to GATTMessage for compatibility
 		// TODO: Remove this conversion once higher layers use binary protocol directly
@@ -987,6 +1098,12 @@ func (w *Wire) Disconnect(peerUUID string) error {
 	connection, exists := w.connections[peerUUID]
 	if !exists {
 		return fmt.Errorf("not connected to %s", peerUUID)
+	}
+
+	// Cancel any pending ATT requests
+	if connection.requestTracker != nil {
+		tracker := connection.requestTracker.(*att.RequestTracker)
+		tracker.CancelPending()
 	}
 
 	// Stop reading goroutine
