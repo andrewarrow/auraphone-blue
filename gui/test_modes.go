@@ -122,39 +122,39 @@ func RunStressTest(numPhones int, duration time.Duration) {
 			return
 		}
 
-		// Set profile photo (cycle through face1.jpg to face12.jpg)
-		photoIndex := (i % 12) + 1
-		photoPath := fmt.Sprintf("testdata/face%d.jpg", photoIndex)
-		if err := p.SetProfilePhoto(photoPath); err != nil {
-			fmt.Printf("Warning: Failed to set profile photo for %s phone %d: %v\n", platform, i+1, err)
-		}
+		// DISABLED: Don't set profile photo - phones start blank
+		// photoIndex := (i % 12) + 1
+		// photoPath := fmt.Sprintf("testdata/face%d.jpg", photoIndex)
+		// if err := p.SetProfilePhoto(photoPath); err != nil {
+		// 	fmt.Printf("Warning: Failed to set profile photo for %s phone %d: %v\n", platform, i+1, err)
+		// }
 
-		// Generate and set random profile data for simulation (GUI only)
+		// DISABLED: Don't generate profile data - phones start blank
 		// Real phones would have users enter this themselves
-		allocatedCount := manager.GetAllocatedCount()
-		profileData, err := GetProfileForIndex(allocatedCount)
-		if err != nil {
-			fmt.Printf("Warning: Failed to load profile data for phone %d: %v (using defaults)\n", i+1, err)
-			profileData = ProfileData{
-				FirstName: platform,
-				LastName:  "User",
-				Tagline:   "Tech enthusiast",
-				Instagram: "@user",
-				YouTube:   "TechTalks",
-			}
-		}
+		// allocatedCount := manager.GetAllocatedCount()
+		// profileData, err := GetProfileForIndex(allocatedCount)
+		// if err != nil {
+		// 	fmt.Printf("Warning: Failed to load profile data for phone %d: %v (using defaults)\n", i+1, err)
+		// 	profileData = ProfileData{
+		// 		FirstName: platform,
+		// 		LastName:  "User",
+		// 		Tagline:   "Tech enthusiast",
+		// 		Instagram: "@user",
+		// 		YouTube:   "TechTalks",
+		// 	}
+		// }
 
-		// Set the generated profile data on the phone
-		profile := map[string]string{
-			"first_name": profileData.FirstName,
-			"last_name":  profileData.LastName,
-			"tagline":    profileData.Tagline,
-			"insta":      profileData.Instagram,
-			"youtube":    profileData.YouTube,
-		}
-		if err := p.UpdateLocalProfile(profile); err != nil {
-			fmt.Printf("Warning: Failed to set profile for phone %d: %v\n", i+1, err)
-		}
+		// DISABLED: Don't set profile data - phones start blank
+		// profile := map[string]string{
+		// 	"first_name": profileData.FirstName,
+		// 	"last_name":  profileData.LastName,
+		// 	"tagline":    profileData.Tagline,
+		// 	"insta":      profileData.Instagram,
+		// 	"youtube":    profileData.YouTube,
+		// }
+		// if err := p.UpdateLocalProfile(profile); err != nil {
+		// 	fmt.Printf("Warning: Failed to set profile for phone %d: %v\n", i+1, err)
+		// }
 
 		// Start the phone
 		p.Start()

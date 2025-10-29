@@ -64,10 +64,8 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 		return nil
 	}
 
-	// Select photo that matches hardware UUID index (face1 for first UUID, face2 for second, etc.)
-	// This ensures each phone gets a consistent photo across restarts
-	allocatedCount := manager.GetAllocatedCount()
-	selectedPhoto := fmt.Sprintf("testdata/face%d.jpg", allocatedCount)
+	// Don't set a default photo - let user choose their own
+	// selectedPhoto := fmt.Sprintf("testdata/face%d.jpg", allocatedCount) // DISABLED: no default photo
 
 	pw := &PhoneWindow{
 		currentTab:        "home",
@@ -76,7 +74,7 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 		devicesMap:        make(map[string]phone.DiscoveredDevice),
 		discoveredDevices: []phone.DiscoveredDevice{},
 		needsRefresh:      false,
-		selectedPhoto:     selectedPhoto,
+		selectedPhoto:     "", // Start with no photo selected
 		deviceImages:      make(map[string]image.Image),
 		devicePhotoHashes: make(map[string]string),
 		deviceFirstNames:  make(map[string]string),
@@ -115,36 +113,36 @@ func NewPhoneWindow(app fyne.App, platformType string) *PhoneWindow {
 		manager.ReleaseUUID(pw.hardwareUUID)
 	})
 
-	// Set initial profile photo
-	if err := pw.phone.SetProfilePhoto(pw.selectedPhoto); err != nil {
-		fmt.Printf("Failed to set initial profile photo: %v\n", err)
-	}
+	// DISABLED: Don't set initial profile photo - let user choose
+	// if err := pw.phone.SetProfilePhoto(pw.selectedPhoto); err != nil {
+	// 	fmt.Printf("Failed to set initial profile photo: %v\n", err)
+	// }
 
-	// Generate and set random profile data for simulation (GUI only)
+	// DISABLED: Don't generate random profile data - phones start with blank profiles
 	// Real phones would have users enter this themselves
-	profileData, err := GetProfileForIndex(allocatedCount)
-	if err != nil {
-		fmt.Printf("Warning: Failed to load profile data: %v (using defaults)\n", err)
-		profileData = ProfileData{
-			FirstName: platformType,
-			LastName:  "User",
-			Tagline:   "Tech enthusiast",
-			Instagram: "@user",
-			YouTube:   "TechTalks",
-		}
-	}
+	// profileData, err := GetProfileForIndex(allocatedCount)
+	// if err != nil {
+	// 	fmt.Printf("Warning: Failed to load profile data: %v (using defaults)\n", err)
+	// 	profileData = ProfileData{
+	// 		FirstName: platformType,
+	// 		LastName:  "User",
+	// 		Tagline:   "Tech enthusiast",
+	// 		Instagram: "@user",
+	// 		YouTube:   "TechTalks",
+	// 	}
+	// }
 
-	// Set the generated profile data on the phone
-	profile := map[string]string{
-		"first_name": profileData.FirstName,
-		"last_name":  profileData.LastName,
-		"tagline":    profileData.Tagline,
-		"insta":      profileData.Instagram,
-		"youtube":    profileData.YouTube,
-	}
-	if err := pw.phone.UpdateLocalProfile(profile); err != nil {
-		fmt.Printf("Failed to set initial profile: %v\n", err)
-	}
+	// DISABLED: Don't set initial profile - phones start blank
+	// profile := map[string]string{
+	// 	"first_name": profileData.FirstName,
+	// 	"last_name":  profileData.LastName,
+	// 	"tagline":    profileData.Tagline,
+	// 	"insta":      profileData.Instagram,
+	// 	"youtube":    profileData.YouTube,
+	// }
+	// if err := pw.phone.UpdateLocalProfile(profile); err != nil {
+	// 	fmt.Printf("Failed to set initial profile: %v\n", err)
+	// }
 
 	// Start BLE operations
 	pw.phone.Start()
