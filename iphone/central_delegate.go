@@ -38,7 +38,12 @@ func (ip *IPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 	// Store peripheral for message routing (if we're going to connect)
 	var shouldConnect bool
 	var peripheralObj *swift.CBPeripheral
-	if ip.central.ShouldInitiateConnection(peripheral.UUID) {
+
+	// Check if we're already connected (e.g., they connected to us as Peripheral)
+	// Real iOS CoreBluetooth: Don't initiate a new connection if already connected
+	alreadyConnected := ip.identityManager.IsConnected(peripheral.UUID)
+
+	if !alreadyConnected && ip.central.ShouldInitiateConnection(peripheral.UUID) {
 		peripheralObj = &peripheral
 		ip.connectedPeers[peripheral.UUID] = peripheralObj
 		shouldConnect = true
@@ -60,7 +65,10 @@ func (ip *IPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 		// Connect
 		ip.central.Connect(peripheralObj, nil)
 	} else {
-		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "⏳ Waiting for %s to connect (role: Peripheral)", shortHash(peripheral.UUID))
+		// Don't log if already connected (to avoid log spam)
+		if !alreadyConnected {
+			logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "⏳ Waiting for %s to connect (role: Peripheral)", shortHash(peripheral.UUID))
+		}
 	}
 }
 

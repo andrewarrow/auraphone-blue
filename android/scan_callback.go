@@ -40,15 +40,22 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 		a.callback(device)
 	}
 
+	// Check if we're already connected (e.g., they connected to us as Peripheral)
+	// Real Android BLE: Don't initiate a new connection if already connected
+	alreadyConnected := a.identityManager.IsConnected(result.Device.Address)
+
 	// Decide if we should initiate connection based on role negotiation
 	// IMPORTANT: Android CAN discover other Android devices (unlike iOS which blocks iOS-to-iOS discovery)
-	if a.manager.Adapter.ShouldInitiateConnection(result.Device.Address) {
+	if !alreadyConnected && a.manager.Adapter.ShouldInitiateConnection(result.Device.Address) {
 		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔌 Initiating connection to %s (role: Central)", shortHash(result.Device.Address))
 
 		// Connect
 		a.connectToDevice(result.Device.Address)
 	} else {
-		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "⏳ Waiting for %s to connect (role: Peripheral)", shortHash(result.Device.Address))
+		// Don't log if already connected (to avoid log spam)
+		if !alreadyConnected {
+			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "⏳ Waiting for %s to connect (role: Peripheral)", shortHash(result.Device.Address))
+		}
 	}
 }
 
