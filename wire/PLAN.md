@@ -338,14 +338,6 @@ connection.mtu = 512
   - Format attribute databases with handle maps
   - Format advertising data with TLV breakdown
 
-- [ ] Add hex dumps with ASCII annotations
-- [ ] Color-code output for terminal viewing (optional)
-
-### 4.3 Add Debug Configuration
-- [ ] Add `Wire.EnableDebugLogging(baseDir string)` method
-- [ ] Add environment variable `WIRE_DEBUG=1` to enable globally
-- [ ] Ensure zero performance impact when debugging is disabled
-
 ---
 
 ## Phase 5: Error Handling & Validation
@@ -393,59 +385,7 @@ connection.mtu = 512
 - [ ] Test advertising packet parsing
 
 ### 6.4 Performance Testing
-- [ ] Benchmark binary encoding vs old JSON encoding
 - [ ] Verify MTU enforcement
-- [ ] Test fragmentation performance
-- [ ] Measure memory usage with many connections
-
----
-
-## Phase 7: Documentation
-
-### 7.1 Update Package Documentation
-- [ ] Document binary protocol format in README
-- [ ] Add packet format diagrams
-- [ ] Document debug logging usage
-- [ ] Add examples of binary packet inspection
-
-### 7.2 Add Protocol Reference
-- [ ] Document all supported ATT opcodes
-- [ ] Document L2CAP channel IDs
-- [ ] Document error codes
-- [ ] Document handle allocation rules
-
-### 7.3 Migration Guide
-- [ ] Document breaking changes
-- [ ] Provide migration examples
-- [ ] Note changes to kotlin/ and swift/ packages (out of scope for now)
-
----
-
-## Implementation Order
-
-### Week 1: Foundation
-1. L2CAP packet encoding/decoding
-2. ATT packet structures and basic opcodes (Read/Write/Error)
-3. Basic binary wire protocol (replace JSON)
-
-### Week 2: GATT Layer
-4. Handle allocation system
-5. Attribute database builder
-6. GATT operations using handles
-7. MTU negotiation
-
-### Week 3: Advanced Features
-8. Fragmentation/reassembly
-9. GATT discovery protocol
-10. Binary advertising packets
-
-### Week 4: Polish
-11. Debug JSON logging infrastructure
-12. Error handling and validation
-13. Update all tests
-14. Documentation
-
----
 
 ## Success Criteria
 
@@ -467,15 +407,10 @@ connection.mtu = 512
 - ✅ Debug JSON files for troubleshooting (Phase 4.1)
 - [ ] GATT discovery protocol (service/characteristic/descriptor discovery) (Phase 2.4/3)
 - [ ] Binary advertising packets (Phase 3)
-- [ ] No performance regression vs current implementation (to be measured)
 - [ ] Ready for kotlin/ and swift/ integration (future work)
 
 ---
 
-## Out of Scope (Future Work)
-
-- SMP (Security Manager Protocol) - encryption/pairing
-- LE Secure Connections
 - Connection parameter updates
 - Channel hopping simulation
 - Physical layer simulation
