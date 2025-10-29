@@ -515,13 +515,23 @@ func (w *Wire) handleL2CAPSignaling(peerUUID string, connection *Connection, pay
 			shortHash(peerUUID), req.Params.IntervalMinMs(), req.Params.IntervalMaxMs(),
 			req.Params.SlaveLatency, req.Params.SupervisionTimeoutMs())
 
-		// In real BLE, the Central would decide whether to accept or reject
-		// For simulation, we always accept valid parameters
-		result := l2cap.ConnectionParameterAccepted
-
-		// Update connection parameters
-		connection.params = req.Params
-		connection.paramsUpdatedAt = time.Now()
+		// In real BLE, only the Central can accept or reject parameter update requests
+		// Peripheral receiving a request is a protocol violation
+		result := l2cap.ConnectionParameterRejected
+		if connection.role == RoleCentral {
+			// Central can accept or reject based on its policy
+			// For simulation, accept if parameters are valid
+			result = l2cap.ConnectionParameterAccepted
+			connection.params = req.Params
+			connection.paramsUpdatedAt = time.Now()
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"✅ Central accepted parameter update from %s", shortHash(peerUUID))
+		} else {
+			// Peripheral receiving a request is a protocol error
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"⚠️  Peripheral received connection parameter update request from %s - rejecting (protocol violation)",
+				shortHash(peerUUID))
+		}
 
 		// Send response
 		resp := &l2cap.ConnectionParameterUpdateResponse{
@@ -1485,6 +1495,20 @@ func (w *Wire) Disconnect(peerUUID string) error {
 		return fmt.Errorf("not connected to %s", peerUUID)
 	}
 
+	// In real BLE, disconnect behavior differs by role:
+	// - Central can force immediate disconnect
+	// - Peripheral can request disconnect, but Central controls timing
+	// For simulation, both can disconnect, but we log the semantic difference
+	if connection.role == RolePeripheral {
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"🔌 Peripheral requesting disconnect from %s (in real BLE, Central controls timing)",
+			shortHash(peerUUID))
+	} else {
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"🔌 Central disconnecting from %s (immediate)",
+			shortHash(peerUUID))
+	}
+
 	// Cancel any pending ATT requests
 	if connection.requestTracker != nil {
 		tracker := connection.requestTracker.(*att.RequestTracker)
@@ -1534,15 +1558,18 @@ func (w *Wire) RequestConnectionParameterUpdate(peerUUID string, params *l2cap.C
 	}
 
 	w.mu.RLock()
-	_, exists := w.connections[peerUUID]
+	connection, exists := w.connections[peerUUID]
 	w.mu.RUnlock()
 
 	if !exists {
 		return fmt.Errorf("not connected to %s", peerUUID)
 	}
 
-	// In real BLE, peripherals request parameter updates via L2CAP signaling
+	// In real BLE, only peripherals can request parameter updates via L2CAP signaling
 	// The central then accepts or rejects the request
+	if connection.role != RolePeripheral {
+		return fmt.Errorf("only peripheral can request connection parameter updates (current role: %s)", connection.role)
+	}
 	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
 		"📶 Requesting connection parameters from %s: interval=%.1f-%.1fms, latency=%d, timeout=%dms",
 		shortHash(peerUUID), params.IntervalMinMs(), params.IntervalMaxMs(),
@@ -1568,6 +1595,43 @@ func (w *Wire) RequestConnectionParameterUpdate(peerUUID string, params *l2cap.C
 	}
 
 	return w.sendL2CAPPacket(peerUUID, packet)
+}
+
+// SetConnectionParameters sets new connection parameters (Central only)
+// This allows the Central to unilaterally change connection parameters without peripheral request
+// In real BLE, the Central can update parameters at any time to optimize for latency or power
+func (w *Wire) SetConnectionParameters(peerUUID string, params *l2cap.ConnectionParameters) error {
+	if params == nil {
+		return fmt.Errorf("nil connection parameters")
+	}
+
+	if err := params.Validate(); err != nil {
+		return fmt.Errorf("invalid connection parameters: %w", err)
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	connection, exists := w.connections[peerUUID]
+	if !exists {
+		return fmt.Errorf("not connected to %s", peerUUID)
+	}
+
+	// In real BLE, only Central can set connection parameters unilaterally
+	// Peripheral must use RequestConnectionParameterUpdate() instead
+	if connection.role != RoleCentral {
+		return fmt.Errorf("only central can set connection parameters directly (current role: %s)", connection.role)
+	}
+
+	connection.params = params
+	connection.paramsUpdatedAt = time.Now()
+
+	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+		"📶 Central set connection parameters for %s: interval=%.1f-%.1fms, latency=%d, timeout=%dms",
+		shortHash(peerUUID), params.IntervalMinMs(), params.IntervalMaxMs(),
+		params.SlaveLatency, params.SupervisionTimeoutMs())
+
+	return nil
 }
 
 // GetConnectionParameters returns the current connection parameters for a peer
