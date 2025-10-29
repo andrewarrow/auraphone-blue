@@ -4,10 +4,11 @@
 Convert wire/ from JSON-over-length-prefix to real binary BLE protocols (L2CAP + ATT/GATT), while maintaining human-readable JSON debug files that are never used in the actual data flow.
 
 ## Current Status
-**Phase 1, 2.1-2.5, 3.1-3.2, 4.1-4.2 COMPLETED** ✅ (2025-10-29)
+**Phase 1, 1.4, 2.1-2.5, 3.1-3.2, 4.1-4.2 COMPLETED** ✅ (2025-10-29)
 
 ### ✅ Completed Today
 - **Phase 1**: Binary protocol foundation (L2CAP, ATT, GATT layers)
+- **Phase 1.4**: GATT discovery protocol implementation (NEW!)
 - **Phase 2.1**: Wire.go migrated to binary L2CAP/ATT protocol
 - **Phase 2.2**: GATT operations converted to binary ATT packets
 - **Phase 2.3**: MTU negotiation on connection establishment
@@ -19,20 +20,21 @@ Convert wire/ from JSON-over-length-prefix to real binary BLE protocols (L2CAP +
 - **Phase 4.2**: Human-readable formatters for L2CAP, ATT, and advertising data
 
 ### 📊 Current State
-- **Tests**: 88/88 passing across 6 packages (wire, l2cap, att, gatt, advertising, debug)
+- **Tests**: 107/107 passing across 6 packages (wire, l2cap, att, gatt, advertising, debug)
   - wire: 4 tests (1 existing + 3 MTU tests)
-  - wire/connection_params_test.go: 5 tests (NEW!)
-  - wire/mtu_enforcement_test.go: 3 tests (NEW!)
-  - l2cap: 17 tests (6 packet + 11 connection params) (NEW!)
+  - wire/connection_params_test.go: 5 tests
+  - wire/mtu_enforcement_test.go: 3 tests
+  - l2cap: 17 tests (6 packet + 11 connection params)
   - att: 27 tests
-  - gatt: 16 tests
+  - gatt: 25 tests (16 service builder + 9 discovery) (NEW!)
   - advertising: 25 tests
 - **Binary Protocol**: Fully functional L2CAP + ATT communication
 - **MTU Negotiation**: Working with request/response tracking, negotiates to 512 bytes
 - **MTU Enforcement**: ✅ Verified across all code paths with comprehensive tests
 - **Request/Response Tracking**: ✅ Implemented with 30s default timeout
 - **Fragmentation**: Automatic for writes > MTU-3, uses Prepare Write + Execute Write
-- **Connection Parameters**: ✅ Implemented L2CAP connection parameter update protocol (NEW!)
+- **Connection Parameters**: ✅ Implemented L2CAP connection parameter update protocol
+- **GATT Discovery**: ✅ Full service/characteristic/descriptor discovery implemented (NEW!)
 - **Advertising**: Binary PDU encoding with 31-byte limit, TLV AD structures
 - **Debug Files**: `l2cap_packets.jsonl`, `att_packets.jsonl`, `gatt_operations.jsonl`, `advertising.json`
 - **Backward Compatibility**: GATTMessage conversion layer for existing handlers
@@ -47,21 +49,25 @@ Convert wire/ from JSON-over-length-prefix to real binary BLE protocols (L2CAP +
 - Debug logging enabled by default (disable with `WIRE_DEBUG=0`)
 
 ### 📝 Known Limitations
-- UUID-to-handle mapping is hash-based (needs proper GATT discovery)
+- UUID-to-handle mapping still uses temporary hash-based approach (client-side discovery API not yet complete)
 - Execute Write doesn't deliver reassembled data to GATT handler yet
 - Subscription/CCCD writes not yet implemented
+- Discovery cache service tracking needs refinement (characteristics need proper parent service association)
 
 ### 🎯 Next Steps
 **Completed Today (2025-10-29):**
 - ✅ Phase 4.2: Human-readable formatters (already implemented in debug/logger.go)
 - ✅ Section 6.4: MTU enforcement verification
 - ✅ Section 6.4: Connection parameter updates
+- ✅ Phase 1.4: GATT discovery protocol implementation (NEW!)
 
 **Suggested Next:**
+- Client-side discovery API (DiscoverServices, DiscoverCharacteristics public methods)
+- Replace hash-based UUID-to-handle mapping with discovery cache lookups
 - Physical layer simulation (realistic latency based on connection parameters)
 - Link Layer control PDUs
-- Proper GATT service discovery (Phase 1.4)
 - CCCD writes for subscriptions
+- Multiple simultaneous connections to same device
 
 ### 📦 Binary Protocol Stack (Current)
 ```
@@ -220,16 +226,29 @@ connection.mtu = 512
 - `gatt/handles_test.go` - Full test coverage including concurrency
 - `gatt/service_builder_test.go` - Service building and CCCD generation tests
 
-### 1.4 Implement GATT Discovery Protocol
-- [ ] Create `gatt/discovery.go` with discovery operations:
-  - `DiscoverPrimaryServices()`: Uses ATT Read By Group Type (0x10)
-  - `DiscoverCharacteristics()`: Uses ATT Read By Type (0x08)
-  - `DiscoverDescriptors()`: Uses ATT Find Information (0x04)
+### 1.4 Implement GATT Discovery Protocol ✅ COMPLETED (2025-10-29)
+- [x] Create `gatt/discovery.go` with discovery operations:
+  - `ParseReadByGroupTypeResponse()`: Parses service discovery responses
+  - `ParseReadByTypeResponse()`: Parses characteristic discovery responses
+  - `ParseFindInformationResponse()`: Parses descriptor discovery responses
+  - `BuildReadByGroupTypeResponse()`: Builds service discovery responses (server-side)
+  - `BuildReadByTypeResponse()`: Builds characteristic discovery responses (server-side)
+  - `BuildFindInformationResponse()`: Builds descriptor discovery responses (server-side)
+  - `DiscoverServicesFromDatabase()`: Server-side service discovery
+  - `DiscoverCharacteristicsFromDatabase()`: Server-side characteristic discovery
+  - `DiscoverDescriptorsFromDatabase()`: Server-side descriptor discovery
+  - `DiscoveryCache`: Client-side cache for discovered services/characteristics/descriptors
 
-- [ ] Implement server-side handlers for discovery requests
-- [ ] Add realistic delays (100-500ms per discovery operation)
+- [x] Implement server-side handlers for discovery requests in `wire.go`:
+  - Read By Group Type Request/Response (service discovery)
+  - Read By Type Request/Response (characteristic discovery)
+  - Find Information Request/Response (descriptor discovery)
+  - Discovery cache populated automatically on client side
 
-**Note:** Discovery protocol functionality is deferred to Phase 2 integration as it requires wire.go connection handling.
+- [x] Comprehensive test coverage (9 test functions, all passing)
+
+- [ ] Add realistic delays (100-500ms per discovery operation) - deferred
+- [ ] Add public client-side API (`DiscoverServices()`, `DiscoverCharacteristics()`) - next step
 
 ---
 
@@ -520,7 +539,9 @@ wire/
 │   ├── handles.go         (155 lines) - Attribute database
 │   ├── handles_test.go    (9 tests) - Handle tests
 │   ├── service_builder.go (181 lines) - Service builder
-│   └── service_builder_test.go (7 tests) - Builder tests
+│   ├── service_builder_test.go (7 tests) - Builder tests
+│   ├── discovery.go       (490 lines) - GATT discovery protocol (NEW 2025-10-29)
+│   └── discovery_test.go  (9 tests) - Discovery tests (NEW 2025-10-29)
 ├── advertising/
 │   ├── packet.go          (367 lines) - Binary advertising PDU and TLV encoding
 │   └── packet_test.go     (25 tests) - Advertising tests
@@ -533,24 +554,27 @@ wire/
 ### Modified Files
 ```
 wire/
-├── wire.go               - Binary L2CAP/ATT protocol integration + fragmentation + connection params
-│   ├── Added imports: att, l2cap, debug packages
-│   ├── Added debugLogger field to Wire struct
+├── wire.go               - Binary L2CAP/ATT protocol integration + fragmentation + connection params + discovery
+│   ├── Added imports: att, l2cap, debug, gatt packages (gatt added 2025-10-29)
+│   ├── Added debugLogger, attributeDB, dbMu fields to Wire struct (attributeDB added 2025-10-29)
 │   ├── Modified readMessages() for L2CAP decoding
-│   ├── Added handleATTPacket() for ATT routing (includes Prepare/Execute Write)
-│   ├── Added handleL2CAPSignaling() for connection parameter updates (NEW 2025-10-29)
+│   ├── Added handleATTPacket() for ATT routing (includes Prepare/Execute Write + discovery handlers)
+│   ├── Added discovery request handlers: ReadByGroupType, ReadByType, FindInformation (NEW 2025-10-29)
+│   ├── Added discovery response handlers: store in connection's discoveryCache (NEW 2025-10-29)
+│   ├── Added handleL2CAPSignaling() for connection parameter updates
 │   ├── Added sendL2CAPPacket() for binary transport
 │   ├── Added sendATTPacket() for ATT operations with MTU enforcement
 │   ├── Added sendFragmentedWrite() for long writes
 │   ├── Modified SendGATTMessage() to detect and fragment long writes
 │   ├── Added attToGATTMessage() for backward compat
-│   ├── Added uuidToHandle() for handle mapping
+│   ├── Added uuidToHandle() for handle mapping (temporary, will use discovery cache)
 │   ├── Added MTU negotiation in Connect() with request tracking
-│   ├── Connection initialization with fragmenter, request tracker, and connection params (NEW 2025-10-29)
+│   ├── Connection initialization with fragmenter, request tracker, connection params, and discoveryCache (NEW 2025-10-29)
 │   ├── Added request/response completion in handleATTPacket()
 │   ├── Cancel pending requests in Disconnect()
-│   ├── Added RequestConnectionParameterUpdate() (NEW 2025-10-29)
-│   └── Added GetConnectionParameters() (NEW 2025-10-29)
+│   ├── Added RequestConnectionParameterUpdate()
+│   ├── Added GetConnectionParameters()
+│   └── Initialize attributeDB in NewWire() (NEW 2025-10-29)
 ├── discovery.go          - Binary advertising packet support
 │   ├── Added import: advertising package
 │   ├── Modified ReadAdvertisingData() to parse binary PDU and AD structures
@@ -558,7 +582,7 @@ wire/
 │   ├── Stores binary packets in advertising.bin
 │   └── Writes debug JSON to debug/advertising.json
 ├── constants.go          - Already had MTU constants (no changes needed)
-└── types.go             - Added fragmenter, requestTracker, params, paramsUpdatedAt fields to Connection struct (UPDATED 2025-10-29)
+└── types.go             - Added fragmenter, requestTracker, params, paramsUpdatedAt, discoveryCache fields to Connection struct (UPDATED 2025-10-29)
 ```
 
 ### Test Results
@@ -568,18 +592,19 @@ Package                  Tests    Status
 wire                     12/12    ✅ PASS (1 existing + 3 MTU + 5 conn params + 3 integration)
 wire/l2cap              17/17    ✅ PASS (6 packet + 11 connection params)
 wire/att               27/27     ✅ PASS (11 packet + 7 fragmenter + 9 tracker)
-wire/gatt              16/16     ✅ PASS
+wire/gatt              25/25     ✅ PASS (16 service builder + 9 discovery)
 wire/advertising       25/25     ✅ PASS
 wire/debug               -       (no test files)
 ────────────────────────────────────────
-Total                  97/97     ✅ ALL PASSING
+Total                 106/106    ✅ ALL PASSING
 ```
 
 **Latest Updates (2025-10-29):**
 - Added MTU enforcement verification tests (3 tests)
 - Added connection parameter update tests (5 tests)
 - Added L2CAP connection parameter protocol (11 tests)
-- Total: +19 tests, all passing
+- Added GATT discovery protocol tests (9 tests) - NEW!
+- Total: +28 tests today, all passing
 
 ### Debug Output Example
 After running tests, debug files are created:

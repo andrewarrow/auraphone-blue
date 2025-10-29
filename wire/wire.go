@@ -14,6 +14,7 @@ import (
 	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire/att"
 	"github.com/user/auraphone-blue/wire/debug"
+	"github.com/user/auraphone-blue/wire/gatt"
 	"github.com/user/auraphone-blue/wire/l2cap"
 )
 
@@ -50,6 +51,10 @@ type Wire struct {
 
 	// Debug logging (binary protocol packets)
 	debugLogger *debug.DebugLogger
+
+	// GATT attribute database (server-side)
+	attributeDB *gatt.AttributeDatabase
+	dbMu        sync.RWMutex
 }
 
 // NewWire creates a new Wire instance
@@ -69,6 +74,9 @@ func NewWire(hardwareUUID string) *Wire {
 	// Initialize debug logger (enabled by default, check env var or can be disabled)
 	debugEnabled := os.Getenv("WIRE_DEBUG") != "0" // Enabled unless explicitly disabled
 	w.debugLogger = debug.NewDebugLogger(hardwareUUID, debugEnabled)
+
+	// Initialize GATT attribute database
+	w.attributeDB = gatt.NewAttributeDatabase()
 
 	return w
 }
@@ -220,6 +228,7 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 		requestTracker:  att.NewRequestTracker(0),              // Initialize request tracker with default 30s timeout
 		params:          l2cap.DefaultConnectionParameters(),   // Start with default connection parameters
 		paramsUpdatedAt: time.Now(),
+		discoveryCache:  gatt.NewDiscoveryCache(),              // Initialize discovery cache for client-side discovery
 	}
 	w.connections[peerUUID] = connection
 	w.mu.Unlock()
@@ -297,6 +306,7 @@ func (w *Wire) Connect(peerUUID string) error {
 		requestTracker:  att.NewRequestTracker(0),              // Initialize request tracker with default 30s timeout
 		params:          l2cap.DefaultConnectionParameters(),   // Start with default connection parameters
 		paramsUpdatedAt: time.Now(),
+		discoveryCache:  gatt.NewDiscoveryCache(),              // Initialize discovery cache for client-side discovery
 	}
 
 	w.mu.Lock()
@@ -761,6 +771,233 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 			w.handlerMu.RUnlock()
 			if handler != nil {
 				handler(peerUUID, msg)
+			}
+		}
+
+	case *att.ReadByGroupTypeRequest:
+		// Service discovery request
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📥 Read By Group Type Request from %s: handles=0x%04X-0x%04X",
+			shortHash(peerUUID), p.StartHandle, p.EndHandle)
+
+		// Discover services from our attribute database
+		w.dbMu.RLock()
+		services := gatt.DiscoverServicesFromDatabase(w.attributeDB, p.StartHandle, p.EndHandle)
+		w.dbMu.RUnlock()
+
+		if len(services) == 0 {
+			// No services found - send error response
+			errorResp := &att.ErrorResponse{
+				RequestOpcode: att.OpReadByGroupTypeRequest,
+				Handle:        p.StartHandle,
+				ErrorCode:     att.ErrAttributeNotFound,
+			}
+			w.sendATTPacket(peerUUID, errorResp)
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"📤 Error Response: Attribute Not Found")
+		} else {
+			// Build and send response
+			responseData, err := gatt.BuildReadByGroupTypeResponse(services)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+					"❌ Failed to build service discovery response: %v", err)
+				return
+			}
+
+			response := &att.ReadByGroupTypeResponse{
+				Length:        responseData[0],
+				AttributeData: responseData[1:],
+			}
+			w.sendATTPacket(peerUUID, response)
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"📤 Service Discovery Response: %d services", len(services))
+		}
+
+	case *att.ReadByTypeRequest:
+		// Characteristic discovery request
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📥 Read By Type Request from %s: handles=0x%04X-0x%04X",
+			shortHash(peerUUID), p.StartHandle, p.EndHandle)
+
+		// Discover characteristics from our attribute database
+		w.dbMu.RLock()
+		characteristics := gatt.DiscoverCharacteristicsFromDatabase(w.attributeDB, p.StartHandle, p.EndHandle)
+		w.dbMu.RUnlock()
+
+		if len(characteristics) == 0 {
+			// No characteristics found - send error response
+			errorResp := &att.ErrorResponse{
+				RequestOpcode: att.OpReadByTypeRequest,
+				Handle:        p.StartHandle,
+				ErrorCode:     att.ErrAttributeNotFound,
+			}
+			w.sendATTPacket(peerUUID, errorResp)
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"📤 Error Response: Attribute Not Found")
+		} else {
+			// Build and send response
+			responseData, err := gatt.BuildReadByTypeResponse(characteristics)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+					"❌ Failed to build characteristic discovery response: %v", err)
+				return
+			}
+
+			response := &att.ReadByTypeResponse{
+				Length:        responseData[0],
+				AttributeData: responseData[1:],
+			}
+			w.sendATTPacket(peerUUID, response)
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"📤 Characteristic Discovery Response: %d characteristics", len(characteristics))
+		}
+
+	case *att.FindInformationRequest:
+		// Descriptor discovery request
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📥 Find Information Request from %s: handles=0x%04X-0x%04X",
+			shortHash(peerUUID), p.StartHandle, p.EndHandle)
+
+		// Discover descriptors from our attribute database
+		w.dbMu.RLock()
+		descriptors := gatt.DiscoverDescriptorsFromDatabase(w.attributeDB, p.StartHandle, p.EndHandle)
+		w.dbMu.RUnlock()
+
+		if len(descriptors) == 0 {
+			// No descriptors found - send error response
+			errorResp := &att.ErrorResponse{
+				RequestOpcode: att.OpFindInformationRequest,
+				Handle:        p.StartHandle,
+				ErrorCode:     att.ErrAttributeNotFound,
+			}
+			w.sendATTPacket(peerUUID, errorResp)
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"📤 Error Response: Attribute Not Found")
+		} else {
+			// Build and send response
+			responseData, err := gatt.BuildFindInformationResponse(descriptors)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+					"❌ Failed to build descriptor discovery response: %v", err)
+				return
+			}
+
+			response := &att.FindInformationResponse{
+				Format: responseData[0],
+				Data:   responseData[1:],
+			}
+			w.sendATTPacket(peerUUID, response)
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"📤 Descriptor Discovery Response: %d descriptors", len(descriptors))
+		}
+
+	case *att.ReadByGroupTypeResponse:
+		// Service discovery response - store in connection's discovery cache
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📥 Read By Group Type Response from %s", shortHash(peerUUID))
+
+		// Parse the response
+		responseData := make([]byte, 1+len(p.AttributeData))
+		responseData[0] = p.Length
+		copy(responseData[1:], p.AttributeData)
+
+		services, err := gatt.ParseReadByGroupTypeResponse(responseData)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"⚠️  Failed to parse service discovery response: %v", err)
+		} else {
+			// Store in discovery cache
+			cache := connection.discoveryCache.(*gatt.DiscoveryCache)
+			for _, service := range services {
+				cache.AddService(service)
+			}
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"✅ Stored %d services in discovery cache", len(services))
+		}
+
+		// Complete the pending request
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+			err := tracker.CompleteRequest(att.OpReadByGroupTypeResponse, p)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+					"⚠️  Service discovery response without pending request: %v", err)
+			}
+		}
+
+	case *att.ReadByTypeResponse:
+		// Characteristic discovery response - store in connection's discovery cache
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📥 Read By Type Response from %s", shortHash(peerUUID))
+
+		// Parse the response
+		responseData := make([]byte, 1+len(p.AttributeData))
+		responseData[0] = p.Length
+		copy(responseData[1:], p.AttributeData)
+
+		characteristics, err := gatt.ParseReadByTypeResponse(responseData)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"⚠️  Failed to parse characteristic discovery response: %v", err)
+		} else {
+			// Store in discovery cache (need to determine which service they belong to)
+			cache := connection.discoveryCache.(*gatt.DiscoveryCache)
+			// For now, store with first service's start handle
+			// TODO: Track which service is being discovered
+			var serviceStartHandle uint16 = 0x0001
+			if len(cache.Services) > 0 {
+				serviceStartHandle = cache.Services[0].StartHandle
+			}
+			for _, char := range characteristics {
+				cache.AddCharacteristic(serviceStartHandle, char)
+			}
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"✅ Stored %d characteristics in discovery cache", len(characteristics))
+		}
+
+		// Complete the pending request
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+			err := tracker.CompleteRequest(att.OpReadByTypeResponse, p)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+					"⚠️  Characteristic discovery response without pending request: %v", err)
+			}
+		}
+
+	case *att.FindInformationResponse:
+		// Descriptor discovery response - store in connection's discovery cache
+		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+			"📥 Find Information Response from %s", shortHash(peerUUID))
+
+		// Parse the response
+		responseData := make([]byte, 1+len(p.Data))
+		responseData[0] = p.Format
+		copy(responseData[1:], p.Data)
+
+		descriptors, err := gatt.ParseFindInformationResponse(responseData)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"⚠️  Failed to parse descriptor discovery response: %v", err)
+		} else {
+			// Store in discovery cache
+			cache := connection.discoveryCache.(*gatt.DiscoveryCache)
+			// TODO: Track which characteristic these descriptors belong to
+			// For now, we just store them
+			for _, desc := range descriptors {
+				cache.AddDescriptor(0x0001, desc) // Placeholder handle
+			}
+			logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+				"✅ Stored %d descriptors in discovery cache", len(descriptors))
+		}
+
+		// Complete the pending request
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+			err := tracker.CompleteRequest(att.OpFindInformationResponse, p)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)),
+					"⚠️  Descriptor discovery response without pending request: %v", err)
 			}
 		}
 
