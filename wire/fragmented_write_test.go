@@ -6,7 +6,40 @@ import (
 
 	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire/att"
+	"github.com/user/auraphone-blue/wire/gatt"
 )
+
+// setupFragmentedTestService sets up a test service for fragmented write tests
+func setupFragmentedTestService(t *testing.T, central, peripheral *Wire, peripheralUUID string) {
+	// Set up a simple GATT service on peripheral with a writable characteristic
+	// Note: "00EC" as string converts to []byte{0x00, 0xEC} via stringToUUIDBytes
+	services := []gatt.Service{
+		{
+			UUID:    []byte{0x00, 0xEC}, // service UUID matching string "00EC"
+			Primary: true,
+			Characteristics: []gatt.Characteristic{
+				{
+					UUID:       []byte{0x00, 0xEC}, // char UUID matching string "00EC"
+					Properties: gatt.PropWrite,
+					Value:      []byte{},
+				},
+			},
+		},
+	}
+
+	db, _ := gatt.BuildAttributeDatabase(services)
+	peripheral.SetAttributeDatabase(db)
+
+	// Perform service discovery
+	if err := central.DiscoverServices(peripheralUUID); err != nil {
+		t.Fatalf("Failed to discover services: %v", err)
+	}
+
+	// Discover characteristics
+	if err := central.DiscoverCharacteristics(peripheralUUID, []byte{0x00, 0xEC}); err != nil {
+		t.Fatalf("Failed to discover characteristics: %v", err)
+	}
+}
 
 // TestFragmentedWriteSequencing verifies that Prepare Write fragments
 // are sent sequentially with proper request/response tracking
@@ -43,6 +76,9 @@ func TestFragmentedWriteSequencing(t *testing.T) {
 	if !deviceA.IsConnected("device-b") {
 		t.Fatal("Device A is not connected to Device B")
 	}
+
+	// Set up test service and perform discovery
+	setupFragmentedTestService(t, deviceA, deviceB, "device-b")
 
 	// Create large data that requires fragmentation
 	// With MTU=512, max value size = 512-3 = 509 bytes for normal write
@@ -91,8 +127,8 @@ func TestFragmentedWriteSequencing(t *testing.T) {
 	msg := &GATTMessage{
 		Type:               "gatt_request",
 		Operation:          "write",
-		ServiceUUID:        "test-service",
-		CharacteristicUUID: "test-char",
+		ServiceUUID:        "00EC",
+		CharacteristicUUID: "00EC",
 		Data:               largeData,
 	}
 
@@ -241,6 +277,9 @@ func TestFragmentedWriteEndToEnd(t *testing.T) {
 	}
 	time.Sleep(150 * time.Millisecond)
 
+	// Set up test service and perform discovery
+	setupFragmentedTestService(t, deviceA, deviceB, "device-b")
+
 	// Create large data requiring fragmentation
 	largeData := make([]byte, 2000)
 	for i := range largeData {
@@ -251,8 +290,8 @@ func TestFragmentedWriteEndToEnd(t *testing.T) {
 	msg := &GATTMessage{
 		Type:               "gatt_request",
 		Operation:          "write",
-		ServiceUUID:        "test-service",
-		CharacteristicUUID: "test-char",
+		ServiceUUID:        "00EC",
+		CharacteristicUUID: "00EC",
 		Data:               largeData,
 	}
 

@@ -1,44 +1,43 @@
 package wire
 
 import (
+	"fmt"
+
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/wire/gatt"
 )
 
 // uuidToHandle converts a service+characteristic UUID pair to a handle
-// First tries to use the discovery cache, then falls back to hash-based mapping
-func (w *Wire) uuidToHandle(peerUUID, serviceUUID, charUUID string) uint16 {
-	// Try to get handle from discovery cache first
+// This ONLY uses the discovery cache - discovery must be performed first
+// Returns an error if the characteristic is not found in the discovery cache
+func (w *Wire) uuidToHandle(peerUUID, serviceUUID, charUUID string) (uint16, error) {
+	// Get handle from discovery cache
 	w.mu.RLock()
 	connection, exists := w.connections[peerUUID]
 	w.mu.RUnlock()
 
-	if exists && connection.discoveryCache != nil {
-		cache := connection.discoveryCache.(*gatt.DiscoveryCache)
-
-		// Convert char UUID string to bytes for lookup
-		// Try to parse as hex string (e.g., "2A00" -> []byte{0x00, 0x2A})
-		charUUIDBytes := stringToUUIDBytes(charUUID)
-		if handle, err := cache.GetCharacteristicHandle(charUUIDBytes); err == nil {
-			logger.Debug(shortHash(w.hardwareUUID)+" Wire",
-				"   UUID->Handle (from discovery cache): char=%s -> 0x%04X",
-				shortHash(charUUID), handle)
-			return handle
-		}
+	if !exists {
+		return 0, fmt.Errorf("no connection to peer %s", peerUUID)
 	}
 
-	// Fall back to hash-based mapping for backward compatibility
-	// In real BLE, handles are discovered via GATT service discovery
-	hash := 0
-	for i := 0; i < len(serviceUUID) && i < len(charUUID); i++ {
-		hash = hash*31 + int(serviceUUID[i]) + int(charUUID[i])
+	if connection.discoveryCache == nil {
+		return 0, fmt.Errorf("no discovery cache for peer %s, run DiscoverServices first", peerUUID)
 	}
-	// Map to handle range 0x0001-0xFFFF (0x0000 is reserved)
-	handle := uint16((hash % 0xFFFE) + 1)
+
+	cache := connection.discoveryCache.(*gatt.DiscoveryCache)
+
+	// Convert char UUID string to bytes for lookup
+	// Parse as hex string (e.g., "2A00" -> []byte{0x00, 0x2A})
+	charUUIDBytes := stringToUUIDBytes(charUUID)
+	handle, err := cache.GetCharacteristicHandle(charUUIDBytes)
+	if err != nil {
+		return 0, fmt.Errorf("characteristic %s not found in discovery cache, run DiscoverServices/DiscoverCharacteristics first: %w", charUUID, err)
+	}
+
 	logger.Debug(shortHash(w.hardwareUUID)+" Wire",
-		"   UUID->Handle (hash-based fallback): svc=%s, char=%s -> 0x%04X",
-		shortHash(serviceUUID), shortHash(charUUID), handle)
-	return handle
+		"   UUID->Handle (from discovery cache): char=%s -> 0x%04X",
+		shortHash(charUUID), handle)
+	return handle, nil
 }
 
 // stringToUUIDBytes converts a UUID string to bytes

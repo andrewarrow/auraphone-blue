@@ -18,22 +18,27 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 	logger.Debug(shortHash(w.hardwareUUID)+" Wire", "📡 SendGATTMessage to %s: op=%s, type=%s",
 		shortHash(peerUUID), msg.Operation, msg.Type)
 
-	// Debug log: GATT operation
-	handle := w.uuidToHandle(peerUUID, msg.ServiceUUID, msg.CharacteristicUUID)
-	w.debugLogger.LogGATTOperation("tx", peerUUID, msg.Operation, msg.ServiceUUID, msg.CharacteristicUUID, fmt.Sprintf("0x%04X", handle), msg.Data)
+	// Debug log: GATT operation (best-effort, log with handle if available)
+	handle, err := w.uuidToHandle(peerUUID, msg.ServiceUUID, msg.CharacteristicUUID)
+	if err == nil {
+		w.debugLogger.LogGATTOperation("tx", peerUUID, msg.Operation, msg.ServiceUUID, msg.CharacteristicUUID, fmt.Sprintf("0x%04X", handle), msg.Data)
+	} else {
+		w.debugLogger.LogGATTOperation("tx", peerUUID, msg.Operation, msg.ServiceUUID, msg.CharacteristicUUID, "unknown", msg.Data)
+	}
 
 	// Convert GATTMessage to ATT packet
-	// For now, we use a simple handle mapping (UUID hash to handle)
-	// TODO: Implement proper GATT handle database with discovery
+	// Requires proper GATT discovery to map UUIDs to handles
 	var attPacket interface{}
-	var err error
 
 	switch msg.Type {
 	case "gatt_request":
 		switch msg.Operation {
 		case "write":
-			// Map UUID to handle (tries discovery cache first, falls back to hash)
-			handle := w.uuidToHandle(peerUUID, msg.ServiceUUID, msg.CharacteristicUUID)
+			// Map UUID to handle using discovery cache
+			handle, err := w.uuidToHandle(peerUUID, msg.ServiceUUID, msg.CharacteristicUUID)
+			if err != nil {
+				return fmt.Errorf("failed to resolve characteristic handle: %w", err)
+			}
 
 			// Get connection to check MTU
 			w.mu.RLock()
@@ -57,8 +62,11 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 				Value:  msg.Data,
 			}
 		case "read":
-			// Map UUID to handle (tries discovery cache first, falls back to hash)
-			handle := w.uuidToHandle(peerUUID, msg.ServiceUUID, msg.CharacteristicUUID)
+			// Map UUID to handle using discovery cache
+			handle, err := w.uuidToHandle(peerUUID, msg.ServiceUUID, msg.CharacteristicUUID)
+			if err != nil {
+				return fmt.Errorf("failed to resolve characteristic handle: %w", err)
+			}
 			attPacket = &att.ReadRequest{
 				Handle: handle,
 			}
@@ -90,8 +98,11 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 		}
 
 	case "gatt_notification":
-		// Map UUID to handle (tries discovery cache first, falls back to hash)
-		handle := w.uuidToHandle(peerUUID, msg.ServiceUUID, msg.CharacteristicUUID)
+		// Map UUID to handle using discovery cache
+		handle, err := w.uuidToHandle(peerUUID, msg.ServiceUUID, msg.CharacteristicUUID)
+		if err != nil {
+			return fmt.Errorf("failed to resolve characteristic handle: %w", err)
+		}
 		attPacket = &att.HandleValueNotification{
 			Handle: handle,
 			Value:  msg.Data,
@@ -102,8 +113,7 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 	}
 
 	// Send the ATT packet
-	err = w.sendATTPacket(peerUUID, attPacket)
-	if err != nil {
+	if err := w.sendATTPacket(peerUUID, attPacket); err != nil {
 		logger.Warn(shortHash(w.hardwareUUID)+" Wire", "❌ Failed to send ATT packet: %v", err)
 		return err
 	}

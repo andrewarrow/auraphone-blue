@@ -10,6 +10,39 @@ import (
 	"github.com/user/auraphone-blue/wire/l2cap"
 )
 
+// setupTestServiceAndDiscovery sets up a test service on the peripheral and performs discovery on the central
+// This ensures the discovery cache is populated before trying to send GATT messages
+func setupTestServiceAndDiscovery(t *testing.T, central, peripheral *Wire, peripheralUUID string) {
+	// Set up a simple GATT service on peripheral with a readable characteristic
+	// Note: "0001" as string converts to []byte{0x00, 0x01} via stringToUUIDBytes
+	services := []gatt.Service{
+		{
+			UUID:    []byte{0x00, 0x01}, // service UUID matching string "0001"
+			Primary: true,
+			Characteristics: []gatt.Characteristic{
+				{
+					UUID:       []byte{0x00, 0x01}, // char UUID matching string "0001"
+					Properties: gatt.PropRead | gatt.PropWrite,
+					Value:      []byte("test-value"),
+				},
+			},
+		},
+	}
+
+	db, _ := gatt.BuildAttributeDatabase(services)
+	peripheral.SetAttributeDatabase(db)
+
+	// Perform service discovery
+	if err := central.DiscoverServices(peripheralUUID); err != nil {
+		t.Fatalf("Failed to discover services: %v", err)
+	}
+
+	// Discover characteristics
+	if err := central.DiscoverCharacteristics(peripheralUUID, []byte{0x00, 0x01}); err != nil {
+		t.Fatalf("Failed to discover characteristics: %v", err)
+	}
+}
+
 // TestConnectionEventTiming_DiscreteEvents verifies that connection events are discrete
 // and respect connection intervals
 func TestConnectionEventTiming_DiscreteEvents(t *testing.T) {
@@ -28,14 +61,14 @@ func TestConnectionEventTiming_DiscreteEvents(t *testing.T) {
 	}
 	defer peripheral.Stop()
 
-	// Set up a simple attribute on peripheral
-	peripheral.SetAttributeDatabase(gatt.NewAttributeDatabase())
-
 	// Connect central to peripheral
 	if err := central.Connect(peripheralUUID); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
 	time.Sleep(100 * time.Millisecond) // Wait for connection
+
+	// Set up test service and perform discovery
+	setupTestServiceAndDiscovery(t, central, peripheral, peripheralUUID)
 
 	// Set fast connection parameters (15ms interval) for easier testing
 	fastParams := l2cap.FastConnectionParameters()
@@ -73,8 +106,8 @@ func TestConnectionEventTiming_DiscreteEvents(t *testing.T) {
 		req := &GATTMessage{
 			Type:               "gatt_request",
 			Operation:          "read",
-			ServiceUUID:        "service-1",
-			CharacteristicUUID: "char-1",
+			ServiceUUID:        "0001",
+			CharacteristicUUID: "0001",
 		}
 		if err := central.SendGATTMessage(peripheralUUID, req); err != nil {
 			t.Fatalf("Failed to send read request %d: %v", i, err)
@@ -128,9 +161,6 @@ func TestConnectionEventTiming_CentralImmediate(t *testing.T) {
 	}
 	defer peripheral.Stop()
 
-	// Set up a simple attribute on peripheral
-	peripheral.SetAttributeDatabase(gatt.NewAttributeDatabase())
-
 	// Set up handler on peripheral
 	peripheral.SetGATTMessageHandler(func(peerUUID string, msg *GATTMessage) {
 		if msg.Type == "gatt_request" && msg.Operation == "read" {
@@ -152,6 +182,9 @@ func TestConnectionEventTiming_CentralImmediate(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond) // Wait for connection
 
+	// Set up test service and perform discovery
+	setupTestServiceAndDiscovery(t, central, peripheral, peripheralUUID)
+
 	// Central should be able to send multiple packets rapidly
 	// without waiting for connection events
 	startTime := time.Now()
@@ -161,8 +194,8 @@ func TestConnectionEventTiming_CentralImmediate(t *testing.T) {
 		req := &GATTMessage{
 			Type:               "gatt_request",
 			Operation:          "read",
-			ServiceUUID:        "service-1",
-			CharacteristicUUID: "char-1",
+			ServiceUUID:        "0001",
+			CharacteristicUUID: "0001",
 		}
 		if err := central.SendGATTMessage(peripheralUUID, req); err != nil {
 			t.Fatalf("Failed to send read request %d: %v", i, err)
@@ -200,14 +233,14 @@ func TestConnectionEventTiming_PeripheralWaits(t *testing.T) {
 	}
 	defer peripheral.Stop()
 
-	// Set up a simple attribute on peripheral
-	peripheral.SetAttributeDatabase(gatt.NewAttributeDatabase())
-
 	// Connect central to peripheral
 	if err := central.Connect(peripheralUUID); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
 	time.Sleep(100 * time.Millisecond) // Wait for connection
+
+	// Set up test service and perform discovery
+	setupTestServiceAndDiscovery(t, central, peripheral, peripheralUUID)
 
 	// Set connection parameters with 50ms interval
 	params := l2cap.DefaultConnectionParameters() // 50ms max interval
@@ -239,8 +272,8 @@ func TestConnectionEventTiming_PeripheralWaits(t *testing.T) {
 		req := &GATTMessage{
 			Type:               "gatt_request",
 			Operation:          "read",
-			ServiceUUID:        "service-1",
-			CharacteristicUUID: "char-1",
+			ServiceUUID:        "0001",
+			CharacteristicUUID: "0001",
 		}
 		if err := central.SendGATTMessage(peripheralUUID, req); err != nil {
 			t.Fatalf("Failed to send read request %d: %v", i, err)
