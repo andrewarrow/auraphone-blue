@@ -103,14 +103,41 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 
 		if p.Flags == 0x01 {
 			// Execute (commit) - get all queued handles and reassemble
-			// For now, we'll assume there's only one handle being written to
-			// TODO: Track which handle is being written in the prepare queue
-			// This is a simplification - in a real implementation, we'd need to track
-			// multiple handles and deliver each reassembled value separately
+			queuedHandles := fragmenter.GetQueuedHandles()
 
-			// For now, just clear the queue and send success
-			// The actual write will be handled when we implement proper handle tracking
-			fragmenter.ClearAllQueues()
+			for _, handle := range queuedHandles {
+				// Reassemble the fragmented value
+				value := fragmenter.GetReassembledValue(handle)
+				if value == nil {
+					continue
+				}
+
+				logger.Debug(shortHash(w.hardwareUUID)+" Wire",
+					"📦 Reassembled fragmented write: handle=0x%04X, len=%d", handle, len(value))
+
+				// Create a write request with the reassembled value
+				// and deliver it as if it were a normal write
+				writeReq := &att.WriteRequest{
+					Handle: handle,
+					Value:  value,
+				}
+
+				// Convert to GATT message and deliver to handler
+				gattMsg := w.attToGATTMessage(writeReq)
+				if gattMsg != nil {
+					gattMsg.SenderUUID = peerUUID
+					w.handlerMu.RLock()
+					handler := w.gattHandler
+					w.handlerMu.RUnlock()
+
+					if handler != nil {
+						handler(peerUUID, gattMsg)
+					}
+				}
+
+				// Clear this handle's queue
+				fragmenter.ClearQueue(handle)
+			}
 
 			logger.Debug(shortHash(w.hardwareUUID)+" Wire",
 				"✅ Execute write committed")

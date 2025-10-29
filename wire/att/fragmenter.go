@@ -144,3 +144,12 @@ func (f *Fragmenter) GetQueueLength(handle uint16) int {
 	}
 	return len(queue)
 }
+
+// GetQueuedHandles returns a list of all handles that have queued prepare writes
+func (f *Fragmenter) GetQueuedHandles() []uint16 {
+	handles := make([]uint16, 0, len(f.prepareQueue))
+	for handle := range f.prepareQueue {
+		handles = append(handles, handle)
+	}
+	return handles
+}
