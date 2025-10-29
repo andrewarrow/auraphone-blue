@@ -360,6 +360,12 @@ func (w *Wire) Connect(peerUUID string) error {
 	}
 
 	w.mu.Lock()
+	// Check again inside the lock to prevent race condition
+	if _, exists := w.connections[peerUUID]; exists {
+		w.mu.Unlock()
+		conn.Close() // Close the connection we just created
+		return nil   // Another goroutine already connected
+	}
 	w.connections[peerUUID] = connection
 	w.mu.Unlock()
 
