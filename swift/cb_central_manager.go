@@ -230,13 +230,12 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 	// Role Policy: Apps should call ShouldInitiateConnection() before calling Connect()
 	// to avoid simultaneous connection attempts with dual-role devices.
 
-	// REALISTIC iOS BEHAVIOR: Check if already connected or connection in progress
-	// Real iOS ignores Connect() calls for already-connected peripherals or when
-	// a connection attempt is already ongoing
+	// REALISTIC iOS BEHAVIOR: Check if connection in progress
+	// Real iOS ignores Connect() calls when a connection attempt is already ongoing
 	c.mu.Lock()
-	if c.wire.IsConnected(peripheral.UUID) || c.connectingDevices[peripheral.UUID] {
+	if c.connectingDevices[peripheral.UUID] {
 		c.mu.Unlock()
-		return // Already connected or connecting, do nothing (realistic iOS behavior)
+		return // Already connecting, do nothing (realistic iOS behavior)
 	}
 	// Mark as connecting BEFORE spawning goroutine to prevent race
 	c.connectingDevices[peripheral.UUID] = true
