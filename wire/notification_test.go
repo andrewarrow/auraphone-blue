@@ -24,12 +24,13 @@ func TestNotificationBasicFlow(t *testing.T) {
 	}
 	defer deviceB.Stop()
 
-	// Track subscription on peripheral side
-	var subscribeCalled bool
+	// Track CCCD write on peripheral side
+	var cccdWriteReceived bool
 	var subscribedCentralUUID string
 	deviceB.SetGATTMessageHandler(func(peerUUID string, msg *GATTMessage) {
-		if msg.Operation == "subscribe" {
-			subscribeCalled = true
+		// Real BLE: CCCD descriptor write with UUID 0x2902
+		if msg.CharacteristicUUID == "00002902-0000-1000-8000-00805f9b34fb" {
+			cccdWriteReceived = true
 			subscribedCentralUUID = peerUUID
 		}
 	})
@@ -50,20 +51,22 @@ func TestNotificationBasicFlow(t *testing.T) {
 	deviceA.Connect("device-b-uuid")
 	time.Sleep(100 * time.Millisecond)
 
-	// Central subscribes to characteristic
-	err := deviceA.SubscribeCharacteristic("device-b-uuid", "service-1", "char-1")
+	// Central enables notifications via CCCD descriptor write (real BLE pattern)
+	cccdUUID := "00002902-0000-1000-8000-00805f9b34fb"
+	enableNotificationValue := []byte{0x01, 0x00}
+	err := deviceA.WriteCharacteristic("device-b-uuid", "service-1", cccdUUID, enableNotificationValue)
 	if err != nil {
-		t.Fatalf("Failed to subscribe: %v", err)
+		t.Fatalf("Failed to write CCCD: %v", err)
 	}
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify peripheral received subscription request
-	if !subscribeCalled {
-		t.Error("Peripheral did not receive subscribe request")
+	// Verify peripheral received CCCD write
+	if !cccdWriteReceived {
+		t.Error("Peripheral did not receive CCCD write")
 	}
 	if subscribedCentralUUID != "device-a-uuid" {
-		t.Errorf("Expected subscription from device-a-uuid, got %s", subscribedCentralUUID)
+		t.Errorf("Expected CCCD write from device-a-uuid, got %s", subscribedCentralUUID)
 	}
 
 	// Peripheral sends notification
@@ -100,34 +103,47 @@ func TestNotificationUnsubscribe(t *testing.T) {
 	}
 	defer deviceB.Stop()
 
-	// Track unsubscribe on peripheral side
-	var unsubscribeCalled bool
+	// Track CCCD writes on peripheral side
+	var cccdDisableReceived bool
+	var cccdValue []byte
 	deviceB.SetGATTMessageHandler(func(peerUUID string, msg *GATTMessage) {
-		if msg.Operation == "unsubscribe" {
-			unsubscribeCalled = true
+		// Real BLE: CCCD descriptor write with UUID 0x2902
+		if msg.CharacteristicUUID == "00002902-0000-1000-8000-00805f9b34fb" {
+			cccdValue = msg.Data
+			// Check for disable value (0x00 0x00)
+			if len(msg.Data) == 2 && msg.Data[0] == 0x00 && msg.Data[1] == 0x00 {
+				cccdDisableReceived = true
+			}
 		}
 	})
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Connect and subscribe
+	// Connect and enable notifications
 	deviceA.Connect("device-b-uuid")
 	time.Sleep(100 * time.Millisecond)
 
-	deviceA.SubscribeCharacteristic("device-b-uuid", "service-1", "char-1")
+	// Enable notifications via CCCD write (0x01 0x00)
+	cccdUUID := "00002902-0000-1000-8000-00805f9b34fb"
+	enableValue := []byte{0x01, 0x00}
+	deviceA.WriteCharacteristic("device-b-uuid", "service-1", cccdUUID, enableValue)
 	time.Sleep(100 * time.Millisecond)
 
-	// Unsubscribe
-	err := deviceA.UnsubscribeCharacteristic("device-b-uuid", "service-1", "char-1")
+	// Disable notifications via CCCD write (0x00 0x00)
+	disableValue := []byte{0x00, 0x00}
+	err := deviceA.WriteCharacteristic("device-b-uuid", "service-1", cccdUUID, disableValue)
 	if err != nil {
-		t.Fatalf("Failed to unsubscribe: %v", err)
+		t.Fatalf("Failed to write CCCD disable: %v", err)
 	}
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify peripheral received unsubscribe request
-	if !unsubscribeCalled {
-		t.Error("Peripheral did not receive unsubscribe request")
+	// Verify peripheral received CCCD disable write
+	if !cccdDisableReceived {
+		t.Error("Peripheral did not receive CCCD disable write")
+	}
+	if len(cccdValue) != 2 || cccdValue[0] != 0x00 || cccdValue[1] != 0x00 {
+		t.Errorf("Expected disable value [0x00 0x00], got %v", cccdValue)
 	}
 }
 
@@ -169,9 +185,11 @@ func TestNotificationMultipleCharacteristics(t *testing.T) {
 	deviceA.Connect("device-b-uuid")
 	time.Sleep(100 * time.Millisecond)
 
-	// Subscribe to two characteristics
-	deviceA.SubscribeCharacteristic("device-b-uuid", "service-1", "char-1")
-	deviceA.SubscribeCharacteristic("device-b-uuid", "service-1", "char-2")
+	// Enable notifications for two characteristics via CCCD writes
+	cccdUUID := "00002902-0000-1000-8000-00805f9b34fb"
+	enableValue := []byte{0x01, 0x00}
+	deviceA.WriteCharacteristic("device-b-uuid", "service-1", cccdUUID, enableValue)
+	deviceA.WriteCharacteristic("device-b-uuid", "service-1", cccdUUID, enableValue)
 	time.Sleep(100 * time.Millisecond)
 
 	// Send notifications on both characteristics
