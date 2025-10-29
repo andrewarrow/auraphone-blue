@@ -87,10 +87,32 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 				return fmt.Errorf("unsupported response operation: %s", msg.Operation)
 			}
 		case "error":
-			// Generic error response
+			// Map operation to request opcode for error response
+			var requestOpcode uint8
+			switch msg.Operation {
+			case "read":
+				requestOpcode = att.OpReadRequest
+			case "write":
+				requestOpcode = att.OpWriteRequest
+			case "subscribe", "unsubscribe":
+				// CCCD writes use write request opcode
+				requestOpcode = att.OpWriteRequest
+			default:
+				// Default to read request if operation is unknown
+				requestOpcode = att.OpReadRequest
+			}
+
+			// Resolve handle for error response
+			handle := uint16(0x0000)
+			if msg.ServiceUUID != "" && msg.CharacteristicUUID != "" {
+				if h, err := w.uuidToHandle(peerUUID, msg.ServiceUUID, msg.CharacteristicUUID); err == nil {
+					handle = h
+				}
+			}
+
 			attPacket = &att.ErrorResponse{
-				RequestOpcode: att.OpReadRequest, // Default, should be set properly
-				Handle:        0x0000,
+				RequestOpcode: requestOpcode,
+				Handle:        handle,
 				ErrorCode:     att.ErrAttributeNotFound,
 			}
 		default:

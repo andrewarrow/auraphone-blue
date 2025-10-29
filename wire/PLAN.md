@@ -1,21 +1,13 @@
-1. UUID-to-Handle Mapping is Still Unreliable (wire_utils.go)
 
-  // Falls back to hash-based mapping
-  func (w *Wire) getCharacteristicHandle(serviceUUID, charUUID string) (uint16, error) {
-      // Tries discovery cache first (good!)
-      // But falls back to hash function (BAD!)
-      return hashUUIDToHandle(serviceUUID, charUUID), nil
-  }
-  Risk: Hash collisions can cause wrong characteristics to be accessedBefore kotlin/swift: Force all
-   paths through proper discovery protocol, remove hash fallback
+  2. ✅ FIXED: Error Response Opcode is Hardcoded (wire_gatt.go)
 
-  2. Error Response Opcode is Hardcoded (wire_gatt.go)
-
-  errorResp := &att.ErrorResponse{
-      RequestOpcode: att.OpReadRequest,  // ← Always OpReadRequest!
-      // Should be: the actual failing opcode (write, subscribe, etc.)
-  }
-  Risk: ATT errors report wrong operationFix: Track request type properly in error handling
+  Fixed in wire_gatt.go:89-117
+  - Now maps msg.Operation to correct request opcode
+  - read → OpReadRequest
+  - write → OpWriteRequest
+  - subscribe/unsubscribe → OpWriteRequest (CCCD writes)
+  - Also resolves handle from UUID for error responses
+  - Added comprehensive tests in error_response_test.go
 
   3. No Graceful Disconnect Protocol
 
