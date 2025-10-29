@@ -25,6 +25,7 @@ type CBCentralManager struct {
 	pendingPeripherals  map[string]*CBPeripheral // UUID -> peripheral (for auto-reconnect and message routing)
 	autoReconnectActive bool                     // Whether auto-reconnect is enabled
 	discoveredDevices   map[string]bool          // Track devices already reported to delegate (per scan session)
+	connectingDevices   map[string]bool          // Track devices with connection in progress (prevents duplicate Connect calls)
 }
 
 func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedWire *wire.Wire) *CBCentralManager {
@@ -34,8 +35,9 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedW
 		uuid:                uuid,
 		wire:                sharedWire,
 		pendingPeripherals:  make(map[string]*CBPeripheral),
-		autoReconnectActive: true,              // iOS auto-reconnect is always active
+		autoReconnectActive: true,                  // iOS auto-reconnect is always active
 		discoveredDevices:   make(map[string]bool), // Initialize discovery tracking
+		connectingDevices:   make(map[string]bool), // Initialize connection tracking
 	}
 
 	// Set up disconnect callback
@@ -228,6 +230,18 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 	// Role Policy: Apps should call ShouldInitiateConnection() before calling Connect()
 	// to avoid simultaneous connection attempts with dual-role devices.
 
+	// REALISTIC iOS BEHAVIOR: Check if already connected or connection in progress
+	// Real iOS ignores Connect() calls for already-connected peripherals or when
+	// a connection attempt is already ongoing
+	c.mu.Lock()
+	if c.wire.IsConnected(peripheral.UUID) || c.connectingDevices[peripheral.UUID] {
+		c.mu.Unlock()
+		return // Already connected or connecting, do nothing (realistic iOS behavior)
+	}
+	// Mark as connecting BEFORE spawning goroutine to prevent race
+	c.connectingDevices[peripheral.UUID] = true
+	c.mu.Unlock()
+
 	// Set up the peripheral's wire connection
 	peripheral.wire = c.wire
 	peripheral.remoteUUID = peripheral.UUID
@@ -240,6 +254,11 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 	// Attempt realistic connection with timing and potential failure
 	go func() {
 		err := c.wire.Connect(peripheral.UUID)
+
+		// Clear connecting flag when done (success or failure)
+		c.mu.Lock()
+		delete(c.connectingDevices, peripheral.UUID)
+		c.mu.Unlock()
 		if err != nil {
 			// Connection failed - pass copy to delegate
 			peripheralCopy := *peripheral
