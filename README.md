@@ -47,7 +47,6 @@ This simulator lets you:
   - Each device creates a Unix socket at `/tmp/auraphone-{hardwareUUID}.sock`
   - Connection-oriented communication (each device can connect to multiple peers)
   - Length-prefixed message framing (4-byte length header + JSON payload)
-  - Automatic MTU-based fragmentation with realistic packet loss simulation
   - Filesystem used for: device discovery (scanning `/tmp/` for `.sock` files), GATT tables (`data/{uuid}/gatt.json`), and advertising data (`data/{uuid}/advertising.json`)
 
 

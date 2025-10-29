@@ -87,7 +87,9 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
   - Each device creates a Unix socket at `/tmp/auraphone-{hardwareUUID}.sock`
   - Connection-oriented communication (each device can connect to multiple peers)
   - Length-prefixed message framing (4-byte length header + JSON payload)
-  - Automatic MTU-based fragmentation with realistic packet loss simulation
+  - Bidirectional GATT message passing with connection state tracking
+  - Connection event logging and socket health monitoring
+  - **Currently NO simulation**: No packet loss, no RSSI variance, no random disconnects, no MTU fragmentation, no delays
   - Filesystem used for: device discovery (scanning `/tmp/` for `.sock` files), GATT tables (`data/{uuid}/gatt.json`), and advertising data (`data/{uuid}/advertising.json`)
 
 - **`phone/`** - Shared phone utilities and protocols
@@ -110,28 +112,28 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 ## Known Limitations & Unrealistic Behaviors
 
 ### What's Now Realistic (✅ Fixed):
-1. **✅ MTU Limits** - BLE has 23-512 byte packet limits (default: 185 bytes). Data is automatically fragmented into MTU-sized chunks.
-
-2. **✅ Connection Timing** - Connections take 30-100ms with realistic ~0.1% failure rate. Connection states (disconnected/connecting/connected/disconnecting) match real BLE.
-
-3. **✅ Discovery Delays** - Advertising intervals (100ms default) with discovery delays (50-500ms). Devices are discovered gradually, not instantly.
-
-4. **✅ RSSI/Signal Strength** - Distance-based RSSI (-100 to -20 dBm) with realistic 10dBm variance simulating radio interference.
-
-5. **✅ Packet Loss & Retries** - ~0.1% packet loss rate with automatic retries (up to 3 attempts). Overall success rate: ~99.9% (tuned for reliable Unix socket communication).
-
-6. **✅ Device Roles & Negotiation** - Both iOS and Android support dual-role (Central+Peripheral). Smart role negotiation prevents connection conflicts:
+1. **✅ Device Roles & Negotiation** - Both iOS and Android support dual-role (Central+Peripheral). Smart role negotiation prevents connection conflicts:
    - **All device pairs**: Simple hardware UUID comparison - device with LARGER UUID acts as Central
    - Platform-agnostic: Works identically for iOS↔iOS, iOS↔Android, and Android↔Android connections
    - Deterministic collision avoidance prevents simultaneous connection attempts
 
-7. **✅ Platform-Specific Reconnection Behavior** - iOS and Android have completely different reconnection behaviors:
+2. **✅ Platform-Specific Reconnection Behavior** - iOS and Android have completely different reconnection behaviors:
    - **iOS Auto-Reconnect**: When you call `Connect()`, iOS remembers the peripheral. If connection drops, iOS automatically retries in background until it succeeds. App just waits for `DidConnectPeripheral` callback again.
    - **Android Manual Reconnect**: By default (autoConnect=false), Android does NOT auto-reconnect. App must detect disconnect and manually call `connectGatt()` again.
    - **Android Auto-Reconnect Mode**: Optional autoConnect=true parameter makes Android retry in background like iOS (but with longer delays ~5s vs iOS ~2s).
 
+### What's NOT Currently Simulated (but could be):
+- **❌ MTU Limits** - Real BLE has 23-512 byte packet limits. Current implementation sends messages of any size without fragmentation.
+- **❌ Connection Timing** - Real connections take 30-100ms. Current implementation connects instantly via Unix sockets.
+- **❌ Discovery Delays** - Real BLE has advertising intervals (100ms). Current implementation discovers devices instantly when scanning `/tmp/`.
+- **❌ RSSI/Signal Strength** - `GetRSSI()` returns fixed -45.0 dBm. No distance-based signal strength or variance.
+- **❌ Packet Loss** - Unix sockets are 100% reliable. No packet loss simulation or retry logic.
+- **❌ Random Disconnects** - Connections only drop on errors or explicit disconnect. No simulation of radio interference.
+- **❌ Connection Failures** - `Connect()` always succeeds if peer socket exists. No failure rate simulation.
+
 ### Intentional Simplifications:
 - **Simplified collision detection** - Real BLE has sophisticated channel hopping and collision avoidance. We simulate this at the application layer with deterministic role negotiation.
+- **Perfect reliability** - Unix sockets provide 100% reliable delivery. This is acceptable for testing application logic without radio complications.
 
 ### What's Realistic:
 ✅ API naming matches real iOS CoreBluetooth and Android BLE
@@ -139,7 +141,7 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 ✅ Async operations (discovery runs in background goroutines)
 ✅ UUID-based device identification
 ✅ Binary data payloads
-✅ Connection-oriented communication with realistic timing
+✅ Connection-oriented communication (bidirectional GATT messaging)
 ✅ **Proper GATT hierarchy** - Services, Characteristics, and Descriptors with UUIDs
 ✅ **Service discovery** - Devices read gatt.json to discover remote GATT tables
 ✅ **Characteristic-based operations** - Read/write/notify operations reference specific characteristics
@@ -147,20 +149,20 @@ This project simulates Bluetooth Low Energy (BLE) communication between iOS and 
 ✅ **Advertising data** - Devices broadcast service UUIDs, device name, manufacturer data, TX power level in `advertising.json`
 ✅ **Advertising packet parsing** - iOS and Android parse advertising data matching platform APIs (kCBAdvData* and ScanRecord)
 ✅ **Device roles & negotiation** - Both iOS and Android are dual-role with smart role arbitration
-✅ **Connection states** - disconnected → connecting → connected → disconnecting with realistic timing
-✅ **MTU negotiation** - Packet size limits with automatic fragmentation
-✅ **Packet loss & retries** - ~98.4% overall success rate with realistic radio interference
-✅ **RSSI variance** - Distance-based signal strength with realistic fluctuations
+✅ **Connection states** - disconnected ↔ connected state tracking via callbacks
 ✅ **Platform-specific reconnection** - iOS auto-reconnect vs Android manual/auto modes
 ✅ **Peripheral mode** - iOS CBPeripheralManager and Android BluetoothLeAdvertiser for advertising and serving GATT data
 ✅ **Notifications/Indications** - Subscribe/unsubscribe mechanism matches real BLE CCCD descriptor writes
+✅ **Connection event logging** - Detailed JSONL logs for debugging connection lifecycle
+✅ **Socket health monitoring** - Periodic snapshots of connection stats (messages sent/received, uptime)
 
 ## Design Principles
 - **Use real platform API names** - CBCentralManager, BluetoothGatt, etc.
 - **Match real patterns** - Delegates on iOS, Callbacks on Android
 - **Keep it simple** - Focus on core communication flow, not edge cases
-- **Realistic wire protocol** - Unix domain sockets with length-prefixed framing, realistic timing delays, and packet loss simulation
+- **Reliable wire protocol** - Unix domain sockets with length-prefixed framing, 100% reliable delivery (no simulation currently)
 - **No cheating** - Photos must be transferred "over the wire", devices cache to disk, no shortcuts using shared filesystem paths
+- **Simulation is optional** - The wire/ layer prioritizes correctness over realism. BLE simulation (packet loss, delays, RSSI) can be added later if needed.
 
 ## Implementation Details
 
@@ -246,12 +248,12 @@ Each device creates a socket at `/tmp/auraphone-{hardwareUUID}.sock` and listens
 }
 ```
 
-**Realistic Behavior:**
-- MTU-based fragmentation (default 185 bytes, configurable 23-512)
-- Packet loss simulation (~0.1% per message)
-- Automatic retries (up to 3 attempts with 50ms delay)
-- Connection state tracking (disconnected → connecting → connected → disconnecting)
-- Random disconnect simulation (rare, configurable)
+**Current Behavior:**
+- No MTU fragmentation - messages sent as-is (any size)
+- No packet loss simulation - Unix sockets are 100% reliable
+- No automatic retries - single attempt per send
+- Connection state tracking (disconnected ↔ connected)
+- No random disconnects - only on errors or explicit disconnect
 
 ### API Changes (✅ Implemented)
 
@@ -412,35 +414,9 @@ shouldConnect := device1.ShouldActAsCentral(device2) // true if uuid1 > uuid2
      - C connects to D only (acts as Central for D, Peripheral for A and B)
      - D waits for all others (acts as Peripheral for all)
 
-## BLE Simulation Configuration
+## Wire Protocol Implementation
 
-The simulator provides realistic BLE behavior with ~99.9% success rate (tuned for Unix sockets):
-
-### Default Parameters (wire.DefaultSimulationConfig())
-```go
-MinMTU: 23 bytes                    // BLE 4.0 minimum
-MaxMTU: 512 bytes                   // BLE 5.0+ maximum
-DefaultMTU: 185 bytes               // Common negotiated value
-
-MinConnectionDelay: 30ms            // Fast connection
-MaxConnectionDelay: 100ms           // Typical max
-ConnectionFailureRate: 0.1%         // Very reliable (Unix sockets are stable)
-
-AdvertisingInterval: 100ms          // Apple recommended
-MinDiscoveryDelay: 50ms             // First advertising packet
-MaxDiscoveryDelay: 500ms            // Discovery window
-
-BaseRSSI: -50 dBm                   // Close range (~1m)
-RSSIVariance: 10 dBm                // Radio interference
-
-PacketLossRate: 0.1%                // Per-packet loss (very low for sockets)
-MaxRetries: 3                       // Automatic retries
-RetryDelay: 50ms                    // Between retries
-
-NotificationLatency: 10-20ms        // Delay for notify/indicate operations
-
-Overall Success Rate: ~99.9%        // After all retries
-```
+The `wire/` package provides a simple, reliable Unix domain socket communication layer:
 
 ### Unix Socket Implementation Details
 - **Socket Path**: `/tmp/auraphone-{hardwareUUID}.sock`
@@ -448,39 +424,61 @@ Overall Success Rate: ~99.9%        // After all retries
 - **Connection Handshake**: 4-byte UUID length + UUID bytes
 - **Concurrency**: Per-connection mutexes for send operations, dedicated read/write goroutines
 - **Cleanup**: Sockets automatically cleaned up on graceful shutdown
+- **Reliability**: 100% reliable delivery (no packet loss, no disconnects except on errors)
+- **Performance**: Instant connections, no delays, unlimited message size
 
-### Perfect Mode for Testing (wire.PerfectSimulationConfig())
-- Zero delays, zero failures, deterministic behavior
-- Use for unit tests and reproducible scenarios
+### Current Limitations (Not Implemented)
+There is **no simulation** of realistic BLE behavior currently:
+- No MTU limits or fragmentation
+- No connection delays or failures
+- No packet loss or retry logic
+- No RSSI calculation or variance
+- No advertising intervals or discovery delays
+- No random disconnects
 
-### Custom Configuration
+### RSSI Stub
 ```go
-config := wire.DefaultSimulationConfig()
-config.PacketLossRate = 0.05  // Increase to 5% for poor conditions
-config.Distance = 5.0         // Set distance for RSSI calculation
-config.Deterministic = true   // Reproducible for scenarios
-config.Seed = 12345          // Fixed random seed
+// GetRSSI returns a fixed value, no distance-based calculation
+func (w *Wire) GetRSSI(deviceUUID string) float64 {
+    return -45.0 // TODO: Implement realistic RSSI simulation
+}
 ```
 
-## Completed Features
+### Future Enhancements (If Needed)
+If more realistic BLE simulation is needed, could add:
+- MTU negotiation and fragmentation (23-512 bytes)
+- Connection timing delays (30-100ms)
+- Configurable packet loss rate with retries
+- Distance-based RSSI with variance
+- Random disconnects to simulate radio interference
+
+## Completed Features (wire/ package)
 - [x] Unix domain socket communication with length-prefixed framing
 - [x] Service/characteristic UUID structure
 - [x] Advertising data (service UUIDs, device name, manufacturer data)
-- [x] Advertising intervals with discovery delays
-- [x] Connection timing delays and state machine
-- [x] MTU negotiation and packet fragmentation
-- [x] Connection failures and retries with realistic success rates
 - [x] Dual-role support (both iOS and Android can be Central+Peripheral)
 - [x] Deterministic role negotiation via UUID comparison
-- [x] RSSI modeling based on distance with variance
 - [x] iOS peripheral mode (CBPeripheralManager)
 - [x] Android peripheral mode (BluetoothLeAdvertiser + BluetoothGattServer)
 - [x] Subscribe/unsubscribe protocol for notifications/indications
-- [x] **Gossip protocol** for mesh network device/photo discovery
-- [x] **Centralized photo transfer coordinator** for reliable delivery
-- [x] **Persistent mesh view** with atomic disk writes
+- [x] Connection event logging (JSONL format)
+- [x] Socket health monitoring (periodic snapshots)
+- [x] **Gossip protocol** for mesh network device/photo discovery (phone/ package)
+- [x] **Centralized photo transfer coordinator** for reliable delivery (phone/ package)
+- [x] **Persistent mesh view** with atomic disk writes (phone/ package)
 
 ## Future Improvements
+
+### Wire Protocol Simulation (if needed)
+- [ ] MTU negotiation and packet fragmentation (23-512 bytes)
+- [ ] Connection timing delays and state machine (connecting → connected)
+- [ ] Advertising intervals with discovery delays
+- [ ] Packet loss simulation with automatic retries
+- [ ] RSSI modeling based on distance with variance
+- [ ] Random disconnects to simulate radio interference
+- [ ] Connection failure rate simulation
+
+### Application Layer (phone/ package)
 - [ ] Photo transfer via gossip (currently uses direct connections only)
 - [ ] Multi-hop photo routing (fetch photos from neighbors who have them)
 - [ ] Gossip message compression (currently sends full mesh view each time)
