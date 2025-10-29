@@ -13,6 +13,9 @@ import (
 // ReadGATTTable reads GATT table from peer's filesystem
 // Real BLE: this simulates service discovery over the connection
 func (w *Wire) ReadGATTTable(peerUUID string) (*GATTTable, error) {
+	// Simulate service discovery delay (real BLE takes 100-500ms)
+	randomDelay(MinServiceDiscoveryDelay, MaxServiceDiscoveryDelay)
+
 	deviceDir := util.GetDeviceCacheDir(peerUUID)
 	gattPath := filepath.Join(deviceDir, "gatt.json")
 
