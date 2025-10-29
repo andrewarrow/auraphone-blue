@@ -54,7 +54,7 @@ func (w *Wire) uuidToHandle(peerUUID, serviceUUID, charUUID string) (uint16, err
 
 // stringToUUIDBytes converts a UUID string to bytes
 // Handles both short (16-bit) and long (128-bit) UUIDs
-// Must match the parseUUID logic in swift/cb_peripheral_manager.go
+// This is the canonical UUID parsing logic used across all platform wrappers
 func stringToUUIDBytes(uuid string) []byte {
 	// Try to parse as 16-bit UUID first (4 hex chars)
 	if len(uuid) == 4 {
@@ -146,7 +146,7 @@ func stringToUUIDBytes(uuid string) []byte {
 
 	// For test/custom UUIDs (like "test-char-uuid"), create a deterministic 16-byte UUID
 	// by converting the string directly to bytes (ASCII values)
-	// This matches the parseUUID logic in swift/cb_peripheral_manager.go
+	// This is the canonical UUID conversion for non-standard UUIDs
 	bytes := make([]byte, 16)
 	for i := 0; i < len(uuid) && i < 16; i++ {
 		bytes[i] = uuid[i]

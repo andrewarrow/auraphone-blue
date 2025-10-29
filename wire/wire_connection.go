@@ -339,3 +339,41 @@ func (w *Wire) GetConnectedPeers() []string {
 	}
 	return peers
 }
+
+// WaitForMTUNegotiation waits for MTU negotiation to complete for a connection.
+// This should be called after Connect() to ensure MTU exchange has finished
+// before sending other ATT requests.
+// Returns error if not connected or if timeout expires.
+func (w *Wire) WaitForMTUNegotiation(peerUUID string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 5 * time.Second // Default timeout
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		w.mu.RLock()
+		connection, exists := w.connections[peerUUID]
+		w.mu.RUnlock()
+
+		if !exists {
+			return fmt.Errorf("not connected to %s", peerUUID)
+		}
+
+		// Check if there's a pending MTU request
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+			opcode, _, _, hasPending := tracker.GetPendingInfo()
+
+			// If there's no pending request, or the pending request is not an MTU exchange,
+			// then MTU negotiation has completed
+			if !hasPending || opcode != att.OpExchangeMTURequest {
+				return nil
+			}
+		}
+
+		// Sleep briefly before checking again
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	return fmt.Errorf("timeout waiting for MTU negotiation with %s", peerUUID)
+}

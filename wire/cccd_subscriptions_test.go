@@ -61,8 +61,11 @@ func TestCCCDSubscribeUnsubscribe(t *testing.T) {
 		t.Fatalf("Failed to connect: %v", err)
 	}
 
-	// Wait for connection to establish and MTU negotiation
-	time.Sleep(50 * time.Millisecond)
+	// Wait for MTU negotiation to complete
+	err = central.WaitForMTUNegotiation("peripheral-cccd-1", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Failed to wait for MTU negotiation: %v", err)
+	}
 
 	// Verify initial subscription state (should be disabled)
 	if peripheral.IsSubscribedToNotifications("central-cccd-1", charHandle) {
@@ -158,7 +161,11 @@ func TestCCCDIndications(t *testing.T) {
 		t.Fatalf("Failed to connect: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for MTU negotiation to complete
+	err = central.WaitForMTUNegotiation("peripheral-cccd-2", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Failed to wait for MTU negotiation: %v", err)
+	}
 
 	// Enable indications
 	cccdValue := gatt.EncodeCCCDValue(false, true) // Enable indications
@@ -229,7 +236,11 @@ func TestCCCDBothEnabled(t *testing.T) {
 		t.Fatalf("Failed to connect: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for MTU negotiation to complete
+	err = central.WaitForMTUNegotiation("peripheral-cccd-3", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Failed to wait for MTU negotiation: %v", err)
+	}
 
 	// Enable both notifications and indications
 	cccdValue := gatt.EncodeCCCDValue(true, true) // Both enabled
@@ -312,7 +323,16 @@ func TestCCCDMultipleConnections(t *testing.T) {
 		t.Fatalf("Failed to connect central2: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for MTU negotiation to complete for both centrals
+	err = central1.WaitForMTUNegotiation("peripheral-cccd-4", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Failed to wait for central1 MTU negotiation: %v", err)
+	}
+
+	err = central2.WaitForMTUNegotiation("peripheral-cccd-4", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Failed to wait for central2 MTU negotiation: %v", err)
+	}
 
 	// Central1 enables notifications
 	cccdValue := gatt.EncodeCCCDValue(true, false)
@@ -423,10 +443,15 @@ func TestCCCDGetSubscribedPeers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to connect central %d: %v", i, err)
 		}
+
+		// Wait for MTU negotiation to complete
+		err = central.WaitForMTUNegotiation("peripheral-cccd-5", 200*time.Millisecond)
+		if err != nil {
+			t.Fatalf("Failed to wait for central %d MTU negotiation: %v", i, err)
+		}
+
 		centrals = append(centrals, central)
 	}
-
-	time.Sleep(50 * time.Millisecond)
 
 	// All centrals enable notifications
 	cccdValue := gatt.EncodeCCCDValue(true, false)

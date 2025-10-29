@@ -37,7 +37,7 @@ type GATTCharacteristic struct {
 }
 
 // CharacteristicMessage is deprecated, use GATTMessage instead
-// Kept for backward compatibility with old swift code
+// Kept for backward compatibility with older code
 type CharacteristicMessage = GATTMessage
 
 // Connection represents a single bidirectional BLE connection

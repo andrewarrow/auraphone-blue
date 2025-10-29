@@ -602,18 +602,56 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 
 // sendATTPacket sends an ATT packet to a peer
 func (w *Wire) sendATTPacket(peerUUID string, packet interface{}) error {
-	// Encode ATT packet
-	attData, err := att.EncodePacket(packet)
-	if err != nil {
-		return fmt.Errorf("failed to encode ATT packet: %w", err)
-	}
-
-	// Get connection to check MTU
+	// Get connection first
 	w.mu.RLock()
 	connection, exists := w.connections[peerUUID]
 	w.mu.RUnlock()
 	if !exists {
 		return fmt.Errorf("not connected to %s", peerUUID)
+	}
+
+	// Real BLE ATT protocol rule: Only ONE request can be outstanding at a time per connection
+	// This is enforced at the radio/controller level, not in higher-level APIs
+	opcode := att.GetPacketOpcode(packet)
+	if att.IsRequest(opcode) {
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+
+			// Check if there's already a pending request for a DIFFERENT opcode
+			if tracker.HasPending() {
+				pendingOpcode, pendingHandle, duration, _ := tracker.GetPendingInfo()
+				// If it's a different opcode, that's a protocol violation
+				if pendingOpcode != opcode {
+					return fmt.Errorf("ATT protocol violation: request already pending (opcode=0x%02X, handle=0x%04X, duration=%.1fms) - cannot send new request (opcode=0x%02X)",
+						pendingOpcode, pendingHandle, duration.Seconds()*1000, opcode)
+				}
+				// If it's the same opcode, the caller already registered it - this is expected
+			} else {
+				// No pending request - automatically register this one
+				// Extract handle from packet if applicable
+				var handle uint16
+				switch p := packet.(type) {
+				case *att.WriteRequest:
+					handle = p.Handle
+				case *att.ReadRequest:
+					handle = p.Handle
+				case *att.PrepareWriteRequest:
+					handle = p.Handle
+				}
+
+				// Start tracking this request
+				_, err := tracker.StartRequest(opcode, handle, 0)
+				if err != nil {
+					return fmt.Errorf("failed to start request tracking: %w", err)
+				}
+			}
+		}
+	}
+
+	// Encode ATT packet
+	attData, err := att.EncodePacket(packet)
+	if err != nil {
+		return fmt.Errorf("failed to encode ATT packet: %w", err)
 	}
 
 	// Enforce MTU strictly (except for MTU exchange packets and error responses)

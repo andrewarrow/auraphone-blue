@@ -175,3 +175,54 @@ func GetResponseOpcode(requestOpcode uint8) uint8 {
 		return 0
 	}
 }
+
+// GetPacketOpcode returns the opcode for a given ATT packet
+// Returns 0 if the packet type is unknown
+func GetPacketOpcode(packet interface{}) uint8 {
+	switch packet.(type) {
+	case *ErrorResponse:
+		return OpErrorResponse
+	case *ExchangeMTURequest:
+		return OpExchangeMTURequest
+	case *ExchangeMTUResponse:
+		return OpExchangeMTUResponse
+	case *FindInformationRequest:
+		return OpFindInformationRequest
+	case *FindInformationResponse:
+		return OpFindInformationResponse
+	case *ReadByTypeRequest:
+		return OpReadByTypeRequest
+	case *ReadByTypeResponse:
+		return OpReadByTypeResponse
+	case *ReadRequest:
+		return OpReadRequest
+	case *ReadResponse:
+		return OpReadResponse
+	case *ReadByGroupTypeRequest:
+		return OpReadByGroupTypeRequest
+	case *ReadByGroupTypeResponse:
+		return OpReadByGroupTypeResponse
+	case *WriteRequest:
+		return OpWriteRequest
+	case *WriteResponse:
+		return OpWriteResponse
+	case *WriteCommand:
+		return OpWriteCommand
+	case *PrepareWriteRequest:
+		return OpPrepareWriteRequest
+	case *PrepareWriteResponse:
+		return OpPrepareWriteResponse
+	case *ExecuteWriteRequest:
+		return OpExecuteWriteRequest
+	case *ExecuteWriteResponse:
+		return OpExecuteWriteResponse
+	case *HandleValueNotification:
+		return OpHandleValueNotification
+	case *HandleValueIndication:
+		return OpHandleValueIndication
+	case *HandleValueConfirmation:
+		return OpHandleValueConfirmation
+	default:
+		return 0
+	}
+}
