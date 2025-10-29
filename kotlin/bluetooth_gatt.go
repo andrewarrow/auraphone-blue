@@ -1,6 +1,7 @@
 package kotlin
 
 import (
+	"sync"
 	"time"
 
 	"github.com/user/auraphone-blue/logger"
@@ -68,6 +69,8 @@ type BluetoothGatt struct {
 	services                 []*BluetoothGattService
 	notifyingCharacteristics map[string]bool // characteristic UUID -> is notifying
 	autoConnect              bool            // Android autoConnect flag for auto-reconnect
+	operationInProgress      bool            // CRITICAL: Android BLE requires operation serialization
+	operationMutex           sync.Mutex      // Protects operationInProgress flag
 }
 
 func (g *BluetoothGatt) DiscoverServices() bool {
@@ -168,6 +171,17 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 		return false
 	}
 
+	// CRITICAL: Android BLE requires operation serialization
+	// Real Android returns false if an operation is already in progress
+	g.operationMutex.Lock()
+	if g.operationInProgress {
+		g.operationMutex.Unlock()
+		logger.Debug("BluetoothGatt", "❌ WriteCharacteristic rejected - operation already in progress (remote=%s)", g.remoteUUID[:8])
+		return false // Android returns false when busy
+	}
+	g.operationInProgress = true
+	g.operationMutex.Unlock()
+
 	// Copy the value before spawning goroutine to avoid race conditions
 	// (caller might modify characteristic.Value after this call returns)
 	valueCopy := make([]byte, len(characteristic.Value))
@@ -181,6 +195,11 @@ func (g *BluetoothGatt) WriteCharacteristic(characteristic *BluetoothGattCharact
 		} else {
 			err = g.wire.WriteCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID, valueCopy)
 		}
+
+		// Clear busy flag BEFORE callback (allows next operation to start)
+		g.operationMutex.Lock()
+		g.operationInProgress = false
+		g.operationMutex.Unlock()
 
 		if g.callback != nil {
 			if err != nil {
@@ -202,13 +221,34 @@ func (g *BluetoothGatt) ReadCharacteristic(characteristic *BluetoothGattCharacte
 		return false
 	}
 
-	err := g.wire.ReadCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
-	if err != nil {
-		if g.callback != nil {
-			g.callback.OnCharacteristicRead(g, characteristic, 1) // GATT_FAILURE = 1
-		}
-		return false
+	// CRITICAL: Android BLE requires operation serialization
+	// Real Android returns false if an operation is already in progress
+	g.operationMutex.Lock()
+	if g.operationInProgress {
+		g.operationMutex.Unlock()
+		logger.Debug("BluetoothGatt", "❌ ReadCharacteristic rejected - operation already in progress (remote=%s)", g.remoteUUID[:8])
+		return false // Android returns false when busy
 	}
+	g.operationInProgress = true
+	g.operationMutex.Unlock()
+
+	// Read asynchronously (matches real Android BLE behavior)
+	go func() {
+		err := g.wire.ReadCharacteristic(g.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
+
+		// Clear busy flag BEFORE callback (allows next operation to start)
+		g.operationMutex.Lock()
+		g.operationInProgress = false
+		g.operationMutex.Unlock()
+
+		if g.callback != nil {
+			if err != nil {
+				g.callback.OnCharacteristicRead(g, characteristic, 1) // GATT_FAILURE = 1
+			} else {
+				g.callback.OnCharacteristicRead(g, characteristic, 0) // GATT_SUCCESS = 0
+			}
+		}
+	}()
 
 	return true
 }

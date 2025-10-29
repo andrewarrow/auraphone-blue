@@ -410,7 +410,8 @@ func (s *BluetoothGattServer) propertiesToStrings(props int) []string {
 		result = append(result, "write")
 	}
 	if props&PROPERTY_WRITE_NO_RESPONSE != 0 {
-		result = append(result, "write_without_response")
+		// Use consistent naming: write_no_response (matches bluetooth_gatt.go:120)
+		result = append(result, "write_no_response")
 	}
 	if props&PROPERTY_NOTIFY != 0 {
 		result = append(result, "notify")

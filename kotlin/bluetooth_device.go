@@ -34,8 +34,10 @@ func (d *BluetoothDevice) ConnectGatt(context interface{}, autoConnect bool, cal
 	// Set up disconnect callback for this specific connection
 	d.wire.SetDisconnectCallback(func(deviceUUID string) {
 		// Connection was randomly dropped
-		if deviceUUID == gatt.remoteUUID && callback != nil {
-			callback.OnConnectionStateChange(gatt, 0, STATE_DISCONNECTED) // status = 0 (not an error)
+		if deviceUUID == gatt.remoteUUID {
+			if callback != nil {
+				callback.OnConnectionStateChange(gatt, 0, STATE_DISCONNECTED) // status = 0 (not an error)
+			}
 
 			// Android auto-reconnect: if autoConnect=true, retry in background
 			if gatt.autoConnect {
@@ -46,12 +48,16 @@ func (d *BluetoothDevice) ConnectGatt(context interface{}, autoConnect bool, cal
 
 	// Attempt realistic connection with timing and potential failure
 	go func() {
-		callback.OnConnectionStateChange(gatt, 0, STATE_CONNECTING)
+		if callback != nil {
+			callback.OnConnectionStateChange(gatt, 0, STATE_CONNECTING)
+		}
 
 		err := d.wire.Connect(d.Address)
 		if err != nil {
 			// Connection failed
-			callback.OnConnectionStateChange(gatt, 1, STATE_DISCONNECTED) // status=1 (GATT_FAILURE)
+			if callback != nil {
+				callback.OnConnectionStateChange(gatt, 1, STATE_DISCONNECTED) // status=1 (GATT_FAILURE)
+			}
 
 			// Android auto-reconnect: if autoConnect=true, retry in background
 			if autoConnect {
@@ -61,7 +67,9 @@ func (d *BluetoothDevice) ConnectGatt(context interface{}, autoConnect bool, cal
 		}
 
 		// Connection succeeded
-		callback.OnConnectionStateChange(gatt, 0, STATE_CONNECTED)
+		if callback != nil {
+			callback.OnConnectionStateChange(gatt, 0, STATE_CONNECTED)
+		}
 	}()
 
 	return gatt
