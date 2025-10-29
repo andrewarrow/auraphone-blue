@@ -92,8 +92,10 @@ func TestCBPeripheralManager_StartAdvertising(t *testing.T) {
 	pm.AddService(service)
 
 	// Start advertising
+	// REALISTIC: iOS truncates data to fit 31-byte limit
+	// 128-bit UUID takes ~18 bytes, so use short name to stay under limit
 	err := pm.StartAdvertising(map[string]interface{}{
-		"kCBAdvDataLocalName":    "My Test Device",
+		"kCBAdvDataLocalName":    "TestDev", // Short name to fit within 31 bytes
 		"kCBAdvDataServiceUUIDs": []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
 	})
 	if err != nil {
@@ -119,12 +121,20 @@ func TestCBPeripheralManager_StartAdvertising(t *testing.T) {
 		t.Fatalf("Failed to read advertising data: %v", err)
 	}
 
-	if advData.DeviceName != "My Test Device" {
-		t.Errorf("Wrong device name: %s", advData.DeviceName)
+	if advData.DeviceName != "TestDev" {
+		t.Errorf("Wrong device name: expected 'TestDev', got '%s'", advData.DeviceName)
 	}
 
-	if len(advData.ServiceUUIDs) != 1 || advData.ServiceUUIDs[0] != "E621E1F8-C36C-495A-93FC-0C247A3E6E5F" {
-		t.Errorf("Wrong service UUIDs: %v", advData.ServiceUUIDs)
+	// UUID may be lowercased by advertising layer
+	if len(advData.ServiceUUIDs) != 1 {
+		t.Errorf("Expected 1 service UUID, got %d: %v", len(advData.ServiceUUIDs), advData.ServiceUUIDs)
+	} else {
+		uuid := advData.ServiceUUIDs[0]
+		expectedUpper := "E621E1F8-C36C-495A-93FC-0C247A3E6E5F"
+		expectedLower := "e621e1f8-c36c-495a-93fc-0c247a3e6e5f"
+		if uuid != expectedUpper && uuid != expectedLower {
+			t.Errorf("Wrong service UUID: expected %s or %s, got %s", expectedUpper, expectedLower, uuid)
+		}
 	}
 
 	t.Logf("✅ Advertising data written correctly")

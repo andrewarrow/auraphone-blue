@@ -6,6 +6,7 @@ import (
 
 	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
+	"github.com/user/auraphone-blue/wire/gatt"
 )
 
 // TestCentralPeripheralConnection tests that Central and Peripheral can connect via wire
@@ -128,6 +129,41 @@ func TestBidirectionalCommunication(t *testing.T) {
 	// Create two wires
 	wireA := wire.NewWire("device-a")
 	wireB := wire.NewWire("device-b")
+
+	// REALISTIC BLE: Set up GATT databases for both devices
+	// Device B (peripheral) needs a database to send notifications
+	servicesB := []gatt.Service{
+		{
+			UUID:    []byte("service-2\x00\x00\x00\x00\x00\x00"), // Pad to 16 bytes
+			Primary: true,
+			Characteristics: []gatt.Characteristic{
+				{
+					UUID:       []byte("char-2\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"), // Pad to 16 bytes
+					Properties: gatt.PropNotify,
+					Value:      []byte{},
+				},
+			},
+		},
+	}
+	dbB, _ := gatt.BuildAttributeDatabase(servicesB)
+	wireB.SetAttributeDatabase(dbB)
+
+	// Device A (central) needs a database to receive write requests as a peripheral would
+	servicesA := []gatt.Service{
+		{
+			UUID:    []byte("service-1\x00\x00\x00\x00\x00\x00"), // Pad to 16 bytes
+			Primary: true,
+			Characteristics: []gatt.Characteristic{
+				{
+					UUID:       []byte("char-1\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"), // Pad to 16 bytes
+					Properties: gatt.PropWrite,
+					Value:      []byte{},
+				},
+			},
+		},
+	}
+	dbA, _ := gatt.BuildAttributeDatabase(servicesA)
+	wireA.SetAttributeDatabase(dbA)
 
 	// Start both
 	if err := wireA.Start(); err != nil {

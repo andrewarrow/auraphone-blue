@@ -7,6 +7,51 @@ import (
 	"github.com/user/auraphone-blue/wire/gatt"
 )
 
+// localUUIDToHandle converts a service+characteristic UUID pair to a handle using LOCAL attribute database
+// This is used when acting as a PERIPHERAL (server) sending notifications/indications
+// The peripheral uses its own GATT database, not the client's discovery cache
+func (w *Wire) localUUIDToHandle(serviceUUID, charUUID string) (uint16, error) {
+	w.dbMu.RLock()
+	db := w.attributeDB
+	w.dbMu.RUnlock()
+
+	if db == nil {
+		return 0, fmt.Errorf("no local attribute database, call SetAttributeDatabase first")
+	}
+
+	// Convert UUIDs to bytes for lookup
+	charUUIDBytes := stringToUUIDBytes(charUUID)
+
+	// Search attribute database for characteristic with matching UUID
+	for handle := uint16(1); handle <= 0xFFFF; handle++ {
+		attr, err := db.GetAttribute(handle)
+		if err != nil {
+			continue // Handle not found, keep searching
+		}
+
+		// Check if this is a characteristic value attribute (type 0x2803 is char declaration, next handle is value)
+		// We want the VALUE handle, not the declaration handle
+		// The Type field contains the characteristic UUID for value attributes
+		if len(attr.Type) == len(charUUIDBytes) {
+			match := true
+			for i := range charUUIDBytes {
+				if attr.Type[i] != charUUIDBytes[i] {
+					match = false
+					break
+				}
+			}
+			if match {
+				logger.Debug(shortHash(w.hardwareUUID)+" Wire",
+					"   UUID->Handle (from local database): char=%s -> 0x%04X",
+					shortHash(charUUID), handle)
+				return handle, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("characteristic %s not found in local attribute database", charUUID)
+}
+
 // uuidToHandle converts a service+characteristic UUID pair to a handle
 // This ONLY uses the discovery cache - discovery must be performed first
 // Returns an error if the characteristic or descriptor is not found in the discovery cache

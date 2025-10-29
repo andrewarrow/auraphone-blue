@@ -70,6 +70,33 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 			attPacket = &att.ReadRequest{
 				Handle: handle,
 			}
+		case "subscribe", "unsubscribe":
+			// REALISTIC BLE: Subscribe/unsubscribe means writing to CCCD descriptor
+			// CCCD (Client Characteristic Configuration Descriptor) is always at characteristic handle + 1
+			// Subscribe writes 0x0100 (enable notifications), unsubscribe writes 0x0000
+
+			// Get characteristic value handle
+			charHandle, err := w.uuidToHandle(peerUUID, msg.ServiceUUID, msg.CharacteristicUUID)
+			if err != nil {
+				return fmt.Errorf("failed to resolve characteristic handle: %w", err)
+			}
+
+			// CCCD handle is characteristic value handle + 1 (per BLE spec)
+			cccdHandle := charHandle + 1
+
+			// Set CCCD value based on operation
+			var cccdValue []byte
+			if msg.Operation == "subscribe" {
+				cccdValue = []byte{0x01, 0x00} // Enable notifications (little-endian)
+			} else {
+				cccdValue = []byte{0x00, 0x00} // Disable notifications
+			}
+
+			// Send write request to CCCD
+			attPacket = &att.WriteRequest{
+				Handle: cccdHandle,
+				Value:  cccdValue,
+			}
 		default:
 			return fmt.Errorf("unsupported operation: %s", msg.Operation)
 		}
@@ -120,10 +147,12 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 		}
 
 	case "gatt_notification":
-		// Map UUID to handle using discovery cache
-		handle, err := w.uuidToHandle(peerUUID, msg.ServiceUUID, msg.CharacteristicUUID)
+		// CRITICAL: For notifications, use LOCAL attribute database (not discovery cache)
+		// The peripheral (server) sends notifications using handles from its own GATT table
+		// This is different from requests, which use the discovery cache (client-side)
+		handle, err := w.localUUIDToHandle(msg.ServiceUUID, msg.CharacteristicUUID)
 		if err != nil {
-			return fmt.Errorf("failed to resolve characteristic handle: %w", err)
+			return fmt.Errorf("failed to resolve characteristic handle from local database: %w", err)
 		}
 		attPacket = &att.HandleValueNotification{
 			Handle: handle,

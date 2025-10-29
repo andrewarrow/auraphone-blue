@@ -592,7 +592,21 @@ func (pm *CBPeripheralManager) buildAttributeDatabase() *gatt.AttributeDatabase 
 				UUID:       pm.parseUUID(char.UUID),
 				Properties: pm.propertiesToGATTBitmask(char.Properties),
 				Value:      char.Value,
+				Descriptors: []gatt.Descriptor{}, // Initialize descriptors slice
 			}
+
+			// CRITICAL: Real BLE requires CCCD descriptor for any characteristic with notify/indicate
+			// This matches the BLE Core Specification requirement
+			if char.Properties&(CBCharacteristicPropertyNotify|CBCharacteristicPropertyIndicate) != 0 {
+				// Add CCCD descriptor (Client Characteristic Configuration Descriptor)
+				// UUID 0x2902, default value 0x0000 (notifications/indications disabled)
+				cccdDescriptor := gatt.Descriptor{
+					UUID:  []byte{0x02, 0x29}, // CCCD UUID (0x2902) in little-endian
+					Value: []byte{0x00, 0x00}, // Disabled by default
+				}
+				gattChar.Descriptors = append(gattChar.Descriptors, cccdDescriptor)
+			}
+
 			gattService.Characteristics = append(gattService.Characteristics, gattChar)
 		}
 
