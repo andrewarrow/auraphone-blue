@@ -4,15 +4,92 @@
 Convert wire/ from JSON-over-length-prefix to real binary BLE protocols (L2CAP + ATT/GATT), while maintaining human-readable JSON debug files that are never used in the actual data flow.
 
 ## Current Status
-**Phase 2.1, 2.2, 2.3, 4.1 COMPLETED** ✅ (2025-10-29)
-- Binary protocol foundation complete with L2CAP, ATT, and GATT layers (Phase 1)
-- Wire.go fully migrated to binary L2CAP/ATT protocol (Phase 2.1)
-- GATT operations (read/write/notify) now use binary ATT packets (Phase 2.2)
-- MTU negotiation working on connection establishment (Phase 2.3)
-- Debug logging infrastructure complete - human-readable JSON logs (Phase 4.1)
-- All tests passing (34 tests total across wire, l2cap, att, gatt packages)
-- Debug files: `l2cap_packets.jsonl`, `att_packets.jsonl`, `gatt_operations.jsonl`
-- **Next:** Phase 2.4 (Fragmentation) and Phase 3 (Advertising & Discovery)
+**Phase 1, 2.1-2.3, 4.1 COMPLETED** ✅ (2025-10-29)
+
+### ✅ Completed Today
+- **Phase 1**: Binary protocol foundation (L2CAP, ATT, GATT layers)
+- **Phase 2.1**: Wire.go migrated to binary L2CAP/ATT protocol
+- **Phase 2.2**: GATT operations converted to binary ATT packets
+- **Phase 2.3**: MTU negotiation on connection establishment
+- **Phase 4.1**: Debug logging infrastructure with human-readable JSON
+
+### 📊 Current State
+- **Tests**: 34/34 passing across 4 packages (wire, l2cap, att, gatt)
+- **Binary Protocol**: Fully functional L2CAP + ATT communication
+- **MTU Negotiation**: Working, negotiates to 512 bytes
+- **Debug Files**: `l2cap_packets.jsonl`, `att_packets.jsonl`, `gatt_operations.jsonl`
+- **Backward Compatibility**: GATTMessage conversion layer for existing handlers
+
+### 🔧 Implementation Details
+- Wire now sends/receives binary L2CAP packets (little-endian)
+- ATT packets properly encoded with opcodes 0x02 (MTU Request), 0x03 (MTU Response)
+- Temporary UUID-to-handle mapping (hash-based, will be replaced with discovery)
+- Debug logging enabled by default (disable with `WIRE_DEBUG=0`)
+
+### 📝 Known Limitations
+- UUID-to-handle mapping is hash-based (needs proper GATT discovery)
+- MTU enforcement logs warning but doesn't reject oversized packets
+- Fragmentation not yet implemented (Phase 2.4)
+- Subscription/CCCD writes not yet implemented
+
+### 🎯 Next Steps
+**Immediate**: Phase 2.4 (Fragmentation for messages > MTU)
+**Then**: Phase 3 (Binary Advertising & Discovery)
+**Future**: Proper GATT service discovery, CCCD writes, error handling
+
+### 📦 Binary Protocol Stack (Current)
+```
+┌─────────────────────────────────────────────┐
+│  GATT Operations (Application Layer)       │
+│  ReadCharacteristic(), WriteCharacteristic()│
+│  NotifyCharacteristic()                     │
+└─────────────────┬───────────────────────────┘
+                  │ converts via SendGATTMessage()
+                  ↓
+┌─────────────────────────────────────────────┐
+│  ATT Protocol (Binary)                      │
+│  Opcodes: 0x02 (MTU Req), 0x0A (Read),     │
+│           0x12 (Write), 0x1B (Notify)       │
+│  Handle-based addressing                    │
+└─────────────────┬───────────────────────────┘
+                  │ wrapped in L2CAP
+                  ↓
+┌─────────────────────────────────────────────┐
+│  L2CAP (Binary Transport)                   │
+│  Channel 0x0004 (ATT)                       │
+│  [Len:2][Channel:2][Payload:N]              │
+└─────────────────┬───────────────────────────┘
+                  │ over Unix sockets
+                  ↓
+┌─────────────────────────────────────────────┐
+│  Unix Domain Socket (Simulated Radio)      │
+│  /tmp/auraphone-{uuid}.sock                 │
+└─────────────────────────────────────────────┘
+
+Debug JSON (Write-Only) →  ~/.apb/{session}/{uuid}/debug/
+                           ├── l2cap_packets.jsonl
+                           ├── att_packets.jsonl
+                           └── gatt_operations.jsonl
+```
+
+### 🔍 Example Packet Flow (MTU Negotiation)
+```
+Device A (Central)                    Device B (Peripheral)
+────────────────                      ──────────────────────
+Connect() →
+  ↓
+  MTU Request (0x02)
+  L2CAP: [03 00][04 00][02 00 02]
+         len=3  ATT    MTU op, 512
+  ───────────────────────────────→
+                                     handleATTPacket()
+                                     ← MTU Response (0x03)
+                                       L2CAP: [03 00][04 00][03 00 02]
+                                              len=3  ATT    MTU resp, 512
+  ←───────────────────────────────
+MTU negotiated: 512 bytes
+connection.mtu = 512
+```
 
 ---
 
@@ -362,15 +439,15 @@ Convert wire/ from JSON-over-length-prefix to real binary BLE protocols (L2CAP +
 - ✅ Thread-safe operations throughout
 - ✅ Comprehensive test coverage (33 tests, all passing)
 
-**Remaining (Future Phases):**
-- [ ] Wire.go integration with binary L2CAP/ATT encoding
-- [ ] JSON only written to debug files, never read
-- [ ] MTU negotiation on connection establishment
-- [ ] GATT discovery protocol (service/characteristic/descriptor discovery)
-- [ ] Binary advertising packets
-- [ ] All existing wire tests pass with binary protocol
-- [ ] Debug JSON files for troubleshooting
-- [ ] No performance regression vs current implementation
+**Progress Update:**
+- ✅ Wire.go integration with binary L2CAP/ATT encoding (Phase 2.1-2.3)
+- ✅ JSON only written to debug files, never read (Phase 4.1)
+- ✅ MTU negotiation on connection establishment (Phase 2.3)
+- ✅ All existing wire tests pass with binary protocol (34/34 tests passing)
+- ✅ Debug JSON files for troubleshooting (Phase 4.1)
+- [ ] GATT discovery protocol (service/characteristic/descriptor discovery) (Phase 2.4/3)
+- [ ] Binary advertising packets (Phase 3)
+- [ ] No performance regression vs current implementation (to be measured)
 - [ ] Ready for kotlin/ and swift/ integration (future work)
 
 ---
@@ -396,3 +473,118 @@ Convert wire/ from JSON-over-length-prefix to real binary BLE protocols (L2CAP +
 - iOS and Android specifics stay in their respective packages
 - Debug files should be easy to grep and inspect
 - Consider adding a debug packet viewer tool later
+
+---
+
+## Files Created/Modified (2025-10-29)
+
+### New Files Created
+```
+wire/
+├── l2cap/
+│   ├── packet.go          (158 lines) - L2CAP packet encoding/decoding
+│   └── packet_test.go     (6 tests) - L2CAP tests
+├── att/
+│   ├── opcodes.go         (178 lines) - ATT opcodes and helpers
+│   ├── errors.go          (119 lines) - ATT error codes
+│   ├── packet.go          (451 lines) - ATT packet encoding/decoding
+│   └── packet_test.go     (11 tests) - ATT tests
+├── gatt/
+│   ├── handles.go         (155 lines) - Attribute database
+│   ├── handles_test.go    (9 tests) - Handle tests
+│   ├── service_builder.go (181 lines) - Service builder
+│   └── service_builder_test.go (7 tests) - Builder tests
+└── debug/
+    └── logger.go          (250 lines) - Debug JSON logging
+```
+
+### Modified Files
+```
+wire/
+├── wire.go               - Binary L2CAP/ATT protocol integration
+│   ├── Added imports: att, l2cap, debug packages
+│   ├── Added debugLogger field to Wire struct
+│   ├── Modified readMessages() for L2CAP decoding
+│   ├── Added handleATTPacket() for ATT routing
+│   ├── Added sendL2CAPPacket() for binary transport
+│   ├── Added sendATTPacket() for ATT operations
+│   ├── Modified SendGATTMessage() to convert to binary
+│   ├── Added attToGATTMessage() for backward compat
+│   ├── Added uuidToHandle() for handle mapping
+│   └── Added MTU negotiation in Connect()
+├── constants.go          - Already had MTU constants (no changes needed)
+└── types.go             - Connection struct already had mtu field (no changes needed)
+```
+
+### Test Results
+```
+Package                  Tests    Status
+────────────────────────────────────────
+wire                     1/1      ✅ PASS
+wire/l2cap              6/6      ✅ PASS
+wire/att               11/11     ✅ PASS
+wire/gatt              16/16     ✅ PASS
+────────────────────────────────────────
+Total                  34/34     ✅ ALL PASSING
+```
+
+### Debug Output Example
+After running tests, debug files are created:
+```
+~/.apb/{session_id}/{device_uuid}/
+├── debug/
+│   ├── l2cap_packets.jsonl     - L2CAP layer packets
+│   ├── att_packets.jsonl       - ATT protocol packets
+│   └── gatt_operations.jsonl   - GATT operations
+├── connection_events.jsonl     - Connection audit log
+└── socket_health.json          - Socket health metrics
+```
+
+### Key Code Snippets
+
+**L2CAP Packet Format (wire/l2cap/packet.go:37)**
+```go
+func (p *Packet) Encode() []byte {
+    buf := make([]byte, L2CAPHeaderLen+len(p.Payload))
+    binary.LittleEndian.PutUint16(buf[0:2], uint16(len(p.Payload)))
+    binary.LittleEndian.PutUint16(buf[2:4], p.ChannelID)
+    copy(buf[4:], p.Payload)
+    return buf
+}
+```
+
+**ATT MTU Exchange (wire/att/packet.go:134)**
+```go
+case *ExchangeMTURequest:
+    buf := make([]byte, 3)
+    buf[0] = OpExchangeMTURequest  // 0x02
+    binary.LittleEndian.PutUint16(buf[1:3], p.ClientRxMTU)
+    return buf, nil
+```
+
+**Wire Integration (wire/wire.go:413)**
+```go
+// Debug log: L2CAP packet received
+w.debugLogger.LogL2CAPPacket("rx", peerUUID, l2capPacket)
+
+// Route based on L2CAP channel
+switch l2capPacket.ChannelID {
+case l2cap.ChannelATT:
+    attPacket, err := att.DecodePacket(l2capPacket.Payload)
+    w.debugLogger.LogATTPacket("rx", peerUUID, attPacket, l2capPacket.Payload)
+    w.handleATTPacket(peerUUID, connection, attPacket)
+}
+```
+
+**Debug JSON Output (device-a-uuid/debug/att_packets.jsonl)**
+```json
+{
+  "timestamp": "2025-10-29T07:22:36.466245-07:00",
+  "direction": "tx",
+  "peer_uuid": "device-b-uuid",
+  "opcode": "0x02",
+  "opcode_name": "Exchange MTU Request",
+  "data": {"client_rx_mtu": 512},
+  "raw_hex": "020002"
+}
+```
