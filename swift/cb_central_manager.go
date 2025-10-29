@@ -24,6 +24,7 @@ type CBCentralManager struct {
 	stopChan            chan struct{}
 	pendingPeripherals  map[string]*CBPeripheral // UUID -> peripheral (for auto-reconnect and message routing)
 	autoReconnectActive bool                     // Whether auto-reconnect is enabled
+	discoveredDevices   map[string]bool          // Track devices already reported to delegate (per scan session)
 }
 
 func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedWire *wire.Wire) *CBCentralManager {
@@ -33,7 +34,8 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedW
 		uuid:                uuid,
 		wire:                sharedWire,
 		pendingPeripherals:  make(map[string]*CBPeripheral),
-		autoReconnectActive: true, // iOS auto-reconnect is always active
+		autoReconnectActive: true,              // iOS auto-reconnect is always active
+		discoveredDevices:   make(map[string]bool), // Initialize discovery tracking
 	}
 
 	// Set up disconnect callback
@@ -70,7 +72,23 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedW
 }
 
 func (c *CBCentralManager) ScanForPeripherals(withServices []string, options map[string]interface{}) {
+	// REALISTIC iOS BEHAVIOR: Reset discovered devices at the start of a new scan session
+	// In real iOS, starting a new scan session clears the "already reported" state
+	c.mu.Lock()
+	c.discoveredDevices = make(map[string]bool)
+	c.mu.Unlock()
+
 	stopChan := c.wire.StartDiscovery(func(deviceUUID string) {
+		// REALISTIC iOS BEHAVIOR: Check if we've already reported this device to delegate
+		// Real iOS CoreBluetooth only calls didDiscoverPeripheral once per device per scan session
+		c.mu.Lock()
+		if c.discoveredDevices[deviceUUID] {
+			c.mu.Unlock()
+			return // Already reported this peripheral
+		}
+		c.discoveredDevices[deviceUUID] = true
+		c.mu.Unlock()
+
 		// Read advertising data from the discovered device
 		advData, err := c.wire.ReadAdvertisingData(deviceUUID)
 		if err != nil {
@@ -160,6 +178,10 @@ func (c *CBCentralManager) StopScan() {
 		close(c.stopChan)
 		c.stopChan = nil
 	}
+
+	// REALISTIC iOS BEHAVIOR: Clear discovered devices when scan stops
+	// This ensures that if scanning is restarted, devices can be discovered again
+	c.discoveredDevices = make(map[string]bool)
 }
 
 // RetrievePeripheralsByIdentifiers retrieves known peripherals by their identifiers
