@@ -1,11 +1,13 @@
 package kotlin
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/wire"
+	"github.com/user/auraphone-blue/wire/gatt"
 )
 
 // CCCD UUID constant (Client Characteristic Configuration Descriptor)
@@ -172,8 +174,16 @@ func (g *BluetoothGatt) DiscoverServices() bool {
 		delay := g.wire.GetSimulator().ServiceDiscoveryDelay
 		time.Sleep(delay)
 
-		// Read GATT table from remote device
-		gattTable, err := g.wire.ReadGATTTable(g.remoteUUID)
+		// STEP 1: Use new binary protocol discovery to populate the discovery cache
+		err := g.wire.DiscoverServices(g.remoteUUID)
+		if err != nil {
+			// Fall back to old file-based discovery if binary discovery fails
+			g.discoverServicesLegacy()
+			return
+		}
+
+		// Get the discovered services from the discovery cache
+		discoveredServices, err := g.wire.GetDiscoveredServices(g.remoteUUID)
 		if err != nil {
 			if g.callback != nil {
 				g.callback.OnServicesDiscovered(g, 1) // GATT_FAILURE = 1
@@ -181,66 +191,68 @@ func (g *BluetoothGatt) DiscoverServices() bool {
 			return
 		}
 
-		// Convert wire.GATTService to BluetoothGattService
-		g.services = make([]*BluetoothGattService, 0)
-		for _, wireService := range gattTable.Services {
-			serviceType := SERVICE_TYPE_PRIMARY
-			if wireService.Type == "secondary" {
-				serviceType = SERVICE_TYPE_SECONDARY
+		// STEP 2: Discover characteristics for each service
+		for _, svc := range discoveredServices {
+			err := g.wire.DiscoverCharacteristics(g.remoteUUID, svc.UUID)
+			if err != nil {
+				// Log but continue with other services
+				continue
 			}
+		}
 
+		// STEP 2.5: Discover descriptors for each characteristic
+		// This is necessary to populate the discovery cache with CCCDs and other descriptors
+		for _, svc := range discoveredServices {
+			chars, err := g.wire.GetDiscoveredCharacteristics(g.remoteUUID, svc.StartHandle)
+			if err == nil {
+				for _, char := range chars {
+					// Discover descriptors for this characteristic
+					// Ignore errors - not all characteristics have descriptors
+					_ = g.wire.DiscoverDescriptors(g.remoteUUID, char.ValueHandle)
+				}
+			}
+		}
+
+		// STEP 3: Convert gatt.DiscoveredService to BluetoothGattService
+		g.services = make([]*BluetoothGattService, 0)
+		for _, svc := range discoveredServices {
 			service := &BluetoothGattService{
-				UUID:            wireService.UUID,
-				Type:            serviceType,
+				UUID:            uuidBytesToString(svc.UUID),
+				Type:            SERVICE_TYPE_PRIMARY, // Assuming primary for now
 				Characteristics: make([]*BluetoothGattCharacteristic, 0),
 			}
 
-			// Convert characteristics
-			for _, wireChar := range wireService.Characteristics {
-				// Convert property strings to bitmask
-				properties := 0
-				hasNotify := false
-				hasIndicate := false
-				for _, prop := range wireChar.Properties {
-					switch prop {
-					case "read":
-						properties |= PROPERTY_READ
-					case "write":
-						properties |= PROPERTY_WRITE
-					case "write_no_response":
-						properties |= PROPERTY_WRITE_NO_RESPONSE
-					case "notify":
-						properties |= PROPERTY_NOTIFY
-						hasNotify = true
-					case "indicate":
-						properties |= PROPERTY_INDICATE
-						hasIndicate = true
+			// Get characteristics for this service
+			chars, err := g.wire.GetDiscoveredCharacteristics(g.remoteUUID, svc.StartHandle)
+			if err == nil {
+				for _, char := range chars {
+					// Convert gatt property bitmask to Android property bitmask
+					properties := gattPropertiesToAndroid(char.Properties)
+
+					androidChar := &BluetoothGattCharacteristic{
+						UUID:        uuidBytesToString(char.UUID),
+						Properties:  properties,
+						Service:     service,
+						Value:       nil,
+						WriteType:   WRITE_TYPE_DEFAULT, // Default to withResponse
+						Descriptors: make([]*BluetoothGattDescriptor, 0),
 					}
-				}
 
-				char := &BluetoothGattCharacteristic{
-					UUID:        wireChar.UUID,
-					Properties:  properties,
-					Service:     service,
-					Value:       nil,
-					WriteType:   WRITE_TYPE_DEFAULT, // Default to withResponse
-					Descriptors: make([]*BluetoothGattDescriptor, 0),
-				}
-
-				// CRITICAL: If characteristic has notify or indicate properties,
-				// automatically add CCCD descriptor (0x2902)
-				// This matches real BLE - every notifiable characteristic has a CCCD
-				if hasNotify || hasIndicate {
-					cccdDescriptor := &BluetoothGattDescriptor{
-						UUID:           CCCD_UUID,
-						Value:          []byte{0x00, 0x00}, // Disabled by default
-						Permissions:    PERMISSION_READ | PERMISSION_WRITE,
-						Characteristic: char,
+					// CRITICAL: If characteristic has notify or indicate properties,
+					// automatically add CCCD descriptor (0x2902)
+					// This matches real BLE - every notifiable characteristic has a CCCD
+					if char.Properties&(gatt.PropNotify|gatt.PropIndicate) != 0 {
+						cccdDescriptor := &BluetoothGattDescriptor{
+							UUID:           CCCD_UUID,
+							Value:          []byte{0x00, 0x00}, // Disabled by default
+							Permissions:    PERMISSION_READ | PERMISSION_WRITE,
+							Characteristic: androidChar,
+						}
+						androidChar.Descriptors = append(androidChar.Descriptors, cccdDescriptor)
 					}
-					char.Descriptors = append(char.Descriptors, cccdDescriptor)
-				}
 
-				service.Characteristics = append(service.Characteristics, char)
+					service.Characteristics = append(service.Characteristics, androidChar)
+				}
 			}
 
 			g.services = append(g.services, service)
@@ -556,5 +568,126 @@ func (g *BluetoothGatt) attemptReconnect() {
 	// Success! Notify connected
 	if g.callback != nil {
 		g.callback.OnConnectionStateChange(g, 0, STATE_CONNECTED)
+	}
+}
+
+// uuidBytesToString converts UUID bytes to string format
+func uuidBytesToString(uuidBytes []byte) string {
+	if len(uuidBytes) == 2 {
+		// 16-bit UUID - convert to full UUID string
+		return fmt.Sprintf("%04x", uint16(uuidBytes[0])|(uint16(uuidBytes[1])<<8))
+	}
+	if len(uuidBytes) == 16 {
+		// 128-bit UUID
+		return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			uuidBytes[0], uuidBytes[1], uuidBytes[2], uuidBytes[3],
+			uuidBytes[4], uuidBytes[5],
+			uuidBytes[6], uuidBytes[7],
+			uuidBytes[8], uuidBytes[9],
+			uuidBytes[10], uuidBytes[11], uuidBytes[12], uuidBytes[13], uuidBytes[14], uuidBytes[15])
+	}
+	// Default: return as string
+	return string(uuidBytes)
+}
+
+// gattPropertiesToAndroid converts wire/gatt property bitmask to Android property bitmask
+func gattPropertiesToAndroid(gattProps uint8) int {
+	var androidProps int
+	if gattProps&gatt.PropRead != 0 {
+		androidProps |= PROPERTY_READ
+	}
+	if gattProps&gatt.PropWrite != 0 {
+		androidProps |= PROPERTY_WRITE
+	}
+	if gattProps&gatt.PropWriteWithoutResponse != 0 {
+		androidProps |= PROPERTY_WRITE_NO_RESPONSE
+	}
+	if gattProps&gatt.PropNotify != 0 {
+		androidProps |= PROPERTY_NOTIFY
+	}
+	if gattProps&gatt.PropIndicate != 0 {
+		androidProps |= PROPERTY_INDICATE
+	}
+	return androidProps
+}
+
+// discoverServicesLegacy uses the old file-based discovery mechanism as fallback
+func (g *BluetoothGatt) discoverServicesLegacy() {
+	// Read GATT table from remote device (legacy file-based)
+	gattTable, err := g.wire.ReadGATTTable(g.remoteUUID)
+	if err != nil {
+		if g.callback != nil {
+			g.callback.OnServicesDiscovered(g, 1) // GATT_FAILURE = 1
+		}
+		return
+	}
+
+	// Convert wire.GATTService to BluetoothGattService
+	g.services = make([]*BluetoothGattService, 0)
+	for _, wireService := range gattTable.Services {
+		serviceType := SERVICE_TYPE_PRIMARY
+		if wireService.Type == "secondary" {
+			serviceType = SERVICE_TYPE_SECONDARY
+		}
+
+		service := &BluetoothGattService{
+			UUID:            wireService.UUID,
+			Type:            serviceType,
+			Characteristics: make([]*BluetoothGattCharacteristic, 0),
+		}
+
+		// Convert characteristics
+		for _, wireChar := range wireService.Characteristics {
+			// Convert property strings to bitmask
+			properties := 0
+			hasNotify := false
+			hasIndicate := false
+			for _, prop := range wireChar.Properties {
+				switch prop {
+				case "read":
+					properties |= PROPERTY_READ
+				case "write":
+					properties |= PROPERTY_WRITE
+				case "write_no_response":
+					properties |= PROPERTY_WRITE_NO_RESPONSE
+				case "notify":
+					properties |= PROPERTY_NOTIFY
+					hasNotify = true
+				case "indicate":
+					properties |= PROPERTY_INDICATE
+					hasIndicate = true
+				}
+			}
+
+			char := &BluetoothGattCharacteristic{
+				UUID:        wireChar.UUID,
+				Properties:  properties,
+				Service:     service,
+				Value:       nil,
+				WriteType:   WRITE_TYPE_DEFAULT, // Default to withResponse
+				Descriptors: make([]*BluetoothGattDescriptor, 0),
+			}
+
+			// CRITICAL: If characteristic has notify or indicate properties,
+			// automatically add CCCD descriptor (0x2902)
+			// This matches real BLE - every notifiable characteristic has a CCCD
+			if hasNotify || hasIndicate {
+				cccdDescriptor := &BluetoothGattDescriptor{
+					UUID:           CCCD_UUID,
+					Value:          []byte{0x00, 0x00}, // Disabled by default
+					Permissions:    PERMISSION_READ | PERMISSION_WRITE,
+					Characteristic: char,
+				}
+				char.Descriptors = append(char.Descriptors, cccdDescriptor)
+			}
+
+			service.Characteristics = append(service.Characteristics, char)
+		}
+
+		g.services = append(g.services, service)
+	}
+
+	if g.callback != nil {
+		g.callback.OnServicesDiscovered(g, 0) // GATT_SUCCESS = 0
 	}
 }

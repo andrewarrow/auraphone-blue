@@ -6,6 +6,7 @@ import (
 
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/wire"
+	"github.com/user/auraphone-blue/wire/gatt"
 )
 
 // AdvertiseCallback matches Android's AdvertiseCallback interface
@@ -153,6 +154,11 @@ func (a *BluetoothLeAdvertiser) StartAdvertising(
 
 	// Write GATT table if GATT server is linked
 	if a.gattServer != nil {
+		// Build and set AttributeDatabase (modern binary protocol)
+		db := a.gattServer.buildAttributeDatabase()
+		a.wire.SetAttributeDatabase(db)
+
+		// Also write legacy GATT table for backward compatibility
 		gattTable := a.gattServer.buildGATTTable()
 		if err := a.wire.WriteGATTTable(gattTable); err != nil {
 			logger.Trace(fmt.Sprintf("%s Android", a.uuid[:8]), "⚠️  Failed to write GATT table: %v", err)
@@ -281,7 +287,11 @@ func NewBluetoothGattServer(uuid string, callback BluetoothGattServerCallback, d
 func (s *BluetoothGattServer) AddService(service *BluetoothGattService) bool {
 	s.services = append(s.services, service)
 
-	// Write GATT table to wire layer
+	// Build and set AttributeDatabase (modern binary protocol)
+	db := s.buildAttributeDatabase()
+	s.wire.SetAttributeDatabase(db)
+
+	// Also write legacy GATT table for backward compatibility
 	gattTable := s.buildGATTTable()
 	if err := s.wire.WriteGATTTable(gattTable); err != nil {
 		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Failed to add service: %v", err)
@@ -420,6 +430,102 @@ func (s *BluetoothGattServer) propertiesToStrings(props int) []string {
 		result = append(result, "indicate")
 	}
 	return result
+}
+
+// buildAttributeDatabase builds a wire/gatt AttributeDatabase from the services (modern binary protocol)
+func (s *BluetoothGattServer) buildAttributeDatabase() *gatt.AttributeDatabase {
+	var gattServices []gatt.Service
+
+	for _, service := range s.services {
+		gattService := gatt.Service{
+			UUID:            s.parseUUID(service.UUID),
+			Primary:         service.Type == SERVICE_TYPE_PRIMARY,
+			Characteristics: []gatt.Characteristic{},
+		}
+
+		for _, char := range service.Characteristics {
+			gattChar := gatt.Characteristic{
+				UUID:        s.parseUUID(char.UUID),
+				Properties:  s.propertiesToGATTBitmask(char.Properties),
+				Value:       char.Value,
+				Descriptors: []gatt.Descriptor{}, // Initialize descriptors slice
+			}
+
+			// CRITICAL: Real BLE requires CCCD descriptor for any characteristic with notify/indicate
+			// This matches the BLE Core Specification requirement
+			if char.Properties&(PROPERTY_NOTIFY|PROPERTY_INDICATE) != 0 {
+				// Add CCCD descriptor (Client Characteristic Configuration Descriptor)
+				// UUID 0x2902, default value 0x0000 (notifications/indications disabled)
+				cccdDescriptor := gatt.Descriptor{
+					UUID:  []byte{0x02, 0x29}, // CCCD UUID (0x2902) in little-endian
+					Value: []byte{0x00, 0x00}, // Disabled by default
+				}
+				gattChar.Descriptors = append(gattChar.Descriptors, cccdDescriptor)
+			}
+
+			gattService.Characteristics = append(gattService.Characteristics, gattChar)
+		}
+
+		gattServices = append(gattServices, gattService)
+	}
+
+	db, _ := gatt.BuildAttributeDatabase(gattServices)
+	return db
+}
+
+// propertiesToGATTBitmask converts Android property constants to wire/gatt properties bitmask
+func (s *BluetoothGattServer) propertiesToGATTBitmask(props int) uint8 {
+	var result uint8
+	if props&PROPERTY_READ != 0 {
+		result |= gatt.PropRead
+	}
+	if props&PROPERTY_WRITE != 0 {
+		result |= gatt.PropWrite
+	}
+	if props&PROPERTY_WRITE_NO_RESPONSE != 0 {
+		result |= gatt.PropWriteWithoutResponse
+	}
+	if props&PROPERTY_NOTIFY != 0 {
+		result |= gatt.PropNotify
+	}
+	if props&PROPERTY_INDICATE != 0 {
+		result |= gatt.PropIndicate
+	}
+	return result
+}
+
+// parseUUID converts a UUID string to bytes (matching swift/ implementation)
+// Handles both 16-bit shorthand (e.g., "180A") and full 128-bit UUIDs
+func (s *BluetoothGattServer) parseUUID(uuidStr string) []byte {
+	// Try to parse as 16-bit UUID first (4 hex chars)
+	if len(uuidStr) == 4 {
+		var uuid16 uint16
+		fmt.Sscanf(uuidStr, "%04x", &uuid16)
+		// Return in little-endian format as per BLE spec
+		return []byte{byte(uuid16), byte(uuid16 >> 8)}
+	}
+
+	// For standard 128-bit UUIDs (36 chars with dashes: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX)
+	if len(uuidStr) == 36 {
+		// Simplified: just take first 16 characters directly (matches swift behavior)
+		uuid := make([]byte, 16)
+		for i := 0; i < 16 && i < len(uuidStr); i++ {
+			uuid[i] = uuidStr[i]
+		}
+		return uuid
+	}
+
+	// For test/custom UUIDs, create a deterministic 16-byte UUID from the string
+	// by copying string bytes directly into array (matches swift behavior)
+	uuid := make([]byte, 16)
+	for i := 0; i < len(uuidStr) && i < 16; i++ {
+		uuid[i] = uuidStr[i]
+	}
+	// Fill remaining bytes with zero
+	for i := len(uuidStr); i < 16; i++ {
+		uuid[i] = 0
+	}
+	return uuid
 }
 
 // handleCharacteristicMessage processes incoming GATT messages
