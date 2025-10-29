@@ -26,6 +26,7 @@ type CBCentralManager struct {
 	autoReconnectActive bool                     // Whether auto-reconnect is enabled
 	discoveredDevices   map[string]bool          // Track devices already reported to delegate (per scan session)
 	connectingDevices   map[string]bool          // Track devices with connection in progress (prevents duplicate Connect calls)
+	lifecycleLog        *CBConnectionLifecycleLogger // Debug logging for connection lifecycle
 }
 
 func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedWire *wire.Wire) *CBCentralManager {
@@ -38,6 +39,7 @@ func NewCBCentralManager(delegate CBCentralManagerDelegate, uuid string, sharedW
 		autoReconnectActive: true,                  // iOS auto-reconnect is always active
 		discoveredDevices:   make(map[string]bool), // Initialize discovery tracking
 		connectingDevices:   make(map[string]bool), // Initialize connection tracking
+		lifecycleLog:        NewCBConnectionLifecycleLogger(uuid, true), // Enable connection lifecycle logging
 	}
 
 	// Set up disconnect callback
@@ -205,9 +207,9 @@ func (c *CBCentralManager) RetrievePeripheralsByIdentifiers(identifiers []string
 			}
 
 			peripheral := &CBPeripheral{
-				UUID: uuid,
-				Name: deviceName,
-				wire: c.wire,
+				UUID:       uuid,
+				Name:       deviceName,
+				wire:       c.wire,
 				remoteUUID: uuid,
 			}
 			peripherals = append(peripherals, peripheral)
@@ -230,15 +232,30 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 	// Role Policy: Apps should call ShouldInitiateConnection() before calling Connect()
 	// to avoid simultaneous connection attempts with dual-role devices.
 
-	// REALISTIC iOS BEHAVIOR: Check if connection in progress
-	// Real iOS ignores Connect() calls when a connection attempt is already ongoing
+	// REALISTIC iOS BEHAVIOR: Check if connection in progress or already connected
+	// Real iOS ignores Connect() calls when a connection attempt is already ongoing or connected
 	c.mu.Lock()
-	if c.connectingDevices[peripheral.UUID] {
+	alreadyConnecting := c.connectingDevices[peripheral.UUID]
+	alreadyConnected := c.wire.IsConnected(peripheral.UUID)
+	connectingCount := len(c.connectingDevices)
+	pendingCount := len(c.pendingPeripherals)
+
+	// Log the Connect() call with current state
+	c.lifecycleLog.LogConnectCalled(peripheral.UUID, alreadyConnecting, alreadyConnected, connectingCount, pendingCount)
+
+	if alreadyConnecting || alreadyConnected {
 		c.mu.Unlock()
-		return // Already connecting, do nothing (realistic iOS behavior)
+		// Log why we're blocking this connection attempt
+		reason := "already_connecting"
+		if alreadyConnected {
+			reason = "already_connected"
+		}
+		c.lifecycleLog.LogConnectBlocked(peripheral.UUID, reason)
+		return // Already connecting or connected, do nothing (realistic iOS behavior)
 	}
 	// Mark as connecting BEFORE spawning goroutine to prevent race
 	c.connectingDevices[peripheral.UUID] = true
+	c.lifecycleLog.LogConnectStarted(peripheral.UUID)
 	c.mu.Unlock()
 
 	// Set up the peripheral's wire connection
@@ -258,8 +275,11 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 		c.mu.Lock()
 		delete(c.connectingDevices, peripheral.UUID)
 		c.mu.Unlock()
+		c.lifecycleLog.LogConnectingFlagCleared(peripheral.UUID)
+
 		if err != nil {
 			// Connection failed - pass copy to delegate
+			c.lifecycleLog.LogConnectCompleted(peripheral.UUID, false)
 			peripheralCopy := *peripheral
 			c.Delegate.DidFailToConnectPeripheral(*c, peripheralCopy, err)
 
@@ -275,6 +295,7 @@ func (c *CBCentralManager) Connect(peripheral *CBPeripheral, options map[string]
 		}
 
 		// Connection succeeded - pass copy to delegate
+		c.lifecycleLog.LogConnectCompleted(peripheral.UUID, true)
 		peripheralCopy := *peripheral
 		c.Delegate.DidConnectPeripheral(*c, peripheralCopy)
 	}()
