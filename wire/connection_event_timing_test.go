@@ -14,14 +14,15 @@ import (
 // This ensures the discovery cache is populated before trying to send GATT messages
 func setupTestServiceAndDiscovery(t *testing.T, central, peripheral *Wire, peripheralUUID string) {
 	// Set up a simple GATT service on peripheral with a readable characteristic
-	// Note: "0001" as string converts to []byte{0x00, 0x01} via stringToUUIDBytes
+	// Use gatt.UUID16() helper to create UUIDs in correct little-endian format
+	// gatt.UUID16(0x0001) creates []byte{0x01, 0x00} which matches string "0001" after conversion
 	services := []gatt.Service{
 		{
-			UUID:    []byte{0x00, 0x01}, // service UUID matching string "0001"
+			UUID:    gatt.UUID16(0x0001), // service UUID 0x0001 in little-endian
 			Primary: true,
 			Characteristics: []gatt.Characteristic{
 				{
-					UUID:       []byte{0x00, 0x01}, // char UUID matching string "0001"
+					UUID:       gatt.UUID16(0x0001), // char UUID 0x0001 in little-endian
 					Properties: gatt.PropRead | gatt.PropWrite,
 					Value:      []byte("test-value"),
 				},
@@ -38,7 +39,7 @@ func setupTestServiceAndDiscovery(t *testing.T, central, peripheral *Wire, perip
 	}
 
 	// Discover characteristics
-	if err := central.DiscoverCharacteristics(peripheralUUID, []byte{0x00, 0x01}); err != nil {
+	if err := central.DiscoverCharacteristics(peripheralUUID, gatt.UUID16(0x0001)); err != nil {
 		t.Fatalf("Failed to discover characteristics: %v", err)
 	}
 }

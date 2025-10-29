@@ -120,6 +120,19 @@ func (p *CBPeripheral) DiscoverServices(serviceUUIDs []string) {
 			}
 		}
 
+		// STEP 2.5: Discover descriptors for each characteristic
+		// This is necessary to populate the discovery cache with CCCDs and other descriptors
+		for _, svc := range discoveredServices {
+			chars, err := p.wire.GetDiscoveredCharacteristics(p.remoteUUID, svc.StartHandle)
+			if err == nil {
+				for _, char := range chars {
+					// Discover descriptors for this characteristic
+					// Ignore errors - not all characteristics have descriptors
+					_ = p.wire.DiscoverDescriptors(p.remoteUUID, char.ValueHandle)
+				}
+			}
+		}
+
 		// STEP 3: Convert gatt.DiscoveredService to CBService
 		p.Services = make([]*CBService, 0)
 		for _, svc := range discoveredServices {

@@ -215,8 +215,8 @@ func TestFullDiscoveryFlow(t *testing.T) {
 	err = central.SendGATTMessage("peripheral-uuid", &GATTMessage{
 		Type:               "gatt_request",
 		Operation:          "read",
-		ServiceUUID:        "0018",
-		CharacteristicUUID: "002A",
+		ServiceUUID:        "1800",
+		CharacteristicUUID: "2A00",
 	})
 	if err != nil {
 		t.Fatalf("Failed to send read request: %v", err)

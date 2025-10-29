@@ -193,7 +193,8 @@ func (w *Wire) DiscoverDescriptors(peerUUID string, charHandle uint16) error {
 
 	// Send Find Information Request for descriptors
 	tracker := connection.requestTracker.(*att.RequestTracker)
-	responseC, err := tracker.StartRequest(att.OpFindInformationRequest, startHandle, 0)
+	// Store the characteristic value handle as context so we can associate descriptors with it
+	responseC, err := tracker.StartRequest(att.OpFindInformationRequest, charHandle, 0)
 	if err != nil {
 		return fmt.Errorf("failed to start descriptor discovery: %w", err)
 	}

@@ -443,6 +443,15 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 		logger.Debug(shortHash(w.hardwareUUID)+" Wire",
 			"📥 Find Information Response from %s", shortHash(peerUUID))
 
+		// Get the characteristic handle from the pending request context
+		var charHandle uint16 = 0x0001 // Default fallback
+		if connection.requestTracker != nil {
+			tracker := connection.requestTracker.(*att.RequestTracker)
+			if pending := tracker.GetPendingRequest(); pending != nil {
+				charHandle = pending.Handle // This is the characteristic value handle
+			}
+		}
+
 		// Parse the response
 		responseData := make([]byte, 1+len(p.Data))
 		responseData[0] = p.Format
@@ -453,15 +462,13 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 			logger.Warn(shortHash(w.hardwareUUID)+" Wire",
 				"⚠️  Failed to parse descriptor discovery response: %v", err)
 		} else {
-			// Store in discovery cache
+			// Store in discovery cache with correct characteristic handle
 			cache := connection.discoveryCache.(*gatt.DiscoveryCache)
-			// TODO: Track which characteristic these descriptors belong to
-			// For now, we just store them
 			for _, desc := range descriptors {
-				cache.AddDescriptor(0x0001, desc) // Placeholder handle
+				cache.AddDescriptor(charHandle, desc)
 			}
 			logger.Debug(shortHash(w.hardwareUUID)+" Wire",
-				"✅ Stored %d descriptors in discovery cache", len(descriptors))
+				"✅ Stored %d descriptors for characteristic 0x%04X in discovery cache", len(descriptors), charHandle)
 		}
 
 		// Complete the pending request

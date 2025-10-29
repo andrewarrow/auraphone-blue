@@ -48,6 +48,13 @@ func (rt *RequestTracker) SetTimeoutCallback(cb func(opcode byte, handle uint16)
 	rt.timeoutCallback = cb
 }
 
+// GetPendingRequest returns the current pending request (for accessing context)
+func (rt *RequestTracker) GetPendingRequest() *PendingRequest {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.pending
+}
+
 // StartRequest registers a new ATT request and returns a response channel.
 // Returns error if another request is already pending (ATT allows only one at a time).
 func (rt *RequestTracker) StartRequest(opcode byte, handle uint16, timeout time.Duration) (<-chan Response, error) {

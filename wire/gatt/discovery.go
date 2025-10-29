@@ -93,6 +93,21 @@ func (dc *DiscoveryCache) GetCharacteristicHandle(uuid []byte) (uint16, error) {
 	return handle, nil
 }
 
+// GetDescriptorHandle returns the handle for a descriptor UUID
+// Searches all descriptors across all characteristics
+func (dc *DiscoveryCache) GetDescriptorHandle(uuid []byte) (uint16, error) {
+	uuidStr := uuidToString(uuid)
+	// Search through all descriptors
+	for _, descriptors := range dc.Descriptors {
+		for _, desc := range descriptors {
+			if uuidToString(desc.UUID) == uuidStr {
+				return desc.Handle, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("gatt: descriptor %s not found", uuidStr)
+}
+
 // HasService checks if a service UUID has been discovered
 func (dc *DiscoveryCache) HasService(uuid []byte) bool {
 	for _, service := range dc.Services {

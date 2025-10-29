@@ -12,14 +12,14 @@ import (
 // setupFragmentedTestService sets up a test service for fragmented write tests
 func setupFragmentedTestService(t *testing.T, central, peripheral *Wire, peripheralUUID string) {
 	// Set up a simple GATT service on peripheral with a writable characteristic
-	// Note: "00EC" as string converts to []byte{0x00, 0xEC} via stringToUUIDBytes
+	// Note: "00EC" as string converts to []byte{0xEC, 0x00} via stringToUUIDBytes
 	services := []gatt.Service{
 		{
-			UUID:    []byte{0x00, 0xEC}, // service UUID matching string "00EC"
+			UUID:    []byte{0xEC, 0x00}, // service UUID matching string "00EC"
 			Primary: true,
 			Characteristics: []gatt.Characteristic{
 				{
-					UUID:       []byte{0x00, 0xEC}, // char UUID matching string "00EC"
+					UUID:       []byte{0xEC, 0x00}, // char UUID matching string "00EC"
 					Properties: gatt.PropWrite,
 					Value:      []byte{},
 				},
@@ -36,7 +36,7 @@ func setupFragmentedTestService(t *testing.T, central, peripheral *Wire, periphe
 	}
 
 	// Discover characteristics
-	if err := central.DiscoverCharacteristics(peripheralUUID, []byte{0x00, 0xEC}); err != nil {
+	if err := central.DiscoverCharacteristics(peripheralUUID, []byte{0xEC, 0x00}); err != nil {
 		t.Fatalf("Failed to discover characteristics: %v", err)
 	}
 }
