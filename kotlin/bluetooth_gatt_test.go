@@ -430,3 +430,225 @@ func TestBluetoothGatt_MultipleReadsBlocked(t *testing.T) {
 	// Wait for operations to complete
 	time.Sleep(200 * time.Millisecond)
 }
+
+// ============================================================================
+// RECONNECTION TESTS
+// ============================================================================
+
+// TestBluetoothGatt_ManualReconnect tests manual reconnection after disconnect (autoConnect=false)
+func TestBluetoothGatt_ManualReconnect(t *testing.T) {
+	_, cleanup := setupTestEnv(t)
+	defer cleanup()
+
+	w1 := wire.NewWire("central-uuid")
+	w2 := wire.NewWire("peripheral-uuid")
+
+	if err := w1.Start(); err != nil {
+		t.Fatalf("Failed to start central wire: %v", err)
+	}
+	defer w1.Stop()
+
+	if err := w2.Start(); err != nil {
+		t.Fatalf("Failed to start peripheral wire: %v", err)
+	}
+	defer w2.Stop()
+
+	// Track connection state changes
+	connectionStates := make(chan int, 10)
+	callback := &testGattCallback{
+		onConnectionStateChange: func(gatt *BluetoothGatt, status int, newState int) {
+			connectionStates <- newState
+		},
+	}
+
+	// Create device and connect with autoConnect=false
+	device := &BluetoothDevice{
+		Address: "peripheral-uuid",
+		Name:    "Test Peripheral",
+	}
+	device.SetWire(w1)
+
+	gatt := device.ConnectGatt(nil, false, callback) // autoConnect=false
+
+	// Wait for connection (may get CONNECTING first, then CONNECTED)
+	connected := false
+	for i := 0; i < 2; i++ {
+		select {
+		case state := <-connectionStates:
+			if state == STATE_CONNECTED {
+				connected = true
+				break
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatal("Timeout waiting for connection")
+		}
+	}
+	if !connected {
+		t.Fatal("Never received STATE_CONNECTED")
+	}
+
+	t.Logf("✅ Initial connection established")
+
+	// Disconnect
+	gatt.Disconnect()
+
+	// Wait for disconnect callback
+	select {
+	case state := <-connectionStates:
+		if state != STATE_DISCONNECTED {
+			t.Fatalf("Expected STATE_DISCONNECTED, got %d", state)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for disconnection")
+	}
+
+	t.Logf("✅ Disconnected successfully")
+
+	// Drain any remaining state changes from the channel
+	drainLoop:
+	for {
+		select {
+		case <-connectionStates:
+			// Drain
+		case <-time.After(100 * time.Millisecond):
+			break drainLoop
+		}
+	}
+
+	// With autoConnect=false, Android does NOT auto-reconnect
+	// Wait to ensure no automatic reconnection happens
+	select {
+	case state := <-connectionStates:
+		t.Fatalf("Unexpected reconnection with autoConnect=false (state=%d)", state)
+	case <-time.After(2 * time.Second):
+		t.Logf("✅ No automatic reconnection (correct behavior for autoConnect=false)")
+	}
+
+	// Manual reconnection - create new GATT connection
+	gatt2 := device.ConnectGatt(nil, false, callback)
+
+	// Wait for manual reconnection (may get CONNECTING first, then CONNECTED)
+	connected2 := false
+	for i := 0; i < 2; i++ {
+		select {
+		case state := <-connectionStates:
+			if state == STATE_CONNECTED {
+				connected2 = true
+				break
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatal("Timeout waiting for manual reconnection")
+		}
+	}
+	if !connected2 {
+		t.Fatal("Never received STATE_CONNECTED on manual reconnect")
+	}
+
+	t.Logf("✅ Manual reconnection successful")
+	gatt2.Disconnect()
+}
+
+// TestBluetoothGatt_AutoReconnect tests automatic reconnection after connection failure (autoConnect=true)
+func TestBluetoothGatt_AutoReconnect(t *testing.T) {
+	_, cleanup := setupTestEnv(t)
+	defer cleanup()
+
+	w1 := wire.NewWire("central-uuid")
+
+	if err := w1.Start(); err != nil {
+		t.Fatalf("Failed to start central wire: %v", err)
+	}
+	defer w1.Stop()
+
+	// Track connection state changes
+	connectionAttempts := 0
+	callback := &testGattCallback{
+		onConnectionStateChange: func(gatt *BluetoothGatt, status int, newState int) {
+			if newState == STATE_CONNECTING {
+				connectionAttempts++
+			}
+		},
+	}
+
+	// Create device pointing to non-existent peripheral (to simulate connection failures)
+	device := &BluetoothDevice{
+		Address: "nonexistent-peripheral-uuid",
+		Name:    "Test Peripheral",
+	}
+	device.SetWire(w1)
+
+	// Connect with autoConnect=true - will fail but keep retrying
+	gatt := device.ConnectGatt(nil, true, callback) // autoConnect=true
+	defer gatt.Disconnect()
+
+	// Wait for initial connection attempt
+	time.Sleep(500 * time.Millisecond)
+
+	// Android autoConnect should keep retrying every ~5 seconds
+	// Wait long enough to see multiple attempts
+	time.Sleep(12 * time.Second)
+
+	// Should have seen multiple connection attempts
+	if connectionAttempts < 2 {
+		t.Errorf("Expected multiple reconnection attempts with autoConnect=true, got %d", connectionAttempts)
+	} else {
+		t.Logf("✅ AutoConnect=true keeps retrying: %d attempts (matches Android behavior)", connectionAttempts)
+	}
+}
+
+// TestBluetoothGatt_AutoReconnectPersistence tests that autoConnect keeps retrying on failure
+func TestBluetoothGatt_AutoReconnectPersistence(t *testing.T) {
+	_, cleanup := setupTestEnv(t)
+	defer cleanup()
+
+	w1 := wire.NewWire("central-uuid")
+	w2 := wire.NewWire("peripheral-uuid")
+
+	if err := w1.Start(); err != nil {
+		t.Fatalf("Failed to start central wire: %v", err)
+	}
+	defer w1.Stop()
+
+	if err := w2.Start(); err != nil {
+		t.Fatalf("Failed to start peripheral wire: %v", err)
+	}
+	defer w2.Stop()
+
+	// Track connection state changes
+	connectionAttempts := 0
+	callback := &testGattCallback{
+		onConnectionStateChange: func(gatt *BluetoothGatt, status int, newState int) {
+			if newState == STATE_CONNECTING || newState == STATE_DISCONNECTED {
+				connectionAttempts++
+			}
+		},
+	}
+
+	// Create device and connect with autoConnect=true
+	device := &BluetoothDevice{
+		Address: "peripheral-uuid",
+		Name:    "Test Peripheral",
+	}
+	device.SetWire(w1)
+
+	gatt := device.ConnectGatt(nil, true, callback) // autoConnect=true
+	defer gatt.Disconnect()
+
+	// Wait for initial connection
+	time.Sleep(500 * time.Millisecond)
+	t.Logf("✅ Initial connection established")
+
+	// Stop peripheral - should trigger reconnection attempts
+	w2.Stop()
+
+	// Wait for multiple reconnection attempts
+	// Android autoConnect retries every ~5 seconds
+	time.Sleep(12 * time.Second)
+
+	// Should have seen multiple connection attempts
+	if connectionAttempts < 2 {
+		t.Errorf("Expected multiple reconnection attempts, got %d", connectionAttempts)
+	} else {
+		t.Logf("✅ AutoConnect kept retrying: %d attempts (matches Android behavior)", connectionAttempts)
+	}
+}

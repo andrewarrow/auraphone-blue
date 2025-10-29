@@ -195,3 +195,242 @@ func TestBluetoothAdapter_GetRemoteDevice_MultipleCallsSameDevice(t *testing.T) 
 	// This is expected behavior
 	t.Logf("✅ GetRemoteDevice returns device objects consistently")
 }
+
+// ============================================================================
+// SCANNING TESTS
+// ============================================================================
+
+// testScanCallback is a test implementation of ScanCallback
+type testScanCallback struct {
+	onScanResult func(callbackType int, result *ScanResult)
+}
+
+func (c *testScanCallback) OnScanResult(callbackType int, result *ScanResult) {
+	if c.onScanResult != nil {
+		c.onScanResult(callbackType, result)
+	}
+}
+
+// TestBluetoothLeScanner_StartStopScan tests basic scanning functionality
+func TestBluetoothLeScanner_StartStopScan(t *testing.T) {
+	_, cleanup := setupTestEnv(t)
+	defer cleanup()
+
+	w1 := wire.NewWire("scanner-uuid")
+	w2 := wire.NewWire("advertiser-uuid")
+
+	if err := w1.Start(); err != nil {
+		t.Fatalf("Failed to start scanner wire: %v", err)
+	}
+	defer w1.Stop()
+
+	if err := w2.Start(); err != nil {
+		t.Fatalf("Failed to start advertiser wire: %v", err)
+	}
+	defer w2.Stop()
+
+	// Write advertising data for device2
+	txPower := 0
+	advData := &wire.AdvertisingData{
+		DeviceName:       "Test Android Device",
+		ServiceUUIDs:     []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
+		ManufacturerData: []byte{0x01, 0x02, 0x03, 0x04},
+		TxPowerLevel:     &txPower,
+		IsConnectable:    true,
+	}
+	if err := w2.WriteAdvertisingData(advData); err != nil {
+		t.Fatalf("Failed to write advertising data: %v", err)
+	}
+
+	// Create scanner
+	adapter := NewBluetoothAdapter("scanner-uuid", w1)
+	scanner := adapter.GetBluetoothLeScanner()
+
+	// Track scan results
+	scanResults := make(chan *ScanResult, 10)
+	callback := &testScanCallback{
+		onScanResult: func(callbackType int, result *ScanResult) {
+			scanResults <- result
+		},
+	}
+
+	// Start scanning
+	scanner.StartScan(callback)
+	defer scanner.StopScan()
+
+	// Wait for scan result
+	select {
+	case result := <-scanResults:
+		if result.Device.Address != "advertiser-uuid" {
+			t.Errorf("Wrong device address: %s", result.Device.Address)
+		}
+		if result.Device.Name != "Test Android Device" {
+			t.Errorf("Wrong device name: %s", result.Device.Name)
+		}
+		if result.Rssi == 0 {
+			t.Error("RSSI should not be 0")
+		}
+		if result.ScanRecord == nil {
+			t.Fatal("ScanRecord is nil")
+		}
+		if result.ScanRecord.DeviceName != "Test Android Device" {
+			t.Errorf("Wrong scan record device name: %s", result.ScanRecord.DeviceName)
+		}
+		if len(result.ScanRecord.ServiceUUIDs) != 1 {
+			t.Errorf("Wrong number of service UUIDs: %d", len(result.ScanRecord.ServiceUUIDs))
+		}
+		if len(result.ScanRecord.ManufacturerData) != 1 {
+			t.Errorf("Wrong manufacturer data size: %d", len(result.ScanRecord.ManufacturerData))
+		}
+		t.Logf("✅ Scan discovered device: %s (RSSI: %d dBm)", result.Device.Name, result.Rssi)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for scan result")
+	}
+
+	// Stop scanning
+	scanner.StopScan()
+	t.Logf("✅ Scanner stopped successfully")
+}
+
+// TestBluetoothLeScanner_DiscoverMultipleDevices tests discovering multiple advertising devices
+func TestBluetoothLeScanner_DiscoverMultipleDevices(t *testing.T) {
+	_, cleanup := setupTestEnv(t)
+	defer cleanup()
+
+	w1 := wire.NewWire("scanner-uuid")
+	w2 := wire.NewWire("advertiser1-uuid")
+	w3 := wire.NewWire("advertiser2-uuid")
+
+	if err := w1.Start(); err != nil {
+		t.Fatalf("Failed to start scanner wire: %v", err)
+	}
+	defer w1.Stop()
+
+	if err := w2.Start(); err != nil {
+		t.Fatalf("Failed to start advertiser1 wire: %v", err)
+	}
+	defer w2.Stop()
+
+	if err := w3.Start(); err != nil {
+		t.Fatalf("Failed to start advertiser2 wire: %v", err)
+	}
+	defer w3.Stop()
+
+	// Write advertising data for both devices
+	advData1 := &wire.AdvertisingData{
+		DeviceName:    "Android Device 1",
+		ServiceUUIDs:  []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
+		IsConnectable: true,
+	}
+	if err := w2.WriteAdvertisingData(advData1); err != nil {
+		t.Fatalf("Failed to write advertising data for device1: %v", err)
+	}
+
+	advData2 := &wire.AdvertisingData{
+		DeviceName:    "Android Device 2",
+		ServiceUUIDs:  []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
+		IsConnectable: true,
+	}
+	if err := w3.WriteAdvertisingData(advData2); err != nil {
+		t.Fatalf("Failed to write advertising data for device2: %v", err)
+	}
+
+	// Create scanner
+	adapter := NewBluetoothAdapter("scanner-uuid", w1)
+	scanner := adapter.GetBluetoothLeScanner()
+
+	// Track discovered devices
+	discoveredDevices := make(map[string]*ScanResult)
+	callback := &testScanCallback{
+		onScanResult: func(callbackType int, result *ScanResult) {
+			discoveredDevices[result.Device.Address] = result
+		},
+	}
+
+	// Start scanning
+	scanner.StartScan(callback)
+	defer scanner.StopScan()
+
+	// Wait for both devices to be discovered
+	time.Sleep(2 * time.Second)
+
+	if len(discoveredDevices) < 2 {
+		t.Fatalf("Expected to discover 2 devices, got %d", len(discoveredDevices))
+	}
+
+	// Verify both devices were discovered
+	if _, ok := discoveredDevices["advertiser1-uuid"]; !ok {
+		t.Error("Device 1 not discovered")
+	}
+	if _, ok := discoveredDevices["advertiser2-uuid"]; !ok {
+		t.Error("Device 2 not discovered")
+	}
+
+	t.Logf("✅ Discovered %d devices successfully", len(discoveredDevices))
+}
+
+// TestBluetoothLeScanner_StopScanStopsDiscovery tests that StopScan actually stops discovery
+func TestBluetoothLeScanner_StopScanStopsDiscovery(t *testing.T) {
+	_, cleanup := setupTestEnv(t)
+	defer cleanup()
+
+	w1 := wire.NewWire("scanner-uuid")
+	w2 := wire.NewWire("advertiser-uuid")
+
+	if err := w1.Start(); err != nil {
+		t.Fatalf("Failed to start scanner wire: %v", err)
+	}
+	defer w1.Stop()
+
+	if err := w2.Start(); err != nil {
+		t.Fatalf("Failed to start advertiser wire: %v", err)
+	}
+	defer w2.Stop()
+
+	// Write advertising data
+	advData := &wire.AdvertisingData{
+		DeviceName:    "Test Device",
+		ServiceUUIDs:  []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
+		IsConnectable: true,
+	}
+	if err := w2.WriteAdvertisingData(advData); err != nil {
+		t.Fatalf("Failed to write advertising data: %v", err)
+	}
+
+	// Create scanner
+	adapter := NewBluetoothAdapter("scanner-uuid", w1)
+	scanner := adapter.GetBluetoothLeScanner()
+
+	// Track scan results
+	scanCount := 0
+	callback := &testScanCallback{
+		onScanResult: func(callbackType int, result *ScanResult) {
+			scanCount++
+		},
+	}
+
+	// Start scanning
+	scanner.StartScan(callback)
+
+	// Wait for initial discovery
+	time.Sleep(1500 * time.Millisecond)
+	initialCount := scanCount
+
+	if initialCount == 0 {
+		t.Fatal("No devices discovered during scan")
+	}
+
+	// Stop scanning
+	scanner.StopScan()
+
+	// Wait and verify no more results
+	time.Sleep(500 * time.Millisecond)
+	finalCount := scanCount
+
+	// Note: We might get 1-2 additional results due to timing, but not many more
+	if finalCount > initialCount+2 {
+		t.Errorf("Scanner continued discovering after StopScan (initial: %d, final: %d)", initialCount, finalCount)
+	}
+
+	t.Logf("✅ StopScan stopped discovery (initial: %d, final: %d)", initialCount, finalCount)
+}
