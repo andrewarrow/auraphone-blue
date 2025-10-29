@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/user/auraphone-blue/phone"
+	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
 )
 
@@ -436,8 +437,7 @@ func TestBluetoothGatt_MultipleReadsBlocked(t *testing.T) {
 
 // TestBluetoothGatt_ManualReconnect tests manual reconnection after disconnect (autoConnect=false)
 func TestBluetoothGatt_ManualReconnect(t *testing.T) {
-	_, cleanup := setupTestEnv(t)
-	defer cleanup()
+	util.SetRandom()
 
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")
@@ -549,8 +549,7 @@ func TestBluetoothGatt_ManualReconnect(t *testing.T) {
 
 // TestBluetoothGatt_AutoReconnect tests automatic reconnection after connection failure (autoConnect=true)
 func TestBluetoothGatt_AutoReconnect(t *testing.T) {
-	_, cleanup := setupTestEnv(t)
-	defer cleanup()
+	util.SetRandom()
 
 	w1 := wire.NewWire("central-uuid")
 
@@ -597,8 +596,7 @@ func TestBluetoothGatt_AutoReconnect(t *testing.T) {
 
 // TestBluetoothGatt_AutoReconnectPersistence tests that autoConnect keeps retrying on failure
 func TestBluetoothGatt_AutoReconnectPersistence(t *testing.T) {
-	_, cleanup := setupTestEnv(t)
-	defer cleanup()
+	util.SetRandom()
 
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")

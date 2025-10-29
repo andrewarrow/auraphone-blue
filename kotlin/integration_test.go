@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/user/auraphone-blue/phone"
+	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
 )
 
@@ -14,9 +15,7 @@ import (
 
 // TestEndToEnd_ScanConnectTransfer tests complete BLE flow: advertise → scan → connect → write → notify
 func TestEndToEnd_ScanConnectTransfer(t *testing.T) {
-	// Setup isolated test environment
-	_, cleanup := setupTestEnv(t)
-	defer cleanup()
+	util.SetRandom()
 
 	// Setup two devices: one central (scanner), one peripheral (advertiser)
 	// Use UUIDs where central < peripheral so central will initiate connection
@@ -194,9 +193,7 @@ func TestEndToEnd_ScanConnectTransfer(t *testing.T) {
 
 // TestEndToEnd_MultipleDevices tests mesh scenario with 3 devices
 func TestEndToEnd_MultipleDevices(t *testing.T) {
-	// Setup isolated test environment
-	_, cleanup := setupTestEnv(t)
-	defer cleanup()
+	util.SetRandom()
 
 	// Setup 3 devices
 	w1 := wire.NewWire("device1-uuid")
@@ -295,9 +292,7 @@ func TestEndToEnd_MultipleDevices(t *testing.T) {
 
 // TestEndToEnd_DataIntegrity tests that large data transfers work correctly
 func TestEndToEnd_DataIntegrity(t *testing.T) {
-	// Setup isolated test environment
-	_, cleanup := setupTestEnv(t)
-	defer cleanup()
+	util.SetRandom()
 
 	centralWire := wire.NewWire("central-uuid")
 	peripheralWire := wire.NewWire("peripheral-uuid")

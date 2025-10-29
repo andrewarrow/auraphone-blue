@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
 )
 
@@ -213,8 +214,7 @@ func (c *testScanCallback) OnScanResult(callbackType int, result *ScanResult) {
 
 // TestBluetoothLeScanner_StartStopScan tests basic scanning functionality
 func TestBluetoothLeScanner_StartStopScan(t *testing.T) {
-	_, cleanup := setupTestEnv(t)
-	defer cleanup()
+	util.SetRandom()
 
 	w1 := wire.NewWire("scanner-uuid")
 	w2 := wire.NewWire("advertiser-uuid")
@@ -294,8 +294,7 @@ func TestBluetoothLeScanner_StartStopScan(t *testing.T) {
 
 // TestBluetoothLeScanner_DiscoverMultipleDevices tests discovering multiple advertising devices
 func TestBluetoothLeScanner_DiscoverMultipleDevices(t *testing.T) {
-	_, cleanup := setupTestEnv(t)
-	defer cleanup()
+	util.SetRandom()
 
 	w1 := wire.NewWire("scanner-uuid")
 	w2 := wire.NewWire("advertiser1-uuid")
@@ -371,8 +370,7 @@ func TestBluetoothLeScanner_DiscoverMultipleDevices(t *testing.T) {
 
 // TestBluetoothLeScanner_StopScanStopsDiscovery tests that StopScan actually stops discovery
 func TestBluetoothLeScanner_StopScanStopsDiscovery(t *testing.T) {
-	_, cleanup := setupTestEnv(t)
-	defer cleanup()
+	util.SetRandom()
 
 	w1 := wire.NewWire("scanner-uuid")
 	w2 := wire.NewWire("advertiser-uuid")
