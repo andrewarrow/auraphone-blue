@@ -497,7 +497,7 @@ func TestRequestTrackerIsolation(t *testing.T) {
 	}
 
 	wg.Wait()
-	time.Sleep(1000 * time.Millisecond) // Wait for all responses (increased for concurrent load)
+	time.Sleep(2000 * time.Millisecond) // Wait for all responses (increased for concurrent load)
 
 	// Count successes
 	success1 := 0

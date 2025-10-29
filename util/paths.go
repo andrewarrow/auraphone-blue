@@ -11,6 +11,8 @@ func SetRandom() {
 	os.MkdirAll(path, 0755)
 	tempDir, _ := os.MkdirTemp("/Users/aa/.apb", "t*")
 	os.Setenv("AURAPHONE_BLUE_DIR", tempDir)
+	// Log temp directory for debugging test failures
+	println("🧪 Test temp directory:", tempDir)
 }
 
 // GetDataDir returns the data directory path
