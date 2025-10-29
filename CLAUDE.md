@@ -56,6 +56,69 @@ Single Socket is CORRECT
     - Single socket captures this correctly
 
 
+ What GATT Caching Means
+
+  When a real BLE device connects, it needs to discover:
+  1. Services (e.g., "Heart Rate Service")
+  2. Characteristics (e.g., "Heart Rate Measurement characteristic")
+  3. Descriptors (e.g., CCCD for enabling notifications)
+
+  This requires multiple round-trip requests:
+  Central → Peripheral: "What services do you have?"
+  Peripheral → Central: "I have services at handles 0x0001-0x0010"
+  Central → Peripheral: "What characteristics in service 0x0001?"
+  Peripheral → Central: "Characteristic UUID X at handle 0x0003"
+  ... etc
+
+  Discovery is slow (many round trips), so platforms cache the results.
+
+  Real Platform Behavior
+
+  iOS (CoreBluetooth)
+
+  // First connection
+  centralManager.connect(peripheral)
+  peripheral.discoverServices([heartRateServiceUUID])
+  // iOS discovers and caches internally
+
+  // Later... disconnect, reconnect
+  centralManager.connect(peripheral)  // Same device
+  // iOS REUSES cached services/characteristics
+  // Does NOT re-run discovery protocol
+  // Even if device firmware changed!
+
+  iOS behavior:
+  - Caches services/characteristics/descriptors forever (or until Bluetooth reset)
+  - Cache persists across disconnects
+  - Cache even persists across app restarts
+  - Only clears if user turns Bluetooth off/on or resets network settings
+  - App cannot force cache clear
+
+  Android (BluetoothGatt)
+
+  // First connection
+  gatt = device.connectGatt(context, false, callback)
+  gatt.discoverServices()
+  // Android discovers and caches
+
+  // Disconnect
+  gatt.disconnect()
+  gatt.close()  // Important!
+
+  // Reconnect
+  gatt = device.connectGatt(context, false, callback)
+  gatt.discoverServices()
+  // Android MAY use cache, but can be cleared with:
+  // - BluetoothGatt.close() before reconnecting
+  // - Or it re-discovers automatically
+
+  Android behavior:
+  - Caches per BluetoothGatt instance
+  - Cache cleared when close() called
+  - More willing to re-discover
+  - Some Android versions let you force refresh
+
+
 # tests
 
 always call util.SetRandom() at the start of each test
