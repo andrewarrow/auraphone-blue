@@ -13,6 +13,7 @@ import (
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire/att"
+	"github.com/user/auraphone-blue/wire/debug"
 	"github.com/user/auraphone-blue/wire/l2cap"
 )
 
@@ -46,6 +47,9 @@ type Wire struct {
 	// Audit logging
 	connectionEventLog  *ConnectionEventLogger
 	socketHealthMonitor *SocketHealthMonitor
+
+	// Debug logging (binary protocol packets)
+	debugLogger *debug.DebugLogger
 }
 
 // NewWire creates a new Wire instance
@@ -61,6 +65,10 @@ func NewWire(hardwareUUID string) *Wire {
 	// Initialize audit loggers
 	w.connectionEventLog = NewConnectionEventLogger(hardwareUUID, true)
 	w.socketHealthMonitor = NewSocketHealthMonitor(hardwareUUID)
+
+	// Initialize debug logger (enabled by default, check env var or can be disabled)
+	debugEnabled := os.Getenv("WIRE_DEBUG") != "0" // Enabled unless explicitly disabled
+	w.debugLogger = debug.NewDebugLogger(hardwareUUID, debugEnabled)
 
 	return w
 }
@@ -401,6 +409,9 @@ func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan ch
 		logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📥 Received L2CAP packet from %s: channel=0x%04X, len=%d bytes",
 			shortHash(peerUUID), l2capPacket.ChannelID, len(l2capPacket.Payload))
 
+		// Debug log: L2CAP packet received
+		w.debugLogger.LogL2CAPPacket("rx", peerUUID, l2capPacket)
+
 		// Track message received in health monitor
 		socketType := string(connection.role)
 		if connection.role == RolePeripheral {
@@ -419,6 +430,9 @@ func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan ch
 				logger.Warn(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "❌ Failed to decode ATT packet from %s: %v", shortHash(peerUUID), err)
 				continue
 			}
+
+			// Debug log: ATT packet received
+			w.debugLogger.LogATTPacket("rx", peerUUID, attPacket, l2capPacket.Payload)
 
 			// Handle ATT packet
 			w.handleATTPacket(peerUUID, connection, attPacket)
@@ -584,6 +598,9 @@ func (w *Wire) sendATTPacket(peerUUID string, packet interface{}) error {
 		return fmt.Errorf("failed to encode ATT packet: %w", err)
 	}
 
+	// Debug log: ATT packet sent
+	w.debugLogger.LogATTPacket("tx", peerUUID, packet, attData)
+
 	// Wrap in L2CAP packet
 	l2capPacket := l2cap.NewATTPacket(attData)
 
@@ -604,6 +621,9 @@ func (w *Wire) sendL2CAPPacket(peerUUID string, packet *l2cap.Packet) error {
 
 	// Encode L2CAP packet
 	data := packet.Encode()
+
+	// Debug log: L2CAP packet sent
+	w.debugLogger.LogL2CAPPacket("tx", peerUUID, packet)
 
 	// Simulate connection interval latency (real BLE has 7.5-50ms intervals)
 	time.Sleep(connectionIntervalDelay())
@@ -643,6 +663,10 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 
 	logger.Debug(fmt.Sprintf("%s Wire", shortHash(w.hardwareUUID)), "📡 SendGATTMessage to %s: op=%s, type=%s",
 		shortHash(peerUUID), msg.Operation, msg.Type)
+
+	// Debug log: GATT operation
+	handle := w.uuidToHandle(msg.ServiceUUID, msg.CharacteristicUUID)
+	w.debugLogger.LogGATTOperation("tx", peerUUID, msg.Operation, msg.ServiceUUID, msg.CharacteristicUUID, fmt.Sprintf("0x%04X", handle), msg.Data)
 
 	// Convert GATTMessage to ATT packet
 	// For now, we use a simple handle mapping (UUID hash to handle)

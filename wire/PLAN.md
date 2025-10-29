@@ -4,12 +4,14 @@
 Convert wire/ from JSON-over-length-prefix to real binary BLE protocols (L2CAP + ATT/GATT), while maintaining human-readable JSON debug files that are never used in the actual data flow.
 
 ## Current Status
-**Phase 2.1, 2.2, 2.3 COMPLETED** ✅ (2025-10-29)
+**Phase 2.1, 2.2, 2.3, 4.1 COMPLETED** ✅ (2025-10-29)
 - Binary protocol foundation complete with L2CAP, ATT, and GATT layers (Phase 1)
 - Wire.go fully migrated to binary L2CAP/ATT protocol (Phase 2.1)
 - GATT operations (read/write/notify) now use binary ATT packets (Phase 2.2)
 - MTU negotiation working on connection establishment (Phase 2.3)
+- Debug logging infrastructure complete - human-readable JSON logs (Phase 4.1)
 - All tests passing (34 tests total across wire, l2cap, att, gatt packages)
+- Debug files: `l2cap_packets.jsonl`, `att_packets.jsonl`, `gatt_operations.jsonl`
 - **Next:** Phase 2.4 (Fragmentation) and Phase 3 (Advertising & Discovery)
 
 ---
@@ -214,25 +216,23 @@ Convert wire/ from JSON-over-length-prefix to real binary BLE protocols (L2CAP +
 
 ---
 
-## Phase 4: Debug JSON Generation
+## Phase 4: Debug JSON Generation (IN PROGRESS)
 
-### 4.1 Create Debug Logging Infrastructure
-- [ ] Create `debug/logger.go`:
-  ```go
-  type DebugLogger struct {
-      baseDir string
-      enabled bool
-  }
+### 4.1 Create Debug Logging Infrastructure ✅ COMPLETED
+- [x] Create `debug/logger.go`:
+  - `DebugLogger` struct with device UUID and debug directory
+  - `LogL2CAPPacket()` - logs to `debug/l2cap_packets.jsonl`
+  - `LogATTPacket()` - logs to `debug/att_packets.jsonl`
+  - `LogGATTOperation()` - logs to `debug/gatt_operations.jsonl`
 
-  func (d *DebugLogger) LogL2CAPPacket(direction string, packet *l2cap.Packet)
-  func (d *DebugLogger) LogATTPacket(direction string, packet *att.Packet)
-  func (d *DebugLogger) LogAdvertising(deviceUUID string, advData []byte)
-  func (d *DebugLogger) LogAttributeDatabase(deviceUUID string, db *gatt.AttributeDatabase)
-  ```
-
-- [ ] Write JSON representations to `{base_dir}/{device_uuid}/debug/` directory
-- [ ] Never read these JSON files in production code
-- [ ] Add timestamps and sequence numbers to debug logs
+- [x] Write JSON representations to `{device_cache_dir}/{device_uuid}/debug/` directory
+- [x] Never read these JSON files in production code (write-only)
+- [x] Add timestamps (RFC3339Nano format) to all debug logs
+- [x] Include direction ("tx"/"rx"), peer UUID, and decoded data
+- [x] Hex dumps of raw binary data included
+- [x] Human-readable names for opcodes, channels, and error codes
+- [x] Integrated into wire.go at all send/receive points
+- [x] Enabled by default (can disable with `WIRE_DEBUG=0`)
 
 ### 4.2 Create Human-Readable Formatters
 - [ ] Create `debug/formatters.go`:
