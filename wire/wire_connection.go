@@ -41,10 +41,10 @@ func (w *Wire) acceptConnections() {
 }
 
 // handleIncomingConnection processes a new incoming connection (we become Peripheral)
+// REALISTIC BLE: Connection establishment is a bidirectional radio exchange. The delay
+// is already represented by the central's sleep during Connect(). Once the socket is
+// accepted, the link-layer handshake is complete and both sides have the connection.
 func (w *Wire) handleIncomingConnection(conn net.Conn) {
-	// Simulate connection establishment delay (real BLE takes 30-100ms)
-	time.Sleep(randomDelay(MinConnectionDelay, MaxConnectionDelay))
-
 	// Read UUID length (4 bytes)
 	var uuidLen uint32
 	err := binary.Read(conn, binary.BigEndian, &uuidLen)
