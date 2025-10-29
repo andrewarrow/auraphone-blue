@@ -86,15 +86,9 @@ func shortHash(s string) string {
 	return s[:8]
 }
 
-// Global registry for advertising data (simulates BLE broadcast)
-// In real BLE, advertising data is broadcast over the air
-// In our simulator, devices write here and others read from here
-var (
-	globalAdvertisingData   = make(map[string]*AdvertisingData)
-	globalAdvertisingDataMu sync.RWMutex
-	globalGATTTables        = make(map[string]*GATTTable)
-	globalGATTTablesMu      sync.RWMutex
-)
+// Real BLE behavior: advertising data and GATT tables are stored per-device
+// and discovered via filesystem scanning (simulates over-the-air discovery)
+// No global registries - each device reads/writes its own files
 
 // Wire handles Unix domain socket communication with BLE realism
 // Single socket per device at {dataDir}/sockets/auraphone-{hardwareUUID}.sock
@@ -217,15 +211,6 @@ func (w *Wire) Stop() {
 
 	// Clean up socket file
 	os.Remove(w.socketPath)
-
-	// Clean up from global registries
-	globalAdvertisingDataMu.Lock()
-	delete(globalAdvertisingData, w.hardwareUUID)
-	globalAdvertisingDataMu.Unlock()
-
-	globalGATTTablesMu.Lock()
-	delete(globalGATTTables, w.hardwareUUID)
-	globalGATTTablesMu.Unlock()
 }
 
 // acceptConnections handles incoming connections
@@ -660,13 +645,15 @@ func (w *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
 	return stopChan
 }
 
-// ReadAdvertisingData reads advertising data for a device
+// ReadAdvertisingData reads advertising data for a device from filesystem
+// Real BLE: this simulates discovering advertising packets "over the air"
 func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) {
-	globalAdvertisingDataMu.RLock()
-	defer globalAdvertisingDataMu.RUnlock()
+	deviceDir := util.GetDeviceCacheDir(deviceUUID)
+	advPath := filepath.Join(deviceDir, "advertising.json")
 
-	advData, exists := globalAdvertisingData[deviceUUID]
-	if !exists {
+	// Read from file (simulates discovering advertising packet)
+	data, err := os.ReadFile(advPath)
+	if err != nil {
 		// Return default advertising data if not found
 		return &AdvertisingData{
 			DeviceName:    fmt.Sprintf("Device-%s", shortHash(deviceUUID)),
@@ -675,14 +662,12 @@ func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) 
 		}, nil
 	}
 
-	// Return a copy to prevent race conditions
-	return &AdvertisingData{
-		DeviceName:       advData.DeviceName,
-		ServiceUUIDs:     append([]string{}, advData.ServiceUUIDs...),
-		ManufacturerData: append([]byte{}, advData.ManufacturerData...),
-		TxPowerLevel:     advData.TxPowerLevel,
-		IsConnectable:    advData.IsConnectable,
-	}, nil
+	var advData AdvertisingData
+	if err := json.Unmarshal(data, &advData); err != nil {
+		return nil, fmt.Errorf("failed to parse advertising.json: %w", err)
+	}
+
+	return &advData, nil
 }
 
 // GetRSSI returns simulated RSSI for a device (stub for old API)
@@ -755,26 +740,27 @@ func (w *Wire) GetSimulator() *SimulatorStub {
 	}
 }
 
-// ReadGATTTable reads GATT table from peer
+// ReadGATTTable reads GATT table from peer's filesystem
+// Real BLE: this simulates service discovery over the connection
 func (w *Wire) ReadGATTTable(peerUUID string) (*GATTTable, error) {
-	globalGATTTablesMu.RLock()
-	defer globalGATTTablesMu.RUnlock()
+	deviceDir := util.GetDeviceCacheDir(peerUUID)
+	gattPath := filepath.Join(deviceDir, "gatt.json")
 
-	table, exists := globalGATTTables[peerUUID]
-	if !exists {
+	// Read from file (simulates GATT service discovery)
+	data, err := os.ReadFile(gattPath)
+	if err != nil {
 		// Return empty GATT table if not found
 		return &GATTTable{
 			Services: []GATTService{},
 		}, nil
 	}
 
-	// Return a copy to prevent race conditions
-	tableCopy := &GATTTable{
-		Services: make([]GATTService, len(table.Services)),
+	var table GATTTable
+	if err := json.Unmarshal(data, &table); err != nil {
+		return nil, fmt.Errorf("failed to parse gatt.json: %w", err)
 	}
-	copy(tableCopy.Services, table.Services)
 
-	return tableCopy, nil
+	return &table, nil
 }
 
 // WriteCharacteristic writes to a characteristic (stub for old API)
@@ -809,70 +795,46 @@ func (w *Wire) ReadCharacteristic(peerUUID, serviceUUID, charUUID string) error 
 	return w.SendGATTMessage(peerUUID, msg)
 }
 
-// DEPRECATED: SubscribeCharacteristic is not realistic BLE behavior
-// Real BLE requires writing to CCCD descriptor (0x2902) with value 0x01 0x00
-// Use WriteCharacteristic() to write to CCCD descriptor instead
-// This function remains for iOS compatibility until iOS is updated
-func (w *Wire) SubscribeCharacteristic(peerUUID, serviceUUID, charUUID string) error {
-	// DEPRECATED: This is not how real BLE works!
-	// Real BLE requires:
-	//   1. setCharacteristicNotification(char, true) - local tracking
-	//   2. writeDescriptor(cccd, 0x01 0x00) - enable on peripheral
-	// We send a fake "subscribe" message for backward compatibility with iOS
-	msg := &GATTMessage{
-		Type:               "gatt_request",
-		Operation:          "subscribe",  // ⚠️ NOT A REAL BLE OPERATION!
-		ServiceUUID:        serviceUUID,
-		CharacteristicUUID: charUUID,
-	}
-	return w.SendGATTMessage(peerUUID, msg)
-}
 
-// DEPRECATED: UnsubscribeCharacteristic is not realistic BLE behavior
-// Real BLE requires writing to CCCD descriptor (0x2902) with value 0x00 0x00
-// Use WriteCharacteristic() to write to CCCD descriptor instead
-// This function remains for iOS compatibility until iOS is updated
-func (w *Wire) UnsubscribeCharacteristic(peerUUID, serviceUUID, charUUID string) error {
-	// DEPRECATED: This is not how real BLE works!
-	msg := &GATTMessage{
-		Type:               "gatt_request",
-		Operation:          "unsubscribe",  // ⚠️ NOT A REAL BLE OPERATION!
-		ServiceUUID:        serviceUUID,
-		CharacteristicUUID: charUUID,
-	}
-	return w.SendGATTMessage(peerUUID, msg)
-}
-
-// WriteGATTTable writes GATT table to global registry
+// WriteGATTTable writes GATT table to device's filesystem
+// Real BLE: this publishes our GATT database for peers to discover
 func (w *Wire) WriteGATTTable(table *GATTTable) error {
-	globalGATTTablesMu.Lock()
-	defer globalGATTTablesMu.Unlock()
-
-	// Store a copy to prevent race conditions
-	tableCopy := &GATTTable{
-		Services: make([]GATTService, len(table.Services)),
+	deviceDir := util.GetDeviceCacheDir(w.hardwareUUID)
+	if err := os.MkdirAll(deviceDir, 0755); err != nil {
+		return fmt.Errorf("failed to create device directory: %w", err)
 	}
-	copy(tableCopy.Services, table.Services)
 
-	globalGATTTables[w.hardwareUUID] = tableCopy
+	gattPath := filepath.Join(deviceDir, "gatt.json")
+	data, err := json.MarshalIndent(table, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal GATT table: %w", err)
+	}
+
+	if err := os.WriteFile(gattPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write gatt.json: %w", err)
+	}
+
 	return nil
 }
 
-// WriteAdvertisingData writes advertising data to global registry
+// WriteAdvertisingData writes advertising data to device's filesystem
+// Real BLE: this sets what we broadcast in advertising packets
 func (w *Wire) WriteAdvertisingData(data *AdvertisingData) error {
-	globalAdvertisingDataMu.Lock()
-	defer globalAdvertisingDataMu.Unlock()
-
-	// Store a copy to prevent race conditions
-	dataCopy := &AdvertisingData{
-		DeviceName:       data.DeviceName,
-		ServiceUUIDs:     append([]string{}, data.ServiceUUIDs...),
-		ManufacturerData: append([]byte{}, data.ManufacturerData...),
-		TxPowerLevel:     data.TxPowerLevel,
-		IsConnectable:    data.IsConnectable,
+	deviceDir := util.GetDeviceCacheDir(w.hardwareUUID)
+	if err := os.MkdirAll(deviceDir, 0755); err != nil {
+		return fmt.Errorf("failed to create device directory: %w", err)
 	}
 
-	globalAdvertisingData[w.hardwareUUID] = dataCopy
+	advPath := filepath.Join(deviceDir, "advertising.json")
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal advertising data: %w", err)
+	}
+
+	if err := os.WriteFile(advPath, jsonData, 0644); err != nil {
+		return fmt.Errorf("failed to write advertising.json: %w", err)
+	}
+
 	return nil
 }
 
