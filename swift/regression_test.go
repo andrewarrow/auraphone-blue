@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
 )
 
@@ -28,24 +29,26 @@ func TestNoDualSockets(t *testing.T) {
 	}
 	defer w.Stop()
 
-	// Check /tmp for socket files with this UUID
-	tmpFiles, err := filepath.Glob("/tmp/auraphone-*" + deviceUUID + "*.sock")
+	// Check socket directory for socket files with this UUID
+	socketDir := util.GetSocketDir()
+	pattern := filepath.Join(socketDir, "auraphone-*"+deviceUUID+"*.sock")
+	socketFiles, err := filepath.Glob(pattern)
 	if err != nil {
-		t.Fatalf("Failed to glob /tmp: %v", err)
+		t.Fatalf("Failed to glob socket directory: %v", err)
 	}
 
-	if len(tmpFiles) != 1 {
-		t.Errorf("Expected exactly 1 socket file, found %d: %v", len(tmpFiles), tmpFiles)
+	if len(socketFiles) != 1 {
+		t.Errorf("Expected exactly 1 socket file, found %d: %v", len(socketFiles), socketFiles)
 	}
 
 	// Verify it's the exact expected path (no -central or -peripheral suffix)
-	expectedPath := fmt.Sprintf("/tmp/auraphone-%s.sock", deviceUUID)
-	if len(tmpFiles) > 0 && tmpFiles[0] != expectedPath {
-		t.Errorf("Socket path should be %s, got %s", expectedPath, tmpFiles[0])
+	expectedPath := filepath.Join(socketDir, fmt.Sprintf("auraphone-%s.sock", deviceUUID))
+	if len(socketFiles) > 0 && socketFiles[0] != expectedPath {
+		t.Errorf("Socket path should be %s, got %s", expectedPath, socketFiles[0])
 	}
 
 	// Verify no -central.sock or -peripheral.sock files exist
-	for _, path := range tmpFiles {
+	for _, path := range socketFiles {
 		if strings.Contains(path, "-central") || strings.Contains(path, "-peripheral") {
 			t.Errorf("Found dual-socket file: %s (old architecture leaked in!)", path)
 		}
@@ -478,7 +481,8 @@ func TestDisconnectFullyClosesConnection(t *testing.T) {
 // TestCleanupRemovesSocketFiles verifies socket cleanup on Stop()
 func TestCleanupRemovesSocketFiles(t *testing.T) {
 	deviceUUID := "cleanup-test-uuid"
-	socketPath := fmt.Sprintf("/tmp/auraphone-%s.sock", deviceUUID)
+	socketDir := util.GetSocketDir()
+	socketPath := filepath.Join(socketDir, fmt.Sprintf("auraphone-%s.sock", deviceUUID))
 
 	w := wire.NewWire(deviceUUID)
 

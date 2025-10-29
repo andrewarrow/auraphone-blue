@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/user/auraphone-blue/logger"
+	"github.com/user/auraphone-blue/util"
 )
 
 // ConnectionRole represents the role in a specific connection
@@ -96,7 +97,7 @@ var (
 )
 
 // Wire handles Unix domain socket communication with BLE realism
-// Single socket per device at /tmp/auraphone-{hardwareUUID}.sock
+// Single socket per device at {dataDir}/sockets/auraphone-{hardwareUUID}.sock
 type Wire struct {
 	hardwareUUID string
 	socketPath   string
@@ -125,9 +126,10 @@ type Wire struct {
 
 // NewWire creates a new Wire instance
 func NewWire(hardwareUUID string) *Wire {
+	socketDir := util.GetSocketDir()
 	w := &Wire{
 		hardwareUUID: hardwareUUID,
-		socketPath:   fmt.Sprintf("/tmp/auraphone-%s.sock", hardwareUUID),
+		socketPath:   filepath.Join(socketDir, fmt.Sprintf("auraphone-%s.sock", hardwareUUID)),
 		connections:  make(map[string]*Connection),
 		stopReading:  make(map[string]chan struct{}),
 	}
@@ -327,7 +329,8 @@ func (w *Wire) Connect(peerUUID string) error {
 	}
 
 	// Connect to peer's socket
-	peerSocketPath := fmt.Sprintf("/tmp/auraphone-%s.sock", peerUUID)
+	socketDir := util.GetSocketDir()
+	peerSocketPath := filepath.Join(socketDir, fmt.Sprintf("auraphone-%s.sock", peerUUID))
 	conn, err := net.Dial("unix", peerSocketPath)
 	if err != nil {
 		return fmt.Errorf("failed to connect to %s: %w", peerUUID, err)
@@ -552,12 +555,14 @@ func (w *Wire) SetDisconnectCallback(callback func(peerUUID string)) {
 	w.callbackMu.Unlock()
 }
 
-// ListAvailableDevices scans /tmp for .sock files and returns hardware UUIDs
+// ListAvailableDevices scans socket directory for .sock files and returns hardware UUIDs
 func (w *Wire) ListAvailableDevices() []string {
 	devices := make([]string, 0)
 
-	// Scan /tmp for auraphone-*.sock files
-	matches, err := filepath.Glob("/tmp/auraphone-*.sock")
+	// Scan socket directory for auraphone-*.sock files
+	socketDir := util.GetSocketDir()
+	pattern := filepath.Join(socketDir, "auraphone-*.sock")
+	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return devices
 	}
@@ -683,7 +688,8 @@ func (w *Wire) GetRSSI(deviceUUID string) float64 {
 // TODO Step 4: Implement proper device discovery state tracking
 func (w *Wire) DeviceExists(deviceUUID string) bool {
 	// Check if device socket exists
-	socketPath := fmt.Sprintf("/tmp/auraphone-%s.sock", deviceUUID)
+	socketDir := util.GetSocketDir()
+	socketPath := filepath.Join(socketDir, fmt.Sprintf("auraphone-%s.sock", deviceUUID))
 	_, err := os.Stat(socketPath)
 	return err == nil
 }

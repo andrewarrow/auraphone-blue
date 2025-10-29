@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/user/auraphone-blue/util"
 )
 
 // DiscoveredDevice represents a device discovered via BLE scanning
@@ -33,21 +35,15 @@ type Phone interface {
 }
 
 // GetDataDir returns the data directory path
+// Deprecated: Use util.GetDataDir() instead
 func GetDataDir() string {
-	if envDir := os.Getenv("AURAPHONE_BLUE_DIR"); envDir != "" {
-		return envDir
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		panic(err)
-	}
-	return filepath.Join(home, ".auraphone-blue-data")
+	return util.GetDataDir()
 }
 
 // GetDeviceCacheDir returns the cache directory for a specific device
+// Deprecated: Use util.GetDeviceCacheDir() instead
 func GetDeviceCacheDir(deviceUUID string) string {
-	return filepath.Join(GetDataDir(), deviceUUID)
+	return util.GetDeviceCacheDir(deviceUUID)
 }
 
 // DeviceCacheManager manages device metadata cache
