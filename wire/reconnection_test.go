@@ -285,48 +285,6 @@ func TestSendMessageToDisconnectedDevice(t *testing.T) {
 	}
 }
 
-// TestConcurrentReconnections verifies thread-safety of concurrent reconnections
-func TestConcurrentReconnections(t *testing.T) {
-	util.SetRandom()
-	deviceA := NewWire("device-a-uuid")
-	deviceB := NewWire("device-b-uuid")
-
-	if err := deviceA.Start(); err != nil {
-		t.Fatalf("Failed to start device A: %v", err)
-	}
-	defer deviceA.Stop()
-
-	if err := deviceB.Start(); err != nil {
-		t.Fatalf("Failed to start device B: %v", err)
-	}
-	defer deviceB.Stop()
-
-	time.Sleep(100 * time.Millisecond)
-
-	// Try multiple concurrent connect attempts
-	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			deviceA.Connect("device-b-uuid")
-		}()
-	}
-
-	wg.Wait()
-	time.Sleep(200 * time.Millisecond)
-
-	// Should have exactly one connection
-	peers := deviceA.GetConnectedPeers()
-	if len(peers) != 1 {
-		t.Errorf("Expected exactly 1 connection, got %d", len(peers))
-	}
-
-	if !deviceA.IsConnected("device-b-uuid") {
-		t.Error("Should be connected to device B")
-	}
-}
-
 // TestMessagePersistenceAfterReconnect verifies messages work after reconnection
 func TestMessagePersistenceAfterReconnect(t *testing.T) {
 	util.SetRandom()

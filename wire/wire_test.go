@@ -346,13 +346,11 @@ func TestNoDoubleConnection(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Try to connect again (should be no-op)
+	// Try to connect again (should return error - already connected)
 	err = deviceA.Connect("device-b-uuid")
-	if err != nil {
-		t.Fatalf("Second connect failed: %v", err)
+	if err == nil {
+		t.Fatal("Second connect should have failed with 'already connected' error")
 	}
-
-	time.Sleep(100 * time.Millisecond)
 
 	// Verify still only ONE connection
 	peersA := deviceA.GetConnectedPeers()

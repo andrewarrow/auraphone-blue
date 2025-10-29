@@ -318,6 +318,7 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 }
 
 // Connect establishes a connection to a peer (we become Central)
+// Returns error if already connected or if concurrent connection is detected
 func (w *Wire) Connect(peerUUID string) error {
 	// Check if already connected
 	w.mu.RLock()
@@ -325,7 +326,7 @@ func (w *Wire) Connect(peerUUID string) error {
 	w.mu.RUnlock()
 
 	if exists {
-		return nil // Already connected
+		return fmt.Errorf("already connected to %s", peerUUID)
 	}
 
 	// Connect to peer's socket
@@ -363,8 +364,8 @@ func (w *Wire) Connect(peerUUID string) error {
 	// Check again inside the lock to prevent race condition
 	if _, exists := w.connections[peerUUID]; exists {
 		w.mu.Unlock()
-		conn.Close() // Close the connection we just created
-		return nil   // Another goroutine already connected
+		conn.Close()
+		return fmt.Errorf("concurrent connection detected - another goroutine already connected to %s", peerUUID)
 	}
 	w.connections[peerUUID] = connection
 	w.mu.Unlock()

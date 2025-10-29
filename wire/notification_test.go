@@ -365,7 +365,7 @@ func TestNotificationLargePayload(t *testing.T) {
 	deviceA.Connect("device-b-uuid")
 	time.Sleep(100 * time.Millisecond)
 
-	// Send large notification (512 bytes - typical MTU max)
+	// Send large notification
 	largePayload := make([]byte, 512)
 	for i := range largePayload {
 		largePayload[i] = byte(i % 256)
