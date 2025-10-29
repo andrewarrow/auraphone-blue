@@ -72,8 +72,19 @@ func (ip *IPhone) DidDiscoverCharacteristics(peripheral *swift.CBPeripheral, ser
 	// We don't need this callback for our current implementation
 }
 
+func (ip *IPhone) DidDiscoverDescriptorsForCharacteristic(peripheral *swift.CBPeripheral, characteristic *swift.CBCharacteristic, err error) {
+	// Called when descriptors are discovered for a characteristic
+	// In our simulation, descriptors (CCCD) are auto-generated with characteristics
+	// We don't need to handle this for now
+}
+
 func (ip *IPhone) DidWriteValueForCharacteristic(peripheral *swift.CBPeripheral, characteristic *swift.CBCharacteristic, err error) {
 	// Called after a write operation completes
+	// We don't need to handle this for now
+}
+
+func (ip *IPhone) DidWriteValueForDescriptor(peripheral *swift.CBPeripheral, descriptor *swift.CBDescriptor, err error) {
+	// Called after a descriptor write operation completes (e.g., enabling notifications via CCCD)
 	// We don't need to handle this for now
 }
 
@@ -93,4 +104,9 @@ func (ip *IPhone) DidUpdateValueForCharacteristic(peripheral *swift.CBPeripheral
 		// Photo data chunks
 		ip.handlePhotoData(peripheral.UUID, characteristic.Value)
 	}
+}
+
+func (ip *IPhone) DidUpdateValueForDescriptor(peripheral *swift.CBPeripheral, descriptor *swift.CBDescriptor, err error) {
+	// Called when a descriptor value is read
+	// We don't need to handle this for now
 }

@@ -8,6 +8,14 @@ import (
 	"github.com/user/auraphone-blue/wire"
 )
 
+// shortUUID safely truncates a UUID for logging (max 8 chars)
+func shortUUID(s string) string {
+	if len(s) <= 8 {
+		return s
+	}
+	return s[:8]
+}
+
 // CBPeripheralManagerDelegate matches iOS CoreBluetooth peripheral manager delegate
 type CBPeripheralManagerDelegate interface {
 	DidUpdatePeripheralState(peripheralManager *CBPeripheralManager)
@@ -424,14 +432,35 @@ func (pm *CBPeripheralManager) HandleGATTMessage(peerUUID string, msg *wire.GATT
 
 // handleCharacteristicMessage processes incoming GATT messages (internal)
 func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.CharacteristicMessage) {
+	// REALISTIC BLE: Check if this is a CCCD descriptor write FIRST
+	// CCCD writes have msg.CharacteristicUUID == "00002902-..."
+	// For CCCD writes, we need to find the notifiable characteristic in the service
+	isCCCDWrite := (msg.CharacteristicUUID == CBUUID_CCCD || msg.CharacteristicUUID == "00002902-0000-1000-8000-00805f9b34fb")
+
 	// Find the characteristic
 	var targetChar *CBMutableCharacteristic
 	for _, service := range pm.services {
 		if service.UUID == msg.ServiceUUID {
-			for _, char := range service.Characteristics {
-				if char.UUID == msg.CharacteristicUUID {
-					targetChar = char
-					break
+			if isCCCDWrite {
+				// For CCCD writes, find the first notifiable characteristic in this service
+				// (In real BLE, each characteristic has its own CCCD, but our simplified protocol
+				//  assumes one notifiable char per service for now)
+				for _, char := range service.Characteristics {
+					// Check if characteristic has notify or indicate properties (bitmask)
+					hasNotify := (char.Properties&CBCharacteristicPropertyNotify != 0) ||
+						(char.Properties&CBCharacteristicPropertyIndicate != 0)
+					if hasNotify {
+						targetChar = char
+						break
+					}
+				}
+			} else {
+				// Regular characteristic lookup by UUID
+				for _, char := range service.Characteristics {
+					if char.UUID == msg.CharacteristicUUID {
+						targetChar = char
+						break
+					}
 				}
 			}
 		}
@@ -441,7 +470,11 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 	}
 
 	if targetChar == nil {
-		logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "⚠️  Received request for unknown characteristic %s (service: %s, op: %s)", msg.CharacteristicUUID, msg.ServiceUUID, msg.Operation)
+		if isCCCDWrite {
+			logger.Trace(fmt.Sprintf("%s iOS", shortUUID(pm.uuid)), "⚠️  Received CCCD write for service %s, but no notifiable characteristic found", shortUUID(msg.ServiceUUID))
+		} else {
+			logger.Trace(fmt.Sprintf("%s iOS", shortUUID(pm.uuid)), "⚠️  Received request for unknown characteristic %s (service: %s, op: %s)", msg.CharacteristicUUID, msg.ServiceUUID, msg.Operation)
+		}
 		return
 	}
 
@@ -468,29 +501,55 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 		}
 
 	case "write", "write_no_response":
-		// Write request from central
-		if pm.Delegate != nil {
-			request := &CBATTRequest{
-				Central:        central,
-				Characteristic: targetChar,
-				Offset:         0,
-				Value:          msg.Data,
+		// REALISTIC BLE: Check if this is a CCCD descriptor write (0x2902)
+		// Real BLE enables notifications by writing 0x01 0x00 or 0x02 0x00 to CCCD descriptor
+		if msg.CharacteristicUUID == CBUUID_CCCD || msg.CharacteristicUUID == "00002902-0000-1000-8000-00805f9b34fb" {
+			// This is a CCCD write - find the characteristic from the service UUID
+			// (CCCD writes use the service UUID to identify which characteristic)
+			if targetChar != nil && len(msg.Data) >= 2 {
+				// Check the CCCD value
+				if msg.Data[0] == 0x01 || msg.Data[0] == 0x02 { // 0x01 = notify, 0x02 = indicate
+					// Subscribe
+					targetChar.subscribedCentrals[msg.SenderUUID] = true
+					logger.Trace(fmt.Sprintf("%s iOS", shortUUID(pm.uuid)), "🔔 Central %s subscribed to characteristic %s via CCCD", shortUUID(msg.SenderUUID), shortUUID(targetChar.UUID))
+					if pm.Delegate != nil {
+						pm.Delegate.CentralDidSubscribe(pm, central, targetChar)
+					}
+				} else if msg.Data[0] == 0x00 && msg.Data[1] == 0x00 {
+					// Unsubscribe
+					delete(targetChar.subscribedCentrals, msg.SenderUUID)
+					logger.Trace(fmt.Sprintf("%s iOS", shortUUID(pm.uuid)), "🔕 Central %s unsubscribed from characteristic %s via CCCD", shortUUID(msg.SenderUUID), shortUUID(targetChar.UUID))
+					if pm.Delegate != nil {
+						pm.Delegate.CentralDidUnsubscribe(pm, central, targetChar)
+					}
+				}
 			}
-			pm.Delegate.DidReceiveWriteRequests(pm, []*CBATTRequest{request})
+		} else {
+			// Regular characteristic write
+			if pm.Delegate != nil {
+				request := &CBATTRequest{
+					Central:        central,
+					Characteristic: targetChar,
+					Offset:         0,
+					Value:          msg.Data,
+				}
+				pm.Delegate.DidReceiveWriteRequests(pm, []*CBATTRequest{request})
 
-			// Update characteristic value
-			targetChar.Value = msg.Data
+				// Update characteristic value
+				targetChar.Value = msg.Data
+			}
 		}
 
 	case "subscribe":
-		// Central subscribed to notifications
+		// DEPRECATED: Old-style subscribe message (kept for backward compatibility)
+		// Real BLE uses CCCD descriptor writes (handled in "write" case above)
 		targetChar.subscribedCentrals[msg.SenderUUID] = true
 		if pm.Delegate != nil {
 			pm.Delegate.CentralDidSubscribe(pm, central, targetChar)
 		}
 
 	case "unsubscribe":
-		// Central unsubscribed from notifications
+		// DEPRECATED: Old-style unsubscribe message (kept for backward compatibility)
 		delete(targetChar.subscribedCentrals, msg.SenderUUID)
 		if pm.Delegate != nil {
 			pm.Delegate.CentralDidUnsubscribe(pm, central, targetChar)
