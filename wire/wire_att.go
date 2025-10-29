@@ -474,7 +474,103 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 			}
 		}
 
-	case *att.ReadRequest, *att.WriteRequest, *att.WriteCommand,
+	case *att.WriteRequest:
+		// Check if this is a CCCD write (descriptor 0x2902)
+		w.dbMu.RLock()
+		attr, err := w.attributeDB.GetAttribute(p.Handle)
+		w.dbMu.RUnlock()
+
+		isCCCD := false
+		if err == nil && len(attr.Type) == 2 {
+			// Check if this is a CCCD descriptor (0x2902)
+			if attr.Type[0] == 0x02 && attr.Type[1] == 0x29 {
+				isCCCD = true
+			}
+		}
+
+		if isCCCD {
+			// Validate CCCD value length
+			if len(p.Value) != 2 {
+				logger.Warn(shortHash(w.hardwareUUID)+" Wire",
+					"❌ Invalid CCCD value length: %d bytes", len(p.Value))
+				errorResp := &att.ErrorResponse{
+					RequestOpcode: att.OpWriteRequest,
+					Handle:        p.Handle,
+					ErrorCode:     att.ErrInvalidAttributeValueLength,
+				}
+				w.sendATTPacket(peerUUID, errorResp)
+				return
+			}
+
+			// Handle CCCD write - update subscription state
+			logger.Debug(shortHash(w.hardwareUUID)+" Wire",
+				"📥 CCCD Write from %s: handle=0x%04X, value=0x%02X%02X",
+				shortHash(peerUUID), p.Handle, p.Value[0], p.Value[1])
+
+			// Find the characteristic value handle that this CCCD belongs to
+			// CCCD is always the next handle after the characteristic value
+			charHandle := p.Handle - 1
+
+			// Update subscription state in connection's CCCD manager
+			cccdManager := connection.cccdManager.(*gatt.CCCDManager)
+			err := cccdManager.SetSubscription(charHandle, p.Value)
+			if err != nil {
+				logger.Warn(shortHash(w.hardwareUUID)+" Wire",
+					"❌ Failed to set CCCD subscription: %v", err)
+				// Send error response
+				errorResp := &att.ErrorResponse{
+					RequestOpcode: att.OpWriteRequest,
+					Handle:        p.Handle,
+					ErrorCode:     att.ErrInvalidAttributeValueLength,
+				}
+				w.sendATTPacket(peerUUID, errorResp)
+				return
+			}
+
+			// Update the CCCD value in the attribute database
+			w.dbMu.Lock()
+			w.attributeDB.SetAttributeValue(p.Handle, p.Value)
+			w.dbMu.Unlock()
+
+			// Log subscription state
+			state, exists := cccdManager.GetSubscription(charHandle)
+			if exists {
+				if state.NotifyEnabled && state.IndicateEnabled {
+					logger.Debug(shortHash(w.hardwareUUID)+" Wire",
+						"✅ Subscriptions enabled for handle 0x%04X: notifications + indications", charHandle)
+				} else if state.NotifyEnabled {
+					logger.Debug(shortHash(w.hardwareUUID)+" Wire",
+						"✅ Notifications enabled for handle 0x%04X", charHandle)
+				} else if state.IndicateEnabled {
+					logger.Debug(shortHash(w.hardwareUUID)+" Wire",
+						"✅ Indications enabled for handle 0x%04X", charHandle)
+				}
+			} else {
+				logger.Debug(shortHash(w.hardwareUUID)+" Wire",
+					"✅ Subscriptions disabled for handle 0x%04X", charHandle)
+			}
+
+			// Send write response
+			resp := &att.WriteResponse{}
+			w.sendATTPacket(peerUUID, resp)
+		} else {
+			// Regular write - pass to GATT handler
+			msg := w.attToGATTMessage(packet)
+			if msg != nil {
+				w.handlerMu.RLock()
+				handler := w.gattHandler
+				w.handlerMu.RUnlock()
+
+				if handler != nil {
+					logger.Debug(shortHash(w.hardwareUUID)+" Wire", "   ➡️  Calling GATT handler for ATT packet from %s", shortHash(peerUUID))
+					handler(peerUUID, msg)
+				} else {
+					logger.Warn(shortHash(w.hardwareUUID)+" Wire", "⚠️  No GATT handler registered for ATT packet from %s", shortHash(peerUUID))
+				}
+			}
+		}
+
+	case *att.ReadRequest, *att.WriteCommand,
 		*att.HandleValueNotification, *att.HandleValueIndication:
 		// These are GATT operations - convert to GATTMessage for compatibility
 		// TODO: Remove this conversion once higher layers use binary protocol directly

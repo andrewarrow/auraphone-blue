@@ -52,6 +52,7 @@ type Connection struct {
 	params            interface{}    // Connection parameters (type *l2cap.ConnectionParameters, avoiding import cycle)
 	paramsUpdatedAt   time.Time      // When parameters were last updated
 	discoveryCache    interface{}    // GATT discovery cache (type *gatt.DiscoveryCache, avoiding import cycle)
+	cccdManager       interface{}    // CCCD subscription manager (type *gatt.CCCDManager, avoiding import cycle)
 	eventScheduler    *ConnectionEventScheduler // Simulates discrete BLE connection events
 	eventSchedulerMux sync.Mutex     // Protects event scheduler access
 }

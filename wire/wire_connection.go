@@ -86,6 +86,7 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 		params:          defaultParams,                         // Start with default connection parameters
 		paramsUpdatedAt: time.Now(),
 		discoveryCache:  gatt.NewDiscoveryCache(),              // Initialize discovery cache for client-side discovery
+		cccdManager:     gatt.NewCCCDManager(),                 // Initialize CCCD subscription manager
 		eventScheduler:  NewConnectionEventScheduler(RolePeripheral, defaultParams.IntervalMaxMs()), // Initialize connection event scheduler
 	}
 	w.connections[peerUUID] = connection
@@ -166,6 +167,7 @@ func (w *Wire) Connect(peerUUID string) error {
 		params:          defaultParams,                         // Start with default connection parameters
 		paramsUpdatedAt: time.Now(),
 		discoveryCache:  gatt.NewDiscoveryCache(),              // Initialize discovery cache for client-side discovery
+		cccdManager:     gatt.NewCCCDManager(),                 // Initialize CCCD subscription manager
 		eventScheduler:  NewConnectionEventScheduler(RoleCentral, defaultParams.IntervalMaxMs()), // Initialize connection event scheduler
 	}
 

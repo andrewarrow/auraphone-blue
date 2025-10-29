@@ -152,3 +152,49 @@ func (w *Wire) Stop() {
 	// Clean up socket file
 	os.Remove(w.socketPath)
 }
+
+// IsSubscribedToNotifications checks if a peer has enabled notifications for a characteristic
+func (w *Wire) IsSubscribedToNotifications(peerUUID string, charHandle uint16) bool {
+	w.mu.RLock()
+	connection, exists := w.connections[peerUUID]
+	w.mu.RUnlock()
+
+	if !exists || connection.cccdManager == nil {
+		return false
+	}
+
+	cccdManager := connection.cccdManager.(*gatt.CCCDManager)
+	return cccdManager.IsNotifyEnabled(charHandle)
+}
+
+// IsSubscribedToIndications checks if a peer has enabled indications for a characteristic
+func (w *Wire) IsSubscribedToIndications(peerUUID string, charHandle uint16) bool {
+	w.mu.RLock()
+	connection, exists := w.connections[peerUUID]
+	w.mu.RUnlock()
+
+	if !exists || connection.cccdManager == nil {
+		return false
+	}
+
+	cccdManager := connection.cccdManager.(*gatt.CCCDManager)
+	return cccdManager.IsIndicateEnabled(charHandle)
+}
+
+// GetSubscribedPeers returns all peers that have subscribed to notifications/indications for a characteristic
+func (w *Wire) GetSubscribedPeers(charHandle uint16) []string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	var subscribedPeers []string
+	for peerUUID, connection := range w.connections {
+		if connection.cccdManager != nil {
+			cccdManager := connection.cccdManager.(*gatt.CCCDManager)
+			if cccdManager.IsSubscribed(charHandle) {
+				subscribedPeers = append(subscribedPeers, peerUUID)
+			}
+		}
+	}
+
+	return subscribedPeers
+}
