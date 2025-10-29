@@ -105,8 +105,16 @@ func (ip *IPhone) DidDisconnectPeripheral(central swift.CBCentralManager, periph
 		ip.meshView.MarkDeviceDisconnected(deviceID)
 	}
 
+	// Clear handshake state (needs to be re-exchanged on reconnect)
 	ip.mu.Lock()
 	delete(ip.handshaked, peripheral.UUID)
-	delete(ip.connectedPeers, peripheral.UUID)
 	ip.mu.Unlock()
+
+	// REALISTIC iOS BEHAVIOR: Do NOT remove peripheral from connectedPeers
+	// In real iOS CoreBluetooth, when you call central.Connect(peripheral, nil),
+	// iOS remembers that peripheral and will auto-reconnect in the background.
+	// The CBPeripheral object reference persists across disconnects.
+	// The iOS auto-reconnect feature will call DidConnectPeripheral again when
+	// the connection is restored, using the same peripheral object.
+	// We track connection state separately via identityManager.IsConnected()
 }
