@@ -203,6 +203,91 @@ func stringToUUIDBytes(uuid string) []byte {
 	return bytes
 }
 
+// handleToUUIDs converts a characteristic value handle to service + characteristic UUIDs
+// by looking up in the local attribute database. Returns empty strings if not found.
+// This is used when receiving ATT packets to convert handles back to UUIDs for higher layers.
+func (w *Wire) handleToUUIDs(handle uint16) (serviceUUID, charUUID string) {
+	w.dbMu.RLock()
+	db := w.attributeDB
+	w.dbMu.RUnlock()
+
+	if db == nil {
+		return "", ""
+	}
+
+	// Get the attribute at this handle
+	attr, err := db.GetAttribute(handle)
+	if err != nil {
+		return "", ""
+	}
+
+	// The Type field contains the characteristic UUID for value attributes
+	charUUID = bytesToUUIDString(attr.Type)
+
+	// Find the service by searching backwards for service declaration
+	// Service declarations have type 0x2800 (primary) or 0x2801 (secondary)
+	primaryServiceType := []byte{0x00, 0x28} // 0x2800 in little-endian
+	secondaryServiceType := []byte{0x01, 0x28} // 0x2801 in little-endian
+
+	// Search backwards from current handle to find the service declaration
+	for h := handle; h >= 1; h-- {
+		attr, err := db.GetAttribute(h)
+		if err != nil {
+			continue
+		}
+
+		// Check if this is a service declaration
+		if len(attr.Type) == 2 &&
+			((attr.Type[0] == primaryServiceType[0] && attr.Type[1] == primaryServiceType[1]) ||
+				(attr.Type[0] == secondaryServiceType[0] && attr.Type[1] == secondaryServiceType[1])) {
+			// Found service declaration - the Value field contains the service UUID
+			serviceUUID = bytesToUUIDString(attr.Value)
+			return serviceUUID, charUUID
+		}
+	}
+
+	// If no service found, return just the characteristic UUID
+	return "", charUUID
+}
+
+// bytesToUUIDString converts UUID bytes to a string representation
+// This matches the string format used in test UUIDs
+func bytesToUUIDString(uuid []byte) string {
+	// For standard BLE UUIDs (2 bytes = 16-bit)
+	if len(uuid) == 2 {
+		// 16-bit UUID - return as hex string
+		return fmt.Sprintf("%04x", uint16(uuid[0])|uint16(uuid[1])<<8)
+	}
+
+	// For 16-byte UUIDs, check if it's an ASCII string (common in tests)
+	if len(uuid) == 16 {
+		// Check if this looks like an ASCII string UUID
+		allASCII := true
+		endIndex := len(uuid)
+
+		// Find the end of the string (first null byte or end of buffer)
+		for i := 0; i < len(uuid); i++ {
+			if uuid[i] == 0 {
+				endIndex = i
+				break
+			}
+			if uuid[i] < 32 || uuid[i] > 126 {
+				// Not printable ASCII
+				allASCII = false
+				break
+			}
+		}
+
+		// If it's all ASCII, return the string (without null bytes)
+		if allASCII && endIndex > 0 {
+			return string(uuid[:endIndex])
+		}
+	}
+
+	// For 128-bit UUIDs or other formats, return as hex
+	return fmt.Sprintf("%x", uuid)
+}
+
 // GetHardwareUUID returns this device's hardware UUID
 func (w *Wire) GetHardwareUUID() string {
 	return w.hardwareUUID

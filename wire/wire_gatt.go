@@ -273,17 +273,18 @@ func (w *Wire) sendFragmentedWrite(peerUUID string, handle uint16, value []byte,
 }
 
 // attToGATTMessage converts an ATT packet to a GATTMessage for backward compatibility
-// TODO: Remove this once higher layers use binary protocol directly
+// REALISTIC BLE: Uses local attribute database to map handles back to UUIDs
+// This mirrors how real iOS CoreBluetooth maps handles to CBCharacteristic objects
 func (w *Wire) attToGATTMessage(packet interface{}) *GATTMessage {
 	switch p := packet.(type) {
 	case *att.ReadRequest:
-		// Convert handle back to UUIDs (reverse of uuidToHandle)
-		// For now, we use placeholder UUIDs since we don't have a reverse mapping
+		// Convert handle to UUIDs using local attribute database
+		serviceUUID, charUUID := w.handleToUUIDs(p.Handle)
 		return &GATTMessage{
 			Type:               "gatt_request",
 			Operation:          "read",
-			ServiceUUID:        fmt.Sprintf("service-handle-%04x", p.Handle),
-			CharacteristicUUID: fmt.Sprintf("char-handle-%04x", p.Handle),
+			ServiceUUID:        serviceUUID,
+			CharacteristicUUID: charUUID,
 		}
 
 	case *att.ReadResponse:
@@ -295,20 +296,24 @@ func (w *Wire) attToGATTMessage(packet interface{}) *GATTMessage {
 		}
 
 	case *att.WriteRequest:
+		// Convert handle to UUIDs using local attribute database
+		serviceUUID, charUUID := w.handleToUUIDs(p.Handle)
 		return &GATTMessage{
 			Type:               "gatt_request",
 			Operation:          "write",
-			ServiceUUID:        fmt.Sprintf("service-handle-%04x", p.Handle),
-			CharacteristicUUID: fmt.Sprintf("char-handle-%04x", p.Handle),
+			ServiceUUID:        serviceUUID,
+			CharacteristicUUID: charUUID,
 			Data:               p.Value,
 		}
 
 	case *att.WriteCommand:
+		// Convert handle to UUIDs using local attribute database
+		serviceUUID, charUUID := w.handleToUUIDs(p.Handle)
 		return &GATTMessage{
 			Type:               "gatt_request",
 			Operation:          "write",
-			ServiceUUID:        fmt.Sprintf("service-handle-%04x", p.Handle),
-			CharacteristicUUID: fmt.Sprintf("char-handle-%04x", p.Handle),
+			ServiceUUID:        serviceUUID,
+			CharacteristicUUID: charUUID,
 			Data:               p.Value,
 		}
 
@@ -320,20 +325,24 @@ func (w *Wire) attToGATTMessage(packet interface{}) *GATTMessage {
 		}
 
 	case *att.HandleValueNotification:
+		// Convert handle to UUIDs using local attribute database
+		serviceUUID, charUUID := w.handleToUUIDs(p.Handle)
 		return &GATTMessage{
 			Type:               "gatt_notification",
 			Operation:          "notify",
-			ServiceUUID:        fmt.Sprintf("service-handle-%04x", p.Handle),
-			CharacteristicUUID: fmt.Sprintf("char-handle-%04x", p.Handle),
+			ServiceUUID:        serviceUUID,
+			CharacteristicUUID: charUUID,
 			Data:               p.Value,
 		}
 
 	case *att.HandleValueIndication:
+		// Convert handle to UUIDs using local attribute database
+		serviceUUID, charUUID := w.handleToUUIDs(p.Handle)
 		return &GATTMessage{
 			Type:               "gatt_notification",
 			Operation:          "indicate",
-			ServiceUUID:        fmt.Sprintf("service-handle-%04x", p.Handle),
-			CharacteristicUUID: fmt.Sprintf("char-handle-%04x", p.Handle),
+			ServiceUUID:        serviceUUID,
+			CharacteristicUUID: charUUID,
 			Data:               p.Value,
 		}
 

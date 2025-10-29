@@ -445,7 +445,9 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 	// Find the characteristic
 	var targetChar *CBMutableCharacteristic
 	for _, service := range pm.services {
-		if service.UUID == msg.ServiceUUID {
+		// REALISTIC BLE: Compare UUIDs using their 16-byte representation
+		// This handles truncation when UUIDs are longer than 16 bytes
+		if pm.uuidMatches(service.UUID, msg.ServiceUUID) {
 			if isCCCDWrite {
 				// For CCCD writes, find the first notifiable characteristic in this service
 				// (In real BLE, each characteristic has its own CCCD, but our simplified protocol
@@ -462,7 +464,7 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 			} else {
 				// Regular characteristic lookup by UUID
 				for _, char := range service.Characteristics {
-					if char.UUID == msg.CharacteristicUUID {
+					if pm.uuidMatches(char.UUID, msg.CharacteristicUUID) {
 						targetChar = char
 						break
 					}
@@ -639,6 +641,27 @@ func (pm *CBPeripheralManager) propertiesToGATTBitmask(props CBCharacteristicPro
 		result |= gatt.PropBroadcast
 	}
 	return result
+}
+
+// uuidMatches compares two UUID strings using their 16-byte representation
+// This handles cases where UUIDs are longer than 16 bytes and get truncated
+// REALISTIC BLE: Real BLE UUIDs are either 16-bit (2 bytes) or 128-bit (16 bytes)
+// Test UUIDs can be arbitrary strings, so we normalize by comparing their byte representations
+func (pm *CBPeripheralManager) uuidMatches(uuid1, uuid2 string) bool {
+	// Convert both to bytes (which truncates to 16 bytes)
+	bytes1 := pm.parseUUID(uuid1)
+	bytes2 := pm.parseUUID(uuid2)
+
+	// Compare byte-by-byte
+	if len(bytes1) != len(bytes2) {
+		return false
+	}
+	for i := range bytes1 {
+		if bytes1[i] != bytes2[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // parseUUID converts a string UUID to bytes
