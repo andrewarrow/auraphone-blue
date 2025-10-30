@@ -39,6 +39,9 @@ type Wire struct {
 	stopReading   map[string]chan struct{}
 	stopMu        sync.RWMutex
 
+	// Goroutine tracking for clean shutdown
+	wg sync.WaitGroup
+
 	// Audit logging
 	connectionEventLog  *ConnectionEventLogger
 	socketHealthMonitor *SocketHealthMonitor
@@ -95,6 +98,7 @@ func (w *Wire) Start() error {
 	w.socketHealthMonitor.StartPeriodicSnapshots()
 
 	// Accept incoming connections
+	w.wg.Add(1)
 	go w.acceptConnections()
 
 	return nil
@@ -141,6 +145,11 @@ func (w *Wire) Stop() {
 	}
 	w.connections = make(map[string]*Connection)
 	w.mu.Unlock()
+
+	// Wait for all goroutines to finish
+	// This ensures acceptConnections, handleIncomingConnection, and readMessages goroutines
+	// have all completed before we proceed with cleanup
+	w.wg.Wait()
 
 	// Stop health monitor and log socket closure
 	if w.socketHealthMonitor != nil {

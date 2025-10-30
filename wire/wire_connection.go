@@ -17,6 +17,7 @@ import (
 
 // acceptConnections handles incoming connections
 func (w *Wire) acceptConnections() {
+	defer w.wg.Done()
 	for {
 		select {
 		case <-w.stopListening:
@@ -36,6 +37,7 @@ func (w *Wire) acceptConnections() {
 		}
 
 		// Read handshake: 4-byte UUID length + UUID bytes
+		w.wg.Add(1)
 		go w.handleIncomingConnection(conn)
 	}
 }
@@ -45,6 +47,7 @@ func (w *Wire) acceptConnections() {
 // is already represented by the central's sleep during Connect(). Once the socket is
 // accepted, the link-layer handshake is complete and both sides have the connection.
 func (w *Wire) handleIncomingConnection(conn net.Conn) {
+	defer w.wg.Done()
 	// Read UUID length (4 bytes)
 	var uuidLen uint32
 	err := binary.Read(conn, binary.BigEndian, &uuidLen)
@@ -114,7 +117,8 @@ func (w *Wire) handleIncomingConnection(conn net.Conn) {
 	w.stopReading[peerUUID] = stopChan
 	w.stopMu.Unlock()
 
-	w.readMessages(peerUUID, connection, stopChan)
+	w.wg.Add(1)
+	go w.readMessages(peerUUID, connection, stopChan)
 }
 
 // Connect establishes a connection to a peer (we become Central)
@@ -204,6 +208,7 @@ func (w *Wire) Connect(peerUUID string) error {
 	w.stopReading[peerUUID] = stopChan
 	w.stopMu.Unlock()
 
+	w.wg.Add(1)
 	go w.readMessages(peerUUID, connection, stopChan)
 
 	// Initiate MTU exchange as Central (we initiated the connection)

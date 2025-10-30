@@ -10,8 +10,10 @@ import (
 )
 
 // readMessages continuously reads messages from a connection
+// Note: Must be called with wg.Add(1) already done by caller
 func (w *Wire) readMessages(peerUUID string, connection *Connection, stopChan chan struct{}) {
 	defer func() {
+		w.wg.Done()
 		// Log read loop ended
 		socketType := string(connection.role)
 		if connection.role == RolePeripheral {
