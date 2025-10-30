@@ -27,6 +27,17 @@ func TestCentralPeripheralConnection(t *testing.T) {
 	}
 	defer peripheralWire.Stop()
 
+	// REALISTIC BLE: Peripheral must advertise to be discoverable
+	// Real BLE: Only advertising peripherals can be found by scanning centrals
+	advData := &wire.AdvertisingData{
+		DeviceName:    "Test Peripheral",
+		ServiceUUIDs:  []string{"1800"},
+		IsConnectable: true,
+	}
+	if err := peripheralWire.WriteAdvertisingData(advData); err != nil {
+		t.Fatalf("Failed to write advertising data: %v", err)
+	}
+
 	time.Sleep(100 * time.Millisecond)
 
 	// Test 1: Verify devices can discover each other
