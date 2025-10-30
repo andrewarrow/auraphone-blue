@@ -387,3 +387,22 @@ func (w *Wire) WaitForMTUNegotiation(peerUUID string, timeout time.Duration) err
 
 	return fmt.Errorf("timeout waiting for MTU negotiation with %s", peerUUID)
 }
+
+// GetMTU returns the negotiated MTU for a connection
+// Returns DefaultMTU if not connected or if MTU exchange hasn't completed yet
+// REALISTIC BLE: MTU determines maximum data payload per ATT operation
+func (w *Wire) GetMTU(peerUUID string) int {
+	w.mu.RLock()
+	connection, exists := w.connections[peerUUID]
+	w.mu.RUnlock()
+
+	if !exists {
+		return DefaultMTU
+	}
+
+	connection.mtuMutex.RLock()
+	mtu := connection.mtu
+	connection.mtuMutex.RUnlock()
+
+	return mtu
+}

@@ -34,11 +34,13 @@ type CBCentral struct {
 }
 
 // CBATTRequest represents a read/write request from a central device
+// Matches iOS CoreBluetooth CBATTRequest
 type CBATTRequest struct {
 	Central        CBCentral
 	Characteristic *CBMutableCharacteristic
 	Offset         int
-	Value          []byte // For write requests
+	Value          []byte // For write requests: contains the data being written
+	               // For read requests: app can set this before calling RespondToRequest
 }
 
 // CBMutableCharacteristic is the peripheral-side representation of a characteristic
@@ -326,23 +328,34 @@ func (pm *CBPeripheralManager) UpdateValue(value []byte, characteristic *CBMutab
 
 // RespondToRequest responds to a read/write request from a central
 // Matches: peripheralManager.respond(to:withResult:)
+// REALISTIC iOS BEHAVIOR:
+// - For read requests: App can set request.value in DidReceiveReadRequest, then call this
+// - Response sends request.value if set, otherwise falls back to characteristic.value
+// - For write requests: Request already has request.value from the write data
 func (pm *CBPeripheralManager) RespondToRequest(request *CBATTRequest, result int) {
 	// REALISTIC iOS BEHAVIOR: Send ATT response back to the central
 	if result == int(CBATTErrorSuccess) && request.Characteristic != nil {
-		// Success - send characteristic value back
+		// Determine what value to send back
+		// Real iOS uses request.value if set by app, otherwise characteristic.value
+		responseData := request.Value
+		if responseData == nil {
+			responseData = request.Characteristic.Value
+		}
+
+		// Success - send response value back
 		msg := &wire.GATTMessage{
 			Type:               "gatt_response",
 			Operation:          "read_response",
 			ServiceUUID:        request.Characteristic.Service.UUID,
 			CharacteristicUUID: request.Characteristic.UUID,
-			Data:               request.Characteristic.Value,
+			Data:               responseData,
 		}
 
 		err := pm.wire.SendGATTMessage(request.Central.UUID, msg)
 		if err != nil {
 			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "⚠️  Failed to send read response to central %s: %v", request.Central.UUID[:8], err)
 		} else {
-			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📨 Sent read response to central %s (%d bytes)", request.Central.UUID[:8], len(request.Characteristic.Value))
+			logger.Trace(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📨 Sent read response to central %s (%d bytes)", request.Central.UUID[:8], len(responseData))
 		}
 	} else {
 		// Error response

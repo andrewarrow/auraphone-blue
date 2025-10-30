@@ -46,6 +46,42 @@ type CBCharacteristic struct {
 	Descriptors []*CBDescriptor // Descriptors for this characteristic
 }
 
+// HasProperty checks if the characteristic has a specific property
+// Matches iOS: characteristic.properties.contains(.read)
+// REALISTIC iOS BEHAVIOR: Properties are defined by the GATT server and never change
+// Common properties: "read", "write", "write_without_response", "notify", "indicate"
+func (c *CBCharacteristic) HasProperty(property string) bool {
+	for _, prop := range c.Properties {
+		if prop == property {
+			return true
+		}
+	}
+	return false
+}
+
+// Convenience methods matching common iOS property checks
+// These match the iOS CBCharacteristicProperties bitmask checks
+
+func (c *CBCharacteristic) IsReadable() bool {
+	return c.HasProperty("read")
+}
+
+func (c *CBCharacteristic) IsWritable() bool {
+	return c.HasProperty("write")
+}
+
+func (c *CBCharacteristic) IsWritableWithoutResponse() bool {
+	return c.HasProperty("write_without_response")
+}
+
+func (c *CBCharacteristic) IsNotifiable() bool {
+	return c.HasProperty("notify")
+}
+
+func (c *CBCharacteristic) SupportsIndication() bool {
+	return c.HasProperty("indicate")
+}
+
 // CBService represents a BLE service
 type CBService struct {
 	UUID            string
@@ -468,15 +504,42 @@ func (p *CBPeripheral) WriteValue(data []byte, characteristic *CBCharacteristic,
 	return nil
 }
 
-func (p *CBPeripheral) ReadValue(characteristic *CBCharacteristic) error {
+// ReadValue reads the value of a characteristic
+// Matches: peripheral.readValue(for: CBCharacteristic)
+// REALISTIC iOS BEHAVIOR: This is asynchronous - it returns immediately and the result
+// is delivered later via didUpdateValueForCharacteristic delegate callback
+//
+// Real iOS behavior:
+// - Sends ATT Read Request to peripheral
+// - Returns immediately (does NOT return error)
+// - On success: didUpdateValueForCharacteristic called with updated value
+// - On failure: didUpdateValueForCharacteristic called with error
+func (p *CBPeripheral) ReadValue(characteristic *CBCharacteristic) {
 	if p.wire == nil {
-		return fmt.Errorf("peripheral not connected")
+		if p.Delegate != nil {
+			p.Delegate.DidUpdateValueForCharacteristic(p, characteristic, fmt.Errorf("peripheral not connected"))
+		}
+		return
 	}
 	if characteristic == nil || characteristic.Service == nil {
-		return fmt.Errorf("invalid characteristic")
+		if p.Delegate != nil {
+			p.Delegate.DidUpdateValueForCharacteristic(p, characteristic, fmt.Errorf("invalid characteristic"))
+		}
+		return
 	}
 
-	return p.wire.ReadCharacteristic(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
+	// Send read request asynchronously
+	// Response will come back through HandleGATTMessage -> DidUpdateValueForCharacteristic
+	go func() {
+		err := p.wire.ReadCharacteristic(p.remoteUUID, characteristic.Service.UUID, characteristic.UUID)
+		if err != nil {
+			// Immediate failure (e.g., not connected) - deliver error via delegate
+			if p.Delegate != nil {
+				p.Delegate.DidUpdateValueForCharacteristic(p, characteristic, err)
+			}
+		}
+		// Success: response will arrive via HandleGATTMessage
+	}()
 }
 
 // DiscoverDescriptors discovers descriptors for a characteristic
@@ -737,6 +800,38 @@ func (p *CBPeripheral) StopListening() {
 		close(p.stopChan)
 		p.stopChan = nil
 	}
+}
+
+// MaximumWriteValueLength returns the maximum amount of data that can be sent in a single write
+// Matches: peripheral.maximumWriteValueLength(for: CBCharacteristicWriteType)
+// REALISTIC BLE: This is critical for chunking large data transfers (e.g., photos)
+//
+// Real iOS behavior:
+// - Returns negotiated MTU minus ATT overhead
+// - For .withResponse: MTU - 3 bytes (ATT Write Request = opcode 1 + handle 2)
+// - For .withoutResponse: MTU - 3 bytes (ATT Write Command = opcode 1 + handle 2)
+// - Default: 20 bytes (MTU 23) on older iOS, 182+ bytes on iOS 10+ with BLE 4.2
+// - Up to 512 bytes with BLE 5.0 if both devices support it
+func (p *CBPeripheral) MaximumWriteValueLength(writeType CBCharacteristicWriteType) int {
+	if p.wire == nil {
+		// Not connected - return minimum BLE MTU payload
+		return 20 // Default BLE MTU (23) - 3 bytes overhead
+	}
+
+	// Get negotiated MTU from wire layer
+	mtu := p.wire.GetMTU(p.remoteUUID)
+
+	// Calculate max write payload
+	// ATT Write Request/Command format: [Opcode:1 byte][Handle:2 bytes][Value:N bytes]
+	// So maximum value size = MTU - 3
+	maxPayload := mtu - 3
+
+	// Sanity check: minimum is 20 bytes (BLE spec minimum MTU is 23)
+	if maxPayload < 20 {
+		maxPayload = 20
+	}
+
+	return maxPayload
 }
 
 // NewCBPeripheralFromConnection creates a CBPeripheral for an existing connection
