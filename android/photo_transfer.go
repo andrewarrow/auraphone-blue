@@ -107,7 +107,7 @@ func (a *Android) requestAndReceivePhoto(peerUUID string, photoHash string, devi
 	gatt, exists := a.connectedGatts[peerUUID]
 	a.mu.RUnlock()
 
-	if !exists {
+	if !exists || gatt == nil {
 		// We're Peripheral - send photo request via notification (realistic BLE behavior)
 		// In real BLE, Peripherals can't initiate GATT reads, but they CAN send notifications
 		// to request data from the Central

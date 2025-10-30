@@ -69,19 +69,27 @@ func (a *Android) connectToDevice(peerUUID string) {
 		a.mu.Unlock()
 		return
 	}
+	// Reserve the slot with nil to prevent race condition where multiple threads
+	// try to connect before the GATT object is stored
+	// REALISTIC: Real Android apps track pending connections to avoid duplicates
+	a.connectedGatts[peerUUID] = nil
 	a.mu.Unlock()
 
 	// Get remote device
 	device := a.manager.Adapter.GetRemoteDevice(peerUUID)
 	if device == nil {
 		logger.Error(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Failed to get remote device %s", shortHash(peerUUID))
+		// Clean up reservation on failure
+		a.mu.Lock()
+		delete(a.connectedGatts, peerUUID)
+		a.mu.Unlock()
 		return
 	}
 
 	// Connect with autoConnect=false (manual reconnect, can be changed to true for iOS-like auto-reconnect)
 	gatt := device.ConnectGatt(nil, false, a)
 
-	// Store GATT connection
+	// Store GATT connection (replace nil reservation with actual gatt)
 	a.mu.Lock()
 	a.connectedGatts[peerUUID] = gatt
 	a.mu.Unlock()

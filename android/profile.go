@@ -219,7 +219,7 @@ func (a *Android) sendCachedProfile(peerUUID string, targetDeviceID string, meta
 
 	// Send profile via appropriate method based on our role
 	var err2 error
-	if isCentral {
+	if isCentral && gatt != nil {
 		// We're Central - write to characteristic
 		char := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
 		if char != nil {

@@ -117,7 +117,7 @@ func (a *Android) requestProfileUpdate(peerUUID string, targetDeviceID string, e
 	gatt, exists := a.connectedGatts[peerUUID]
 	a.mu.RUnlock()
 
-	if !exists {
+	if !exists || gatt == nil {
 		logger.Debug(fmt.Sprintf("%s Android", shortHash(a.hardwareUUID)), "Peer %s disconnected before profile request", shortHash(peerUUID))
 		return
 	}
