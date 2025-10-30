@@ -76,9 +76,10 @@ func TestBluetoothAdapter_GetRemoteDevice(t *testing.T) {
 	defer w2.Stop()
 
 	// Write advertising data for device2
-	// Note: Keep device name short to fit within 31-byte BLE advertising limit
+	// Note: Keep device name very short to fit within 31-byte BLE advertising limit
+	// Real BLE: Legacy advertising packets can only hold 31 bytes total
 	advData := &wire.AdvertisingData{
-		DeviceName:    "AndroidDev",
+		DeviceName:    "Dev",
 		ServiceUUIDs:  []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
 		IsConnectable: true,
 	}
@@ -98,7 +99,7 @@ func TestBluetoothAdapter_GetRemoteDevice(t *testing.T) {
 		t.Errorf("Wrong device address: %s", device.Address)
 	}
 
-	if device.Name != "AndroidDev" {
+	if device.Name != "Dev" {
 		t.Errorf("Wrong device name: %s", device.Name)
 	}
 
