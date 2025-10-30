@@ -13,23 +13,74 @@ import (
 // ============================================================================
 
 func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
+	peripheralUUID := result.Device.Address // Peripheral UUID for BLE routing only
+
 	a.mu.Lock()
 
 	// Check if already discovered
-	if _, exists := a.discovered[result.Device.Address]; exists {
+	if _, exists := a.discovered[peripheralUUID]; exists {
 		a.mu.Unlock()
 		return
 	}
 
-	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📡 Discovered: %s (RSSI: %d)", result.Device.Name, result.Rssi)
+	// Try to extract Base36 device ID from advertisement (device name in Android)
+	advertisedDeviceID := result.Device.Name
 
-	// Store discovered device
+	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📡 Discovered: %s (RSSI: %d, advertised ID: %s)",
+		result.Device.Name, result.Rssi, advertisedDeviceID)
+
+	// Store discovered device (will be updated with Base36 ID after handshake if not in advertisement)
 	device := phone.DiscoveredDevice{
-		HardwareUUID: result.Device.Address,
-		Name:         result.Device.Name,
-		RSSI:         float64(result.Rssi),
+		PeripheralUUID: peripheralUUID,
+		DeviceID:       advertisedDeviceID, // May be empty until handshake
+		Name:           result.Device.Name,
+		RSSI:           float64(result.Rssi),
 	}
-	a.discovered[result.Device.Address] = device
+	a.discovered[peripheralUUID] = device
+
+	// Check if we're already connected (e.g., they connected to us as Peripheral)
+	// Real Android BLE: Don't initiate a new connection if already connected
+	alreadyConnected := a.identityManager.IsConnected(peripheralUUID)
+
+	// ROLE POLICY: Apply role policy based on Base36 device ID if available in advertisement
+	// Otherwise, connect anyway to get Base36 ID via handshake (quick connect pattern)
+	var shouldConnect bool
+	if !alreadyConnected {
+		if advertisedDeviceID != "" {
+			// We have the Base36 device ID from advertisement - apply role policy now
+			// Validate it's a proper Base36 ID (6-16 chars, alphanumeric)
+			isValidBase36 := len(advertisedDeviceID) >= 6 && len(advertisedDeviceID) <= 16
+
+			if isValidBase36 {
+				// Filter out self (should not connect to ourselves)
+				if advertisedDeviceID == a.deviceID {
+					a.mu.Unlock()
+					logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "⏭️  Skipping self-discovery: %s", advertisedDeviceID)
+					return
+				}
+
+				// ROLE POLICY: Device with LARGER Base36 ID initiates connection
+				shouldConnect = a.shouldInitiateConnection(advertisedDeviceID)
+
+				if !shouldConnect {
+					// We should NOT initiate - they will connect to us
+					a.mu.Unlock()
+					logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]),
+						"🔀 Role policy: Waiting for %s to connect (our ID: %s > their ID: %s = %v)",
+						advertisedDeviceID, a.deviceID, advertisedDeviceID, a.deviceID > advertisedDeviceID)
+
+					// Still call callback so device appears in GUI
+					if a.callback != nil {
+						a.callback(device)
+					}
+					return
+				}
+			}
+		}
+
+		// Either no device ID in advertisement, invalid format, or we won the role policy
+		shouldConnect = true
+	}
 
 	// Unlock BEFORE calling callback and connectToDevice to avoid deadlock
 	// (callbacks may trigger other operations that need the mutex)
@@ -40,21 +91,24 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 		a.callback(device)
 	}
 
-	// Check if we're already connected (e.g., they connected to us as Peripheral)
-	// Real Android BLE: Don't initiate a new connection if already connected
-	alreadyConnected := a.identityManager.IsConnected(result.Device.Address)
-
 	// Decide if we should initiate connection based on role negotiation
-	// IMPORTANT: Android CAN discover other Android devices (unlike iOS which blocks iOS-to-iOS discovery)
-	if !alreadyConnected && a.manager.Adapter.ShouldInitiateConnection(result.Device.Address) {
-		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🔌 Initiating connection to %s (role: Central)", shortHash(result.Device.Address))
+	if shouldConnect {
+		if advertisedDeviceID != "" {
+			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]),
+				"🔌 Initiating connection to %s (%s) - role: Central",
+				advertisedDeviceID, shortHash(peripheralUUID))
+		} else {
+			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]),
+				"🔌 Initiating connection to %s (will identify via handshake) - role: Central",
+				shortHash(peripheralUUID))
+		}
 
 		// Connect
-		a.connectToDevice(result.Device.Address)
+		a.connectToDevice(peripheralUUID)
 	} else {
 		// Don't log if already connected (to avoid log spam)
 		if !alreadyConnected {
-			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "⏳ Waiting for %s to connect (role: Peripheral)", shortHash(result.Device.Address))
+			logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "⏳ Waiting for %s to connect (role: Peripheral)", shortHash(peripheralUUID))
 		}
 	}
 }

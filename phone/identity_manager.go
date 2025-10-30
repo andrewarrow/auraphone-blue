@@ -8,25 +8,29 @@ import (
 	"sync"
 )
 
-// IdentityManager maintains bidirectional mapping between hardware UUIDs and device IDs
+// IdentityManager maintains bidirectional mapping between peripheral UUIDs and device IDs
 // This is the ONLY place where this mapping should exist
 //
+// IMPORTANT: Two different types of "UUID" are used:
+// 1. ourHardwareUUID = Simulator instance ID (only for data paths, never sent over BLE)
+// 2. Peer peripheral UUIDs = CBPeripheral.identifier (for BLE routing, dictionary keys)
+//
 // CRITICAL RULES:
-// 1. Wire layer ALWAYS uses hardware UUIDs (never DeviceIDs)
-// 2. Application layer uses DeviceIDs for display
-// 3. When sending: DeviceID → lookup hardware UUID → send via wire
-// 4. When receiving: hardware UUID → lookup DeviceID → display to user
+// 1. Wire layer ALWAYS uses peripheral UUIDs (never DeviceIDs)
+// 2. Application layer uses DeviceIDs for display/storage/role policy
+// 3. When sending: DeviceID → lookup peripheral UUID → send via wire
+// 4. When receiving: peripheral UUID → lookup DeviceID → display to user
 type IdentityManager struct {
 	mu              sync.RWMutex
-	ourHardwareUUID string
-	ourDeviceID     string
+	ourHardwareUUID string // Simulator instance ID (for data directory paths only)
+	ourDeviceID     string // Our Base36 device ID
 
 	// Bidirectional mapping (THE ONLY PLACE this exists)
-	hardwareToDevice map[string]string // hardware UUID -> device ID
-	deviceToHardware map[string]string // device ID -> hardware UUID
+	hardwareToDevice map[string]string // peripheral UUID (CBPeripheral.identifier) -> Base36 device ID
+	deviceToHardware map[string]string // Base36 device ID -> peripheral UUID (CBPeripheral.identifier)
 
 	// Connection state (tracks which devices are currently reachable)
-	connectedDevices map[string]bool // hardware UUID -> is connected
+	connectedDevices map[string]bool // peripheral UUID -> is connected
 
 	// Persistence
 	statePath string
@@ -63,14 +67,18 @@ func NewIdentityManager(ourHardwareUUID, ourDeviceID, dataDir string) *IdentityM
 	return im
 }
 
-// RegisterDevice adds or updates a hardware UUID <-> device ID mapping
+// RegisterDevice adds or updates a peripheral UUID <-> device ID mapping
 // Called after handshake when we learn a peer's device ID
 //
+// Parameters:
+//   - hardwareUUID: CBPeripheral.identifier for this peer (used for BLE routing only)
+//   - deviceID: Base36 device ID from handshake (used for identity/storage/role policy)
+//
 // Handles two real-world scenarios:
-// 1. iOS UUID rotation: Same DeviceID reconnects with new hardware UUID
-//    - Remove old hardwareUUID → DeviceID mapping before adding new one
-// 2. Android device reuse: Same hardware UUID reconnects with new DeviceID (factory reset/new owner)
-//    - Remove old DeviceID → hardwareUUID mapping before adding new one
+// 1. iOS UUID rotation: Same DeviceID reconnects with new peripheral UUID
+//    - Remove old peripheralUUID → DeviceID mapping before adding new one
+// 2. Android device reuse: Same peripheral UUID reconnects with new DeviceID (factory reset/new owner)
+//    - Remove old DeviceID → peripheralUUID mapping before adding new one
 func (im *IdentityManager) RegisterDevice(hardwareUUID, deviceID string) {
 	if hardwareUUID == "" || deviceID == "" {
 		return

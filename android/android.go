@@ -268,6 +268,20 @@ func (a *Android) GetPlatform() string {
 	return "android"
 }
 
+// shouldInitiateConnection determines if we should initiate connection based on role policy
+// Device with LARGER Base36 ID acts as Central (initiates connection)
+// This prevents connection collisions through deterministic role assignment
+//
+// For Bluetooth routing:
+//   - ✅ Use peripheralUUID (device address) as dictionary keys
+//   - ❌ Never use it for role policy or storage
+//
+// For everything else:
+//   - ✅ Use Base36 DeviceID
+func (a *Android) shouldInitiateConnection(theirDeviceID string) bool {
+	return a.deviceID > theirDeviceID // Larger Base36 ID initiates
+}
+
 // handleIncomingCentralConnection handles when a Central connects to us (we're Peripheral)
 // This creates a BluetoothGatt object so we can send requests back to them
 func (a *Android) handleIncomingCentralConnection(peerUUID string) {

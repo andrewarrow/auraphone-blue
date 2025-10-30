@@ -21,17 +21,17 @@ func shortHash(s string) string {
 }
 
 // HandshakeMessage is exchanged when two devices first connect
+// IMPORTANT: Only send DeviceID (Base36), never hardware UUID (simulator instance ID)
 type HandshakeMessage struct {
-	HardwareUUID string `json:"hardware_uuid"`
-	DeviceID     string `json:"device_id"`
-	DeviceName   string `json:"device_name"`
-	FirstName    string `json:"first_name"`
+	DeviceID   string `json:"device_id"`   // Base36 device ID (PRIMARY identifier)
+	DeviceName string `json:"device_name"` // Display name
+	FirstName  string `json:"first_name"`  // User's first name
 }
 
 // Android implements the Phone interface for Android devices
 type Android struct {
-	hardwareUUID string
-	deviceID     string
+	hardwareUUID string // Simulator instance ID (for data paths, logging only - NEVER sent over BLE)
+	deviceID     string // Our Base36 device ID (sent in handshake, used for role policy)
 	deviceName   string
 	firstName    string
 
@@ -40,14 +40,14 @@ type Android struct {
 	scanner         *kotlin.BluetoothLeScanner
 	advertiser      *kotlin.BluetoothLeAdvertiser
 	gattServer      *kotlin.BluetoothGattServer
-	identityManager *phone.IdentityManager // THE ONLY place for UUID ↔ DeviceID mapping
+	identityManager *phone.IdentityManager // THE ONLY place for peripheralUUID ↔ DeviceID mapping
 	photoCache      *phone.PhotoCache      // Photo caching and storage
 	photoChunker    *phone.PhotoChunker    // Photo chunking for BLE transfer
 
-	discovered     map[string]phone.DiscoveredDevice    // hardwareUUID -> device
-	handshaked     map[string]*HandshakeMessage         // hardwareUUID -> handshake data
-	connectedGatts map[string]*kotlin.BluetoothGatt     // hardwareUUID -> GATT connection (central mode)
-	photoTransfers map[string]*phone.PhotoTransferState // hardwareUUID -> in-progress transfer
+	discovered     map[string]phone.DiscoveredDevice    // peripheralUUID -> device
+	handshaked     map[string]*HandshakeMessage         // peripheralUUID -> handshake data
+	connectedGatts map[string]*kotlin.BluetoothGatt     // peripheralUUID -> GATT connection (central mode)
+	photoTransfers map[string]*phone.PhotoTransferState // peripheralUUID -> in-progress transfer
 
 	// Gossip protocol (shared logic in phone/mesh_view.go)
 	meshView     *phone.MeshView

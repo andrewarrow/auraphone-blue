@@ -17,23 +17,33 @@ func (ip *IPhone) DidUpdateCentralState(central swift.CBCentralManager) {
 }
 
 func (ip *IPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripheral swift.CBPeripheral, advertisementData map[string]interface{}, rssi float64) {
+	peripheralUUID := peripheral.UUID // iOS-assigned UUID for BLE routing only
+
 	ip.mu.Lock()
 
 	// Check if already discovered
-	if _, exists := ip.discovered[peripheral.UUID]; exists {
+	if _, exists := ip.discovered[peripheralUUID]; exists {
 		ip.mu.Unlock()
 		return
 	}
 
-	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📡 Discovered: %s (RSSI: %.0f)", peripheral.Name, rssi)
-
-	// Store discovered device
-	device := phone.DiscoveredDevice{
-		HardwareUUID: peripheral.UUID,
-		Name:         peripheral.Name,
-		RSSI:         rssi,
+	// Try to extract Base36 device ID from advertisement (local name)
+	advertisedDeviceID := ""
+	if localName, ok := advertisementData["kCBAdvDataLocalName"].(string); ok {
+		advertisedDeviceID = localName
 	}
-	ip.discovered[peripheral.UUID] = device
+
+	logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📡 Discovered: %s (RSSI: %.0f, advertised ID: %s)",
+		peripheral.Name, rssi, advertisedDeviceID)
+
+	// Store discovered device (will be updated with Base36 ID after handshake if not in advertisement)
+	device := phone.DiscoveredDevice{
+		PeripheralUUID: peripheralUUID,
+		DeviceID:       advertisedDeviceID, // May be empty until handshake
+		Name:           peripheral.Name,
+		RSSI:           rssi,
+	}
+	ip.discovered[peripheralUUID] = device
 
 	// Store peripheral for message routing (if we're going to connect)
 	var shouldConnect bool
@@ -41,11 +51,48 @@ func (ip *IPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 
 	// Check if we're already connected (e.g., they connected to us as Peripheral)
 	// Real iOS CoreBluetooth: Don't initiate a new connection if already connected
-	alreadyConnected := ip.identityManager.IsConnected(peripheral.UUID)
+	alreadyConnected := ip.identityManager.IsConnected(peripheralUUID)
 
-	if !alreadyConnected && ip.central.ShouldInitiateConnection(peripheral.UUID) {
+	// ROLE POLICY: Apply role policy based on Base36 device ID if available in advertisement
+	// Otherwise, connect anyway to get Base36 ID via handshake (quick connect pattern)
+	if !alreadyConnected {
+		if advertisedDeviceID != "" {
+			// We have the Base36 device ID from advertisement - apply role policy now
+			// Validate it's a proper Base36 ID (6-16 chars, alphanumeric)
+			isValidBase36 := len(advertisedDeviceID) >= 6 && len(advertisedDeviceID) <= 16
+			// Could add regex validation here if needed
+
+			if isValidBase36 {
+				// Filter out self (should not connect to ourselves)
+				if advertisedDeviceID == ip.deviceID {
+					ip.mu.Unlock()
+					logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "⏭️  Skipping self-discovery: %s", advertisedDeviceID)
+					return
+				}
+
+				// ROLE POLICY: Device with LARGER Base36 ID initiates connection
+				shouldConnect = ip.shouldInitiateConnection(advertisedDeviceID)
+
+				if !shouldConnect {
+					// We should NOT initiate - they will connect to us
+					ip.mu.Unlock()
+					logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]),
+						"🔀 Role policy: Waiting for %s to connect (our ID: %s > their ID: %s = %v)",
+						advertisedDeviceID, ip.deviceID, advertisedDeviceID, ip.deviceID > advertisedDeviceID)
+
+					// Still call callback so device appears in GUI
+					if ip.callback != nil {
+						ip.callback(device)
+					}
+					return
+				}
+			}
+		}
+
+		// Either no device ID in advertisement, invalid format, or we won the role policy
+		// Connect to get/use the device ID
 		peripheralObj = &peripheral
-		ip.connectedPeers[peripheral.UUID] = peripheralObj
+		ip.connectedPeers[peripheralUUID] = peripheralObj
 		shouldConnect = true
 	}
 
@@ -60,14 +107,22 @@ func (ip *IPhone) DidDiscoverPeripheral(central swift.CBCentralManager, peripher
 
 	// Decide if we should initiate connection based on role negotiation
 	if shouldConnect {
-		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🔌 Initiating connection to %s (role: Central)", shortHash(peripheral.UUID))
+		if advertisedDeviceID != "" {
+			logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]),
+				"🔌 Initiating connection to %s (%s) - role: Central",
+				advertisedDeviceID, shortHash(peripheralUUID))
+		} else {
+			logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]),
+				"🔌 Initiating connection to %s (will identify via handshake) - role: Central",
+				shortHash(peripheralUUID))
+		}
 
 		// Connect
 		ip.central.Connect(peripheralObj, nil)
 	} else {
 		// Don't log if already connected (to avoid log spam)
 		if !alreadyConnected {
-			logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "⏳ Waiting for %s to connect (role: Peripheral)", shortHash(peripheral.UUID))
+			logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "⏳ Waiting for %s to connect (role: Peripheral)", shortHash(peripheralUUID))
 		}
 	}
 }

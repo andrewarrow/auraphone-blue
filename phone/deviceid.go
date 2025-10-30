@@ -10,6 +10,17 @@ import (
 )
 
 // DeviceIDCache stores the persistent device ID
+//
+// CRITICAL: This is the 8-character Base36 ID that is the PRIMARY KEY for all device operations:
+//   - Role policy (which device initiates connection)
+//   - Identity management (device-to-device identification)
+//   - Storage (cache files, photo storage, mesh view)
+//   - User-facing display
+//
+// It is generated once per app installation and persists across app launches.
+//
+// It is NOT the same as the CBPeripheral.identifier (which is assigned by iOS and only
+// used for BLE routing - as dictionary keys for tracking connections).
 type DeviceIDCache struct {
 	DeviceID string `json:"device_id"` // 8-character base36 ID
 }

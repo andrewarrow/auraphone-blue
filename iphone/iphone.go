@@ -181,15 +181,22 @@ func (ip *IPhone) setupGATTServices() {
 // startAdvertising begins BLE advertising
 func (ip *IPhone) startAdvertising() {
 	// REALISTIC iOS BLE: Advertising packet is limited to 31 bytes
-	// To fit within this limit, we only advertise service UUIDs
-	// Real iOS omits local name in background advertising for privacy and space
+	// In foreground, iOS includes local name (Base36 device ID for role policy)
+	// In background, iOS may omit local name for privacy - peers will get ID via handshake
+	ip.mu.RLock()
+	deviceID := ip.deviceID
+	ip.mu.RUnlock()
+
 	advData := map[string]interface{}{
+		"kCBAdvDataLocalName":    deviceID, // Base36 ID for quick role policy
 		"kCBAdvDataServiceUUIDs": []string{phone.AuraServiceUUID},
 	}
 
 	err := ip.peripheral.StartAdvertising(advData)
 	if err != nil {
 		logger.Error(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Failed to start advertising: %v", err)
+	} else {
+		logger.Info(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📡 Advertising as: %s", deviceID)
 	}
 }
 
@@ -230,6 +237,20 @@ func (ip *IPhone) handleGATTMessage(peerUUID string, msg *wire.GATTMessage) {
 	}
 }
 
+// shouldInitiateConnection determines if we should initiate connection based on role policy
+// Device with LARGER Base36 ID acts as Central (initiates connection)
+// This prevents connection collisions through deterministic role assignment
+//
+// For Bluetooth routing:
+//   - ✅ Use CBPeripheral.identifier (the peripheral UUID) as dictionary keys
+//   - ❌ Never use it for role policy or storage
+//
+// For everything else:
+//   - ✅ Use Base36 DeviceID
+func (ip *IPhone) shouldInitiateConnection(theirDeviceID string) bool {
+	return ip.deviceID > theirDeviceID // Larger Base36 ID initiates
+}
+
 // handleIncomingCentralConnection handles when a Central connects to us (we're Peripheral)
 // This creates a CBPeripheral object so we can send requests back to them
 func (ip *IPhone) handleIncomingCentralConnection(peerUUID string) {
@@ -250,9 +271,9 @@ func (ip *IPhone) handleIncomingCentralConnection(peerUUID string) {
 		// Add them to discovered map so photo callback will work later
 		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📝 Adding Central %s to discovered map (connected before discovery)", shortHash(peerUUID))
 		ip.discovered[peerUUID] = phone.DiscoveredDevice{
-			HardwareUUID: peerUUID,
-			Name:         deviceName,
-			RSSI:         -45, // Default RSSI
+			PeripheralUUID: peerUUID,
+			Name:           deviceName,
+			RSSI:           -45, // Default RSSI
 		}
 		// Trigger GUI callback so device appears in list
 		if ip.callback != nil {

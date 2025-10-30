@@ -9,13 +9,22 @@ import (
 )
 
 // DiscoveredDevice represents a device discovered via BLE scanning
+//
+// IMPORTANT UUID Usage Pattern:
+//
+// For Bluetooth routing:
+//   - ✅ Use PeripheralUUID (CBPeripheral.identifier) as dictionary keys
+//   - ❌ Never use it for role policy or storage
+//
+// For everything else (role policy, identity, storage):
+//   - ✅ Use Base36 DeviceID
 type DiscoveredDevice struct {
-	HardwareUUID string
-	DeviceID     string // Base36 device ID (empty until handshake)
-	Name         string
-	RSSI         float64
-	PhotoHash    string // SHA-256 hash of profile photo
-	PhotoData    []byte // Actual photo data (nil until received)
+	PeripheralUUID string // iOS-assigned peripheral UUID for BLE routing ONLY (dictionary keys, connection tracking)
+	DeviceID       string // Base36 device ID (empty until handshake) - PRIMARY identifier for everything else
+	Name           string
+	RSSI           float64
+	PhotoHash      string // SHA-256 hash of profile photo
+	PhotoData      []byte // Actual photo data (nil until received)
 }
 
 // DeviceDiscoveryCallback is called when a new device is discovered
