@@ -242,11 +242,12 @@ func (a *BluetoothLeAdvertiser) HandleGATTMessage(msg *wire.GATTMessage) {
 // BluetoothGattServer matches Android's BluetoothGattServer class
 // Manages the local GATT database when device is in peripheral role
 type BluetoothGattServer struct {
-	uuid             string
-	wire             *wire.Wire
-	services         []*BluetoothGattService
-	callback         BluetoothGattServerCallback
-	connectedDevices map[string]*BluetoothDevice // device UUID -> device
+	uuid                   string
+	wire                   *wire.Wire
+	services               []*BluetoothGattService
+	callback               BluetoothGattServerCallback
+	connectedDevices       map[string]*BluetoothDevice                // device UUID -> device
+	notificationSubscribers map[string]map[string]bool                 // characteristic UUID -> (device UUID -> subscribed)
 }
 
 // BluetoothGattServerCallback matches Android's BluetoothGattServerCallback
@@ -274,11 +275,12 @@ const (
 // Matches: bluetoothManager.openGattServer(context, callback)
 func NewBluetoothGattServer(uuid string, callback BluetoothGattServerCallback, deviceName string, sharedWire *wire.Wire) *BluetoothGattServer {
 	return &BluetoothGattServer{
-		uuid:             uuid,
-		wire:             sharedWire,
-		services:         make([]*BluetoothGattService, 0),
-		callback:         callback,
-		connectedDevices: make(map[string]*BluetoothDevice),
+		uuid:                   uuid,
+		wire:                   sharedWire,
+		services:               make([]*BluetoothGattService, 0),
+		callback:               callback,
+		connectedDevices:       make(map[string]*BluetoothDevice),
+		notificationSubscribers: make(map[string]map[string]bool),
 	}
 }
 
@@ -338,8 +340,20 @@ func (s *BluetoothGattServer) SendResponse(device *BluetoothDevice, requestId in
 
 // NotifyCharacteristicChanged sends a notification/indication to a connected device
 // Matches: gattServer.notifyCharacteristicChanged(device, characteristic, confirm)
+// REALISTIC ANDROID BLE: Only sends if the device has enabled notifications via CCCD write
 func (s *BluetoothGattServer) NotifyCharacteristicChanged(device *BluetoothDevice, characteristic *BluetoothGattCharacteristic, confirm bool) bool {
 	if device == nil || characteristic == nil {
+		return false
+	}
+
+	// CRITICAL: Real Android BLE requires the central to enable notifications first
+	// Check if this device has subscribed to notifications for this characteristic
+	subscribers, exists := s.notificationSubscribers[characteristic.UUID]
+	if !exists || !subscribers[device.Address] {
+		// Real Android behavior: silently fail if notifications not enabled
+		logger.Trace(fmt.Sprintf("%s Android", s.uuid[:8]),
+			"⚠️  Device %s has not enabled notifications for characteristic %s (CCCD not written)",
+			device.Address[:8], characteristic.UUID[:8])
 		return false
 	}
 
@@ -538,14 +552,31 @@ func (s *BluetoothGattServer) parseUUID(uuidStr string) []byte {
 
 // handleCharacteristicMessage processes incoming GATT messages
 func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.CharacteristicMessage) {
+	// REALISTIC BLE: CCCD writes come as descriptor writes, not characteristic writes
+	// When CharacteristicUUID == CCCD_UUID, we need to find the notifiable characteristic
+	// Real BLE uses ATT handles, but for simulator we find by service + notify property
+	isCCCDWrite := (msg.CharacteristicUUID == CCCD_UUID)
+
 	// Find the characteristic
 	var targetChar *BluetoothGattCharacteristic
 	for _, service := range s.services {
 		if service.UUID == msg.ServiceUUID {
-			for _, char := range service.Characteristics {
-				if char.UUID == msg.CharacteristicUUID {
-					targetChar = char
-					break
+			if isCCCDWrite {
+				// CCCD write: find first notifiable/indicatable characteristic in service
+				// Real BLE would use handle-based routing
+				for _, char := range service.Characteristics {
+					if char.Properties&(PROPERTY_NOTIFY|PROPERTY_INDICATE) != 0 {
+						targetChar = char
+						break
+					}
+				}
+			} else {
+				// Regular characteristic operation: match by UUID
+				for _, char := range service.Characteristics {
+					if char.UUID == msg.CharacteristicUUID {
+						targetChar = char
+						break
+					}
 				}
 			}
 		}
@@ -601,9 +632,21 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 
 			// Parse CCCD value
 			isEnable := len(msg.Data) >= 2 && (msg.Data[0] == 0x01 || msg.Data[0] == 0x02)
+
+			// CRITICAL: Track subscription state for NotifyCharacteristicChanged
+			// Real Android: Only centrals that enable notifications receive them
 			if isEnable {
+				// Enable notifications for this device
+				if s.notificationSubscribers[targetChar.UUID] == nil {
+					s.notificationSubscribers[targetChar.UUID] = make(map[string]bool)
+				}
+				s.notificationSubscribers[targetChar.UUID][device.Address] = true
 				logger.Debug(fmt.Sprintf("%s Android", s.uuid[:8]), "📲 Central %s subscribed to characteristic %s (CCCD write)", centralID, charID)
 			} else {
+				// Disable notifications for this device
+				if s.notificationSubscribers[targetChar.UUID] != nil {
+					delete(s.notificationSubscribers[targetChar.UUID], device.Address)
+				}
 				logger.Debug(fmt.Sprintf("%s Android", s.uuid[:8]), "📲 Central %s unsubscribed from characteristic %s (CCCD write)", centralID, charID)
 			}
 
@@ -653,9 +696,18 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 		}
 
 		isSubscribe := msg.Operation == "subscribe"
+
+		// CRITICAL: Track subscription state (same as CCCD write)
 		if isSubscribe {
+			if s.notificationSubscribers[targetChar.UUID] == nil {
+				s.notificationSubscribers[targetChar.UUID] = make(map[string]bool)
+			}
+			s.notificationSubscribers[targetChar.UUID][device.Address] = true
 			logger.Warn(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Received deprecated 'subscribe' operation from %s (iOS?) - should use CCCD write", centralID)
 		} else {
+			if s.notificationSubscribers[targetChar.UUID] != nil {
+				delete(s.notificationSubscribers[targetChar.UUID], device.Address)
+			}
 			logger.Warn(fmt.Sprintf("%s Android", s.uuid[:8]), "⚠️  Received deprecated 'unsubscribe' operation from %s (iOS?) - should use CCCD write", centralID)
 		}
 
