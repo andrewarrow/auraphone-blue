@@ -213,6 +213,12 @@ func (c *CBCentralManager) StopScan() {
 	// REALISTIC iOS BEHAVIOR: Clear discovered devices when scan stops
 	// This ensures that if scanning is restarted, devices can be discovered again
 	c.discoveredDevices = make(map[string]bool)
+
+	// CRITICAL: Disable auto-reconnect when scanning stops
+	// Real iOS: When scanning stops (app shutdown, Stop() called), CoreBluetooth
+	// should not continue auto-reconnect attempts. This prevents cross-test
+	// interference where devices from one test try to reconnect during another test.
+	c.autoReconnectActive = false
 }
 
 // RetrievePeripheralsByIdentifiers retrieves known peripherals by their identifiers
