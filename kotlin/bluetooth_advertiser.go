@@ -683,8 +683,10 @@ func (s *BluetoothGattServer) handleCharacteristicMessage(msg *wire.Characterist
 			if s.callback != nil {
 				s.callback.OnCharacteristicWriteRequest(device, requestId, targetChar, false, responseNeeded, 0, msg.Data)
 
-				// Update characteristic value
-				targetChar.Value = msg.Data
+				// REALISTIC Android BEHAVIOR: Do NOT automatically update characteristic.Value with incoming writes
+				// Real Android BluetoothGatt only updates BluetoothGattCharacteristic.value when the app explicitly sets it
+				// The write data is available via the request value parameter, but doesn't modify the characteristic's stored value
+				// If the app wants to update the characteristic value, it must do so explicitly
 			}
 		}
 

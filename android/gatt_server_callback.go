@@ -6,6 +6,8 @@ import (
 	"github.com/user/auraphone-blue/kotlin"
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
+	pb "github.com/user/auraphone-blue/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 // ============================================================================
@@ -47,8 +49,46 @@ func (cb *androidGattServerCallback) OnCharacteristicReadRequest(device *kotlin.
 
 	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📖 Read request from %s for char %s", shortHash(peerUUID), shortHash(characteristic.UUID))
 
-	// Return empty response for now (reads not commonly used in our protocol)
-	a.gattServer.SendResponse(device, requestId, kotlin.GATT_SUCCESS, offset, []byte{})
+	// REALISTIC BLE: Generate proper response based on which characteristic was read
+	var responseData []byte
+	if characteristic.UUID == phone.AuraProtocolCharUUID {
+		// Generate handshake response with OUR data, not echoing back what was written
+		a.mu.RLock()
+		photoHashBytes := []byte{}
+		if a.photoHash != "" {
+			// Convert hex string to bytes
+			for i := 0; i < len(a.photoHash); i += 2 {
+				var b byte
+				fmt.Sscanf(a.photoHash[i:i+2], "%02x", &b)
+				photoHashBytes = append(photoHashBytes, b)
+			}
+		}
+		profileVersion := a.profileVersion
+		firstName := a.firstName
+		deviceID := a.deviceID
+		a.mu.RUnlock()
+
+		// Use protobuf HandshakeMessage
+		pbHandshake := &pb.HandshakeMessage{
+			DeviceId:        deviceID,
+			FirstName:       firstName,
+			ProtocolVersion: 1,
+			TxPhotoHash:     photoHashBytes,
+			ProfileVersion:  profileVersion,
+		}
+
+		data, err := proto.Marshal(pbHandshake)
+		if err != nil {
+			logger.Error(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "Failed to marshal handshake for read response: %v", err)
+			a.gattServer.SendResponse(device, requestId, kotlin.GATT_FAILURE, offset, nil)
+			return
+		}
+
+		responseData = data
+	}
+
+	// Respond with success (data is in responseData or empty for unhandled characteristics)
+	a.gattServer.SendResponse(device, requestId, kotlin.GATT_SUCCESS, offset, responseData)
 }
 
 func (cb *androidGattServerCallback) OnCharacteristicWriteRequest(device *kotlin.BluetoothDevice, requestId int, characteristic *kotlin.BluetoothGattCharacteristic, preparedWrite bool, responseNeeded bool, offset int, value []byte) {
