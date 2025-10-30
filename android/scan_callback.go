@@ -61,6 +61,16 @@ func (a *Android) OnScanResult(callbackType int, result *kotlin.ScanResult) {
 
 // connectToDevice creates a GATT connection to the remote device
 func (a *Android) connectToDevice(peerUUID string) {
+	// REALISTIC: Check if we already have a GATT connection (in progress or completed)
+	// Real Android: Apps must track BluetoothGatt objects to avoid duplicate connectGatt() calls
+	// Calling connectGatt() twice on the same device causes connection conflicts
+	a.mu.Lock()
+	if _, exists := a.connectedGatts[peerUUID]; exists {
+		a.mu.Unlock()
+		return
+	}
+	a.mu.Unlock()
+
 	// Get remote device
 	device := a.manager.Adapter.GetRemoteDevice(peerUUID)
 	if device == nil {
