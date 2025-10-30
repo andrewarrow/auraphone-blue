@@ -108,10 +108,11 @@ func (a *Android) UpdateLocalProfile(profile map[string]string) error {
 
 	// Update firstName field if first_name changed
 	if firstNameChanged && profile["first_name"] != "" {
+		oldFirstName := a.firstName
 		a.firstName = profile["first_name"]
 		// Update mesh view so gossip messages include the new firstName
 		a.meshView.SetOurFirstName(a.firstName)
-		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✏️  Updated firstName to: %s", a.firstName)
+		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "✏️  UpdateLocalProfile: firstName changed from '%s' to '%s'", oldFirstName, a.firstName)
 	}
 
 	// Increment version if profile changed

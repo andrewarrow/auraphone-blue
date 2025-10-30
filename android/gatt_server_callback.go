@@ -68,6 +68,8 @@ func (cb *androidGattServerCallback) OnCharacteristicReadRequest(device *kotlin.
 		deviceID := a.deviceID
 		a.mu.RUnlock()
 
+		logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📖 Read handler: returning firstName='%s', deviceID='%s'", firstName, deviceID)
+
 		// Use protobuf HandshakeMessage
 		pbHandshake := &pb.HandshakeMessage{
 			DeviceId:        deviceID,

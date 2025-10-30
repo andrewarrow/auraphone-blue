@@ -30,6 +30,8 @@ func (a *Android) sendHandshake(peerUUID string, gatt *kotlin.BluetoothGatt) {
 	deviceID := a.deviceID    // Capture deviceID while holding lock!
 	a.mu.RUnlock()
 
+	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🤝 sendHandshake: firstName='%s', deviceID='%s' to %s", firstName, deviceID, shortHash(peerUUID))
+
 	// Use protobuf HandshakeMessage
 	pbHandshake := &pb.HandshakeMessage{
 		DeviceId:        deviceID,       // Use captured value
@@ -75,6 +77,8 @@ func (a *Android) sendHandshakeViaWire(peerUUID string) {
 	firstName := a.firstName  // Capture firstName while holding lock!
 	deviceID := a.deviceID    // Capture deviceID while holding lock!
 	a.mu.RUnlock()
+
+	logger.Debug(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "🤝 sendHandshake: firstName='%s', deviceID='%s' to %s", firstName, deviceID, shortHash(peerUUID))
 
 	// Use protobuf HandshakeMessage
 	pbHandshake := &pb.HandshakeMessage{

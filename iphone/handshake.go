@@ -31,6 +31,8 @@ func (ip *IPhone) sendHandshake(peerUUID string) {
 	peripheral := ip.connectedPeers[peerUUID]
 	ip.mu.RUnlock()
 
+	logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "🤝 sendHandshake: firstName='%s', deviceID='%s' to %s", firstName, deviceID, shortHash(peerUUID))
+
 	// Use protobuf HandshakeMessage
 	pbHandshake := &pb.HandshakeMessage{
 		DeviceId:        deviceID,       // Use captured value

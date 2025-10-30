@@ -36,6 +36,8 @@ func NewAndroid(hardwareUUID string) *Android {
 	meshView := phone.NewMeshView(deviceID, hardwareUUID, dataDir, photoCache)
 	meshView.SetIdentityManager(identityManager)
 
+	logger.Debug(fmt.Sprintf("%s Android", hardwareUUID[:8]), "🏗️  NewAndroid: firstName='%s', deviceID='%s'", firstName, deviceID)
+
 	return &Android{
 		hardwareUUID:    hardwareUUID,
 		deviceID:        deviceID,

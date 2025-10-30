@@ -48,6 +48,8 @@ func (ip *IPhone) DidReceiveReadRequest(peripheralManager *swift.CBPeripheralMan
 		deviceID := ip.deviceID
 		ip.mu.RUnlock()
 
+		logger.Debug(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📖 Read handler: returning firstName='%s', deviceID='%s'", firstName, deviceID)
+
 		// Use protobuf HandshakeMessage
 		pbHandshake := &pb.HandshakeMessage{
 			DeviceId:        deviceID,
