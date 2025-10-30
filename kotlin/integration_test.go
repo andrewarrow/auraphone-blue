@@ -33,8 +33,9 @@ func TestEndToEnd_ScanConnectTransfer(t *testing.T) {
 	defer peripheralWire.Stop()
 
 	// Step 1: Setup peripheral advertising
+	// Note: Keep name short to fit within 31-byte BLE advertising limit
 	advData := &wire.AdvertisingData{
-		DeviceName:    "Android Peripheral",
+		DeviceName:    "Periph",
 		ServiceUUIDs:  []string{phone.AuraServiceUUID},
 		IsConnectable: true,
 	}
@@ -44,7 +45,7 @@ func TestEndToEnd_ScanConnectTransfer(t *testing.T) {
 
 	// Setup peripheral GATT server
 	peripheralManager := NewBluetoothManager("zzzz-peripheral-uuid", peripheralWire)
-	peripheralGattServer := peripheralManager.OpenGattServer(nil, "Android Peripheral", peripheralWire)
+	peripheralGattServer := peripheralManager.OpenGattServer(nil, "Periph", peripheralWire)
 
 	// Add Aura service to peripheral
 	auraService := &BluetoothGattService{
@@ -101,12 +102,14 @@ func TestEndToEnd_ScanConnectTransfer(t *testing.T) {
 	// Step 3: Central connects to peripheral
 	connectionStates := make(chan int, 10)
 	receivedData := make(chan []byte, 10)
+	servicesDiscovered := make(chan int, 10)
 
 	gattCallback := &testGattCallback{
 		onConnectionStateChange: func(gatt *BluetoothGatt, status int, newState int) {
 			connectionStates <- newState
 		},
 		onServicesDiscovered: func(gatt *BluetoothGatt, status int) {
+			servicesDiscovered <- status
 			t.Logf("✅ Services discovered (status: %d)", status)
 		},
 		onCharacteristicWrite: func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic, status int) {
@@ -140,7 +143,17 @@ func TestEndToEnd_ScanConnectTransfer(t *testing.T) {
 
 	// Step 4: Central discovers services
 	gatt.DiscoverServices()
-	time.Sleep(500 * time.Millisecond)
+
+	// Wait for OnServicesDiscovered callback (not just sleep!)
+	// Real Android apps must wait for this callback before accessing services
+	select {
+	case status := <-servicesDiscovered:
+		if status != 0 {
+			t.Fatalf("Service discovery failed with status: %d", status)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for service discovery callback")
+	}
 
 	// Verify service was discovered
 	service := gatt.GetService(phone.AuraServiceUUID)
@@ -209,9 +222,10 @@ func TestEndToEnd_MultipleDevices(t *testing.T) {
 	}
 
 	// All devices advertise
+	// Note: Keep names short to fit within 31-byte BLE advertising limit
 	for i, w := range wires {
 		advData := &wire.AdvertisingData{
-			DeviceName:    "Android Device " + string(rune('1'+i)),
+			DeviceName:    "Dev" + string(rune('1'+i)),
 			ServiceUUIDs:  []string{phone.AuraServiceUUID},
 			IsConnectable: true,
 		}
@@ -308,8 +322,9 @@ func TestEndToEnd_DataIntegrity(t *testing.T) {
 	defer peripheralWire.Stop()
 
 	// Setup peripheral
+	// Note: Keep name short to fit within 31-byte BLE advertising limit
 	advData := &wire.AdvertisingData{
-		DeviceName:    "Android Peripheral",
+		DeviceName:    "Periph",
 		ServiceUUIDs:  []string{phone.AuraServiceUUID},
 		IsConnectable: true,
 	}

@@ -76,8 +76,9 @@ func TestBluetoothAdapter_GetRemoteDevice(t *testing.T) {
 	defer w2.Stop()
 
 	// Write advertising data for device2
+	// Note: Keep device name short to fit within 31-byte BLE advertising limit
 	advData := &wire.AdvertisingData{
-		DeviceName:    "Test Android Device",
+		DeviceName:    "AndroidDev",
 		ServiceUUIDs:  []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
 		IsConnectable: true,
 	}
@@ -97,7 +98,7 @@ func TestBluetoothAdapter_GetRemoteDevice(t *testing.T) {
 		t.Errorf("Wrong device address: %s", device.Address)
 	}
 
-	if device.Name != "Test Android Device" {
+	if device.Name != "AndroidDev" {
 		t.Errorf("Wrong device name: %s", device.Name)
 	}
 
@@ -242,13 +243,12 @@ func TestBluetoothLeScanner_StartStopScan(t *testing.T) {
 	defer w2.Stop()
 
 	// Write advertising data for device2
-	txPower := 0
+	// Note: Keep data minimal to fit within 31-byte BLE advertising limit
+	// Real BLE developers must carefully choose what to include in ads
 	advData := &wire.AdvertisingData{
-		DeviceName:       "Test Android Device",
-		ServiceUUIDs:     []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
-		ManufacturerData: []byte{0x01, 0x02, 0x03, 0x04},
-		TxPowerLevel:     &txPower,
-		IsConnectable:    true,
+		DeviceName:    "Android",
+		ServiceUUIDs:  []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
+		IsConnectable: true,
 	}
 	if err := w2.WriteAdvertisingData(advData); err != nil {
 		t.Fatalf("Failed to write advertising data: %v", err)
@@ -276,7 +276,7 @@ func TestBluetoothLeScanner_StartStopScan(t *testing.T) {
 		if result.Device.Address != "advertiser-uuid" {
 			t.Errorf("Wrong device address: %s", result.Device.Address)
 		}
-		if result.Device.Name != "Test Android Device" {
+		if result.Device.Name != "Android" {
 			t.Errorf("Wrong device name: %s", result.Device.Name)
 		}
 		if result.Rssi == 0 {
@@ -285,14 +285,11 @@ func TestBluetoothLeScanner_StartStopScan(t *testing.T) {
 		if result.ScanRecord == nil {
 			t.Fatal("ScanRecord is nil")
 		}
-		if result.ScanRecord.DeviceName != "Test Android Device" {
+		if result.ScanRecord.DeviceName != "Android" {
 			t.Errorf("Wrong scan record device name: %s", result.ScanRecord.DeviceName)
 		}
 		if len(result.ScanRecord.ServiceUUIDs) != 1 {
 			t.Errorf("Wrong number of service UUIDs: %d", len(result.ScanRecord.ServiceUUIDs))
-		}
-		if len(result.ScanRecord.ManufacturerData) != 1 {
-			t.Errorf("Wrong manufacturer data size: %d", len(result.ScanRecord.ManufacturerData))
 		}
 		t.Logf("✅ Scan discovered device: %s (RSSI: %d dBm)", result.Device.Name, result.Rssi)
 	case <-time.After(2 * time.Second):
@@ -328,8 +325,9 @@ func TestBluetoothLeScanner_DiscoverMultipleDevices(t *testing.T) {
 	defer w3.Stop()
 
 	// Write advertising data for both devices
+	// Note: Keep names short to fit within 31-byte BLE advertising limit
 	advData1 := &wire.AdvertisingData{
-		DeviceName:    "Android Device 1",
+		DeviceName:    "Android1",
 		ServiceUUIDs:  []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
 		IsConnectable: true,
 	}
@@ -338,7 +336,7 @@ func TestBluetoothLeScanner_DiscoverMultipleDevices(t *testing.T) {
 	}
 
 	advData2 := &wire.AdvertisingData{
-		DeviceName:    "Android Device 2",
+		DeviceName:    "Android2",
 		ServiceUUIDs:  []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
 		IsConnectable: true,
 	}
@@ -398,8 +396,9 @@ func TestBluetoothLeScanner_StopScanStopsDiscovery(t *testing.T) {
 	defer w2.Stop()
 
 	// Write advertising data
+	// Note: Keep name short to fit within 31-byte BLE advertising limit
 	advData := &wire.AdvertisingData{
-		DeviceName:    "Test Device",
+		DeviceName:    "TestDev",
 		ServiceUUIDs:  []string{"E621E1F8-C36C-495A-93FC-0C247A3E6E5F"},
 		IsConnectable: true,
 	}
