@@ -10,6 +10,8 @@ import (
 
 // TestBluetoothManager_SharedWire tests that BluetoothManager uses shared wire instance
 func TestBluetoothManager_SharedWire(t *testing.T) {
+	util.SetRandom()
+
 	w := wire.NewWire("test-uuid")
 	if err := w.Start(); err != nil {
 		t.Fatalf("Failed to start wire: %v", err)
@@ -35,6 +37,8 @@ func TestBluetoothManager_SharedWire(t *testing.T) {
 
 // TestBluetoothAdapter_RoleNegotiation tests UUID-based role negotiation
 func TestBluetoothAdapter_RoleNegotiation(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 	w2 := wire.NewWire("ffffffff-0000-1111-2222-333333333333")
 
@@ -56,6 +60,8 @@ func TestBluetoothAdapter_RoleNegotiation(t *testing.T) {
 
 // TestBluetoothAdapter_GetRemoteDevice tests getting remote device by address
 func TestBluetoothAdapter_GetRemoteDevice(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("device1-uuid")
 	w2 := wire.NewWire("device2-uuid")
 
@@ -101,6 +107,8 @@ func TestBluetoothAdapter_GetRemoteDevice(t *testing.T) {
 // TestBluetoothAdapter_GetRemoteDevice_NeverReturnsNil tests that GetRemoteDevice always returns a device
 // CRITICAL: This matches real Android behavior - getRemoteDevice() NEVER returns nil
 func TestBluetoothAdapter_GetRemoteDevice_NeverReturnsNil(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("device1-uuid")
 
 	if err := w1.Start(); err != nil {
@@ -132,6 +140,8 @@ func TestBluetoothAdapter_GetRemoteDevice_NeverReturnsNil(t *testing.T) {
 
 // TestBluetoothAdapter_GetRemoteDevice_ConnectionFailsForInvalidDevice tests that connection fails for invalid devices
 func TestBluetoothAdapter_GetRemoteDevice_ConnectionFailsForInvalidDevice(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("device1-uuid")
 
 	if err := w1.Start(); err != nil {
@@ -164,6 +174,8 @@ func TestBluetoothAdapter_GetRemoteDevice_ConnectionFailsForInvalidDevice(t *tes
 
 // TestBluetoothAdapter_GetRemoteDevice_MultipleCallsSameDevice tests that multiple calls return different instances
 func TestBluetoothAdapter_GetRemoteDevice_MultipleCallsSameDevice(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("device1-uuid")
 	w2 := wire.NewWire("device2-uuid")
 

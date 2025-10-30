@@ -5,11 +5,14 @@ import (
 	"time"
 
 	"github.com/user/auraphone-blue/phone"
+	"github.com/user/auraphone-blue/util"
 	"github.com/user/auraphone-blue/wire"
 )
 
 // TestBluetoothLeAdvertiser_DirectMessageDelivery tests that GATT server receives messages directly
 func TestBluetoothLeAdvertiser_DirectMessageDelivery(t *testing.T) {
+	util.SetRandom()
+
 	w := wire.NewWire("peripheral-uuid")
 	if err := w.Start(); err != nil {
 		t.Fatalf("Failed to start wire: %v", err)
@@ -96,6 +99,8 @@ func TestBluetoothLeAdvertiser_DirectMessageDelivery(t *testing.T) {
 
 // TestBluetoothGattServer_NotifyCharacteristicChanged tests sending notifications
 func TestBluetoothGattServer_NotifyCharacteristicChanged(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("peripheral-uuid")
 	w2 := wire.NewWire("central-uuid")
 
@@ -159,6 +164,8 @@ func TestBluetoothGattServer_NotifyCharacteristicChanged(t *testing.T) {
 // TestBluetoothGattServer_PropertyStringConsistency tests that property strings are consistent
 // between GATT table building and parsing
 func TestBluetoothGattServer_PropertyStringConsistency(t *testing.T) {
+	util.SetRandom()
+
 	w := wire.NewWire("test-uuid")
 	if err := w.Start(); err != nil {
 		t.Fatalf("Failed to start wire: %v", err)
@@ -236,6 +243,8 @@ func TestBluetoothGattServer_PropertyStringConsistency(t *testing.T) {
 
 // TestBluetoothGatt_PropertyParsing tests that properties are parsed correctly from strings
 func TestBluetoothGatt_PropertyParsing(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")
 
@@ -329,6 +338,8 @@ func TestBluetoothGatt_PropertyParsing(t *testing.T) {
 
 // TestBluetoothGatt_WriteNoResponseProperty tests that write_no_response property works
 func TestBluetoothGatt_WriteNoResponseProperty(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")
 

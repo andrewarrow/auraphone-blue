@@ -11,6 +11,8 @@ import (
 
 // TestBluetoothGatt_DirectMessageDelivery tests the new HandleGATTMessage pattern
 func TestBluetoothGatt_DirectMessageDelivery(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")
 
@@ -85,6 +87,8 @@ func TestBluetoothGatt_DirectMessageDelivery(t *testing.T) {
 
 // TestBluetoothGatt_WriteCharacteristic tests async write without queue
 func TestBluetoothGatt_WriteCharacteristic(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")
 
@@ -159,6 +163,8 @@ func TestBluetoothGatt_WriteCharacteristic(t *testing.T) {
 // OLD BEHAVIOR: Rejected operations when busy
 // NEW BEHAVIOR: Queues operations for serial execution
 func TestBluetoothGatt_OperationSerialization(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")
 
@@ -263,6 +269,8 @@ func TestBluetoothGatt_OperationSerialization(t *testing.T) {
 // OLD BEHAVIOR: Write was rejected when read in progress
 // NEW BEHAVIOR: Write is queued and executes after read completes
 func TestBluetoothGatt_ReadWriteSerialization(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")
 
@@ -358,6 +366,8 @@ func TestBluetoothGatt_ReadWriteSerialization(t *testing.T) {
 // OLD BEHAVIOR: Reads rejected when one already in progress
 // NEW BEHAVIOR: All reads queued and executed serially
 func TestBluetoothGatt_MultipleReadsBlocked(t *testing.T) {
+	util.SetRandom()
+
 	w1 := wire.NewWire("central-uuid")
 	w2 := wire.NewWire("peripheral-uuid")
 
