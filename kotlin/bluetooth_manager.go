@@ -61,12 +61,34 @@ func (a *BluetoothAdapter) ShouldInitiateConnection(targetUUID string) bool {
 	return a.uuid > targetUUID
 }
 
+// SetName sets the friendly Bluetooth name for this adapter
+// Matches: bluetoothAdapter.setName(name)
+// REALISTIC: In real Android, this sets the name that will be advertised when IncludeDeviceName is true
+// Requires BLUETOOTH_ADMIN permission
+func (a *BluetoothAdapter) SetName(name string) bool {
+	a.deviceName = name
+	// If advertiser already exists, update its device name
+	if a.advertiser != nil {
+		a.advertiser.deviceName = name
+	}
+	return true // Real Android returns true on success, false on failure
+}
+
+// GetName returns the friendly Bluetooth name of this adapter
+// Matches: bluetoothAdapter.getName()
+func (a *BluetoothAdapter) GetName() string {
+	if a.deviceName == "" {
+		return "Device-" + a.uuid[:8] // Default Android behavior: "Device-{address}"
+	}
+	return a.deviceName
+}
+
 // GetBluetoothLeAdvertiser returns the advertiser for peripheral mode
 // Matches: bluetoothAdapter.getBluetoothLeAdvertiser()
 func (a *BluetoothAdapter) GetBluetoothLeAdvertiser() *BluetoothLeAdvertiser {
 	if a.advertiser == nil {
-		// Use placeholder name for advertising - not used for device identification
-		a.advertiser = NewBluetoothLeAdvertiser(a.uuid, "AD-NAME-NOT-FOR-US", a.wire)
+		// Use adapter's device name (set via SetName(), or default)
+		a.advertiser = NewBluetoothLeAdvertiser(a.uuid, a.GetName(), a.wire)
 	}
 	return a.advertiser
 }

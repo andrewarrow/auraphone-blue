@@ -88,6 +88,12 @@ func (a *Android) Start() {
 	// Get adapter
 	adapter := a.manager.Adapter
 
+	// REALISTIC ANDROID BLE: Set Bluetooth adapter name to Base36 device ID
+	// This is the name that will be advertised when IncludeDeviceName is true
+	// Matches: bluetoothAdapter.setName(deviceID)
+	// Requires BLUETOOTH_ADMIN permission in real Android
+	adapter.SetName(a.deviceID)
+
 	// Get scanner
 	a.scanner = adapter.GetBluetoothLeScanner()
 
@@ -201,15 +207,17 @@ func (a *Android) startAdvertising() {
 	}
 
 	// REALISTIC Android BLE: Advertising packet is limited to 31 bytes
-	// To fit within this limit, we advertise service UUIDs and Tx power only
-	// Real Android apps typically omit device name to stay under the limit
+	// In foreground, Android includes device name (set via adapter.SetName())
+	// In background, Android may omit device name - peers will get ID via handshake
 	advertiseData := &kotlin.AdvertiseData{
 		ServiceUUIDs:        []string{phone.AuraServiceUUID},
 		IncludeTxPowerLevel: true,
-		IncludeDeviceName:   false, // Omit to stay under 31-byte limit
+		IncludeDeviceName:   true, // Include adapter name (Base36 ID set via SetName())
 	}
 
 	a.advertiser.StartAdvertising(settings, advertiseData, nil, a)
+
+	logger.Info(fmt.Sprintf("%s Android", a.hardwareUUID[:8]), "📡 Advertising as: %s", a.deviceID)
 }
 
 // startScanning starts scanning for other devices
