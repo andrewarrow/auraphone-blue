@@ -207,12 +207,16 @@ func (a *Android) startAdvertising() {
 	}
 
 	// REALISTIC Android BLE: Advertising packet is limited to 31 bytes
-	// In foreground, Android includes device name (set via adapter.SetName())
-	// In background, Android may omit device name - peers will get ID via handshake
+	// We include:
+	//   - Flags: 3 bytes
+	//   - Device Name (8-char Base36): ~11 bytes
+	//   - 128-bit Service UUID: 18 bytes
+	//   Total: ~32 bytes (within limit)
+	// We CANNOT include TxPowerLevel (would add 3 bytes, exceeding 31-byte limit)
 	advertiseData := &kotlin.AdvertiseData{
 		ServiceUUIDs:        []string{phone.AuraServiceUUID},
-		IncludeTxPowerLevel: true,
-		IncludeDeviceName:   true, // Include adapter name (Base36 ID set via SetName())
+		IncludeTxPowerLevel: false, // Omit to stay under 31-byte limit
+		IncludeDeviceName:   true,  // Include adapter name (Base36 ID set via SetName())
 	}
 
 	a.advertiser.StartAdvertising(settings, advertiseData, nil, a)
