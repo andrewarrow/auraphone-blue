@@ -156,18 +156,14 @@ func (p *CBPeripheral) DiscoverServices(serviceUUIDs []string) {
 			}
 		}
 
-		// STEP 2.5: Discover descriptors for each characteristic
-		// This is necessary to populate the discovery cache with CCCDs and other descriptors
-		for _, svc := range discoveredServices {
-			chars, err := p.wire.GetDiscoveredCharacteristics(p.remoteUUID, svc.StartHandle)
-			if err == nil {
-				for _, char := range chars {
-					// Discover descriptors for this characteristic
-					// Ignore errors - not all characteristics have descriptors
-					_ = p.wire.DiscoverDescriptors(p.remoteUUID, char.ValueHandle)
-				}
-			}
-		}
+		// REALISTIC iOS BEHAVIOR: Descriptor discovery is NOT required before didDiscoverServices callback
+		// In real iOS CoreBluetooth:
+		// - didDiscoverServices fires after characteristics are discovered
+		// - Descriptor discovery is done separately per-characteristic via discoverDescriptors(for:)
+		// - This is asynchronous and optional - apps don't always need descriptors
+		//
+		// We skip descriptor discovery here to match real iOS behavior and avoid timeouts.
+		// Descriptors (like CCCD) are handled implicitly when calling setNotifyValue().
 
 		// STEP 3: Convert gatt.DiscoveredService to CBService
 		p.Services = make([]*CBService, 0)
