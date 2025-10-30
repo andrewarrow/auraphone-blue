@@ -33,6 +33,36 @@ type TestIssue struct {
 	Timeline    []string
 }
 
+// DebugStats holds debug statistics for a device
+type DebugStats struct {
+	DeviceID string
+
+	// Connection stats
+	ConnectionEvents     int
+	ConnectionErrors     int
+	CBLifecycleEvents    int // iOS-specific
+
+	// BLE Protocol stats
+	ATTPacketsRx         int
+	ATTPacketsTx         int
+	L2CAPPacketsRx       int
+	L2CAPPacketsTx       int
+	GATTOperations       int
+
+	// GATT operation breakdown
+	GATTReads            int
+	GATTWrites           int
+	GATTNotifications    int
+
+	// Gossip stats
+	GossipAuditEvents    int
+
+	// Socket health
+	SocketStatus         string
+	SocketErrors         int
+	SocketUptime         int
+}
+
 // Generate creates a test report from the data directory
 func Generate(dataDir string) error {
 	if dataDir == "" {
@@ -60,11 +90,17 @@ func Generate(dataDir string) error {
 	// Build photo matrix
 	matrix := buildPhotoMatrix(devices, dataDir)
 
+	// Collect debug stats
+	debugStats := make(map[string]DebugStats)
+	for _, device := range devices {
+		debugStats[device.DeviceID] = collectDebugStats(device, dataDir)
+	}
+
 	// Detect issues
 	issues := detectIssues(devices, matrix, dataDir)
 
 	// Generate report
-	report := generateReport(timestamp, devices, matrix, issues, dataDir)
+	report := generateReport(timestamp, devices, matrix, issues, debugStats, dataDir)
 
 	// Write report
 	if err := os.WriteFile(reportPath, []byte(report), 0644); err != nil {
@@ -340,7 +376,142 @@ func investigateFailure(fromDevice, toDevice DeviceInfo, dataDir string) []strin
 	return timeline
 }
 
-func generateReport(timestamp string, devices []DeviceInfo, matrix PhotoMatrix, issues []TestIssue, dataDir string) string {
+func collectDebugStats(device DeviceInfo, dataDir string) DebugStats {
+	stats := DebugStats{
+		DeviceID: device.DeviceID,
+	}
+
+	// Read connection_events.jsonl
+	connEventsPath := filepath.Join(dataDir, device.HardwareUUID, "connection_events.jsonl")
+	if data, err := os.ReadFile(connEventsPath); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			var event struct {
+				Event string `json:"event"`
+				Error string `json:"error,omitempty"`
+			}
+			if json.Unmarshal([]byte(line), &event) == nil {
+				stats.ConnectionEvents++
+				if event.Error != "" {
+					stats.ConnectionErrors++
+				}
+			}
+		}
+	}
+
+	// Read cb_connection_lifecycle.jsonl (iOS only)
+	cbLifecyclePath := filepath.Join(dataDir, device.HardwareUUID, "cb_connection_lifecycle.jsonl")
+	if data, err := os.ReadFile(cbLifecyclePath); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if line != "" {
+				stats.CBLifecycleEvents++
+			}
+		}
+	}
+
+	// Read debug/att_packets.jsonl
+	attPacketsPath := filepath.Join(dataDir, device.HardwareUUID, "debug", "att_packets.jsonl")
+	if data, err := os.ReadFile(attPacketsPath); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			var packet struct {
+				Direction string `json:"direction"`
+			}
+			if json.Unmarshal([]byte(line), &packet) == nil {
+				if packet.Direction == "rx" {
+					stats.ATTPacketsRx++
+				} else if packet.Direction == "tx" {
+					stats.ATTPacketsTx++
+				}
+			}
+		}
+	}
+
+	// Read debug/l2cap_packets.jsonl
+	l2capPacketsPath := filepath.Join(dataDir, device.HardwareUUID, "debug", "l2cap_packets.jsonl")
+	if data, err := os.ReadFile(l2capPacketsPath); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			var packet struct {
+				Direction string `json:"direction"`
+			}
+			if json.Unmarshal([]byte(line), &packet) == nil {
+				if packet.Direction == "rx" {
+					stats.L2CAPPacketsRx++
+				} else if packet.Direction == "tx" {
+					stats.L2CAPPacketsTx++
+				}
+			}
+		}
+	}
+
+	// Read debug/gatt_operations.jsonl
+	gattOpsPath := filepath.Join(dataDir, device.HardwareUUID, "debug", "gatt_operations.jsonl")
+	if data, err := os.ReadFile(gattOpsPath); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			var op struct {
+				Operation string `json:"operation"`
+			}
+			if json.Unmarshal([]byte(line), &op) == nil {
+				stats.GATTOperations++
+				switch op.Operation {
+				case "read", "read_response":
+					stats.GATTReads++
+				case "write", "write_request":
+					stats.GATTWrites++
+				case "notify", "notification":
+					stats.GATTNotifications++
+				}
+			}
+		}
+	}
+
+	// Read gossip_audit.jsonl
+	gossipAuditPath := filepath.Join(dataDir, device.HardwareUUID, "gossip_audit.jsonl")
+	if data, err := os.ReadFile(gossipAuditPath); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if line != "" {
+				stats.GossipAuditEvents++
+			}
+		}
+	}
+
+	// Read socket_health.json
+	socketHealthPath := filepath.Join(dataDir, device.HardwareUUID, "socket_health.json")
+	if data, err := os.ReadFile(socketHealthPath); err == nil {
+		var health struct {
+			PeripheralSocket struct {
+				Status       string `json:"status"`
+				TotalErrors  int    `json:"total_errors"`
+				UptimeSeconds int   `json:"uptime_seconds"`
+			} `json:"peripheral_socket"`
+		}
+		if json.Unmarshal(data, &health) == nil {
+			stats.SocketStatus = health.PeripheralSocket.Status
+			stats.SocketErrors = health.PeripheralSocket.TotalErrors
+			stats.SocketUptime = health.PeripheralSocket.UptimeSeconds
+		}
+	}
+
+	return stats
+}
+
+func generateReport(timestamp string, devices []DeviceInfo, matrix PhotoMatrix, issues []TestIssue, debugStats map[string]DebugStats, dataDir string) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("# Test Report: %s\n\n", timestamp))
@@ -416,6 +587,73 @@ func generateReport(timestamp string, devices []DeviceInfo, matrix PhotoMatrix, 
 		} else {
 			sb.WriteString("❌ No cached profiles\n\n")
 		}
+	}
+
+	// Debug Statistics section
+	sb.WriteString("## Debug Statistics\n\n")
+	sb.WriteString("Per-device BLE protocol activity and socket health.\n\n")
+
+	for _, device := range devices {
+		stats, ok := debugStats[device.DeviceID]
+		if !ok {
+			continue
+		}
+
+		sb.WriteString(fmt.Sprintf("### Device %s (%s %s)\n\n", device.DeviceID, device.FirstName, device.LastName))
+
+		// Connection stats
+		sb.WriteString("**Connection Activity:**\n")
+		sb.WriteString(fmt.Sprintf("- Connection events: %d\n", stats.ConnectionEvents))
+		if stats.ConnectionErrors > 0 {
+			sb.WriteString(fmt.Sprintf("- Connection errors: %d ⚠️\n", stats.ConnectionErrors))
+		}
+		if stats.CBLifecycleEvents > 0 {
+			sb.WriteString(fmt.Sprintf("- CoreBluetooth lifecycle events: %d (iOS)\n", stats.CBLifecycleEvents))
+		}
+		sb.WriteString("\n")
+
+		// BLE Protocol stats
+		sb.WriteString("**BLE Protocol Activity:**\n")
+		sb.WriteString(fmt.Sprintf("- ATT packets: %d rx / %d tx\n", stats.ATTPacketsRx, stats.ATTPacketsTx))
+		sb.WriteString(fmt.Sprintf("- L2CAP packets: %d rx / %d tx\n", stats.L2CAPPacketsRx, stats.L2CAPPacketsTx))
+		sb.WriteString("\n")
+
+		// GATT operations
+		sb.WriteString("**GATT Operations:**\n")
+		sb.WriteString(fmt.Sprintf("- Total operations: %d\n", stats.GATTOperations))
+		if stats.GATTReads > 0 {
+			sb.WriteString(fmt.Sprintf("  - Reads: %d\n", stats.GATTReads))
+		}
+		if stats.GATTWrites > 0 {
+			sb.WriteString(fmt.Sprintf("  - Writes: %d\n", stats.GATTWrites))
+		}
+		if stats.GATTNotifications > 0 {
+			sb.WriteString(fmt.Sprintf("  - Notifications: %d\n", stats.GATTNotifications))
+		}
+		sb.WriteString("\n")
+
+		// Gossip stats
+		if stats.GossipAuditEvents > 0 {
+			sb.WriteString("**Gossip Protocol:**\n")
+			sb.WriteString(fmt.Sprintf("- Audit events: %d\n", stats.GossipAuditEvents))
+			sb.WriteString("\n")
+		}
+
+		// Socket health
+		sb.WriteString("**Socket Health:**\n")
+		sb.WriteString(fmt.Sprintf("- Status: %s", stats.SocketStatus))
+		if stats.SocketStatus == "closed" {
+			sb.WriteString(" ✅\n")
+		} else {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(fmt.Sprintf("- Uptime: %d seconds\n", stats.SocketUptime))
+		if stats.SocketErrors > 0 {
+			sb.WriteString(fmt.Sprintf("- Socket errors: %d ⚠️\n", stats.SocketErrors))
+		} else {
+			sb.WriteString(fmt.Sprintf("- Socket errors: %d ✅\n", stats.SocketErrors))
+		}
+		sb.WriteString("\n")
 	}
 
 	// Photo Matrix section
