@@ -1,5 +1,7 @@
 # Wire Package
 
+Wire package = Pure BLE radio layer, platform-agnostic
+
 Binary BLE protocol implementation for auraphone-blue simulator.
 
 ## 📋 Documentation

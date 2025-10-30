@@ -2,6 +2,7 @@ package kotlin
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -271,8 +272,10 @@ func (g *BluetoothGatt) GetServices() []*BluetoothGattService {
 }
 
 func (g *BluetoothGatt) GetService(uuid string) *BluetoothGattService {
+	// Real Android: UUID comparisons are case-insensitive (java.util.UUID behavior)
+	uuidLower := strings.ToLower(uuid)
 	for _, service := range g.services {
-		if service.UUID == uuid {
+		if strings.ToLower(service.UUID) == uuidLower {
 			return service
 		}
 	}
@@ -343,10 +346,14 @@ func (g *BluetoothGatt) ReadCharacteristic(characteristic *BluetoothGattCharacte
 
 // GetCharacteristic finds a characteristic by UUID
 func (g *BluetoothGatt) GetCharacteristic(serviceUUID, charUUID string) *BluetoothGattCharacteristic {
+	// Real Android: UUID comparisons are case-insensitive (java.util.UUID behavior)
+	serviceUUIDLower := strings.ToLower(serviceUUID)
+	charUUIDLower := strings.ToLower(charUUID)
+
 	for _, service := range g.services {
-		if service.UUID == serviceUUID {
+		if strings.ToLower(service.UUID) == serviceUUIDLower {
 			for _, char := range service.Characteristics {
-				if char.UUID == charUUID {
+				if strings.ToLower(char.UUID) == charUUIDLower {
 					return char
 				}
 			}
@@ -358,8 +365,10 @@ func (g *BluetoothGatt) GetCharacteristic(serviceUUID, charUUID string) *Bluetoo
 // GetDescriptor finds a descriptor within a characteristic
 // This matches real Android API: characteristic.getDescriptor(uuid)
 func (char *BluetoothGattCharacteristic) GetDescriptor(uuid string) *BluetoothGattDescriptor {
+	// Real Android: UUID comparisons are case-insensitive (java.util.UUID behavior)
+	uuidLower := strings.ToLower(uuid)
 	for _, desc := range char.Descriptors {
-		if desc.UUID == uuid {
+		if strings.ToLower(desc.UUID) == uuidLower {
 			return desc
 		}
 	}

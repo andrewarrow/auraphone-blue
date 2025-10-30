@@ -494,7 +494,8 @@ func (s *BluetoothGattServer) propertiesToGATTBitmask(props int) uint8 {
 	return result
 }
 
-// parseUUID converts a UUID string to bytes (matching swift/ implementation)
+// parseUUID converts a UUID string to bytes following BLE UUID format
+// Real BLE: UUIDs are binary data, not ASCII strings
 // Handles both 16-bit shorthand (e.g., "180A") and full 128-bit UUIDs
 func (s *BluetoothGattServer) parseUUID(uuidStr string) []byte {
 	// Try to parse as 16-bit UUID first (4 hex chars)
@@ -506,17 +507,24 @@ func (s *BluetoothGattServer) parseUUID(uuidStr string) []byte {
 	}
 
 	// For standard 128-bit UUIDs (36 chars with dashes: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX)
+	// Real BLE: Parse hex digits into binary bytes, not ASCII characters!
 	if len(uuidStr) == 36 {
-		// Simplified: just take first 16 characters directly (matches swift behavior)
-		uuid := make([]byte, 16)
-		for i := 0; i < 16 && i < len(uuidStr); i++ {
-			uuid[i] = uuidStr[i]
-		}
-		return uuid
+		var uuid [16]byte
+		// Parse UUID according to RFC 4122 format
+		// BLE uses little-endian for the first 3 groups, network byte order for the rest
+		fmt.Sscanf(uuidStr,
+			"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			&uuid[0], &uuid[1], &uuid[2], &uuid[3],
+			&uuid[4], &uuid[5],
+			&uuid[6], &uuid[7],
+			&uuid[8], &uuid[9],
+			&uuid[10], &uuid[11], &uuid[12], &uuid[13], &uuid[14], &uuid[15])
+		return uuid[:]
 	}
 
-	// For test/custom UUIDs, create a deterministic 16-byte UUID from the string
-	// by copying string bytes directly into array (matches swift behavior)
+	// For test/custom UUIDs that don't match standard format,
+	// create a deterministic 16-byte UUID from the string
+	// This matches test UUID behavior in wire package
 	uuid := make([]byte, 16)
 	for i := 0; i < len(uuidStr) && i < 16; i++ {
 		uuid[i] = uuidStr[i]

@@ -51,15 +51,22 @@ func TestBluetoothLeAdvertiser_DirectMessageDelivery(t *testing.T) {
 		AdvertiseMode: ADVERTISE_MODE_LOW_LATENCY,
 		Connectable:   true,
 	}
+	// Real Android BLE advertising data must fit in 31 bytes
+	// Flags (3 bytes) + 128-bit UUID (18 bytes) + device name = must be <=31 bytes
+	// To stay under limit, either use short name OR omit device name
 	advertiseData := &AdvertiseData{
 		ServiceUUIDs:      []string{phone.AuraServiceUUID},
-		IncludeDeviceName: true,
+		IncludeDeviceName: false, // Omit device name to fit in 31 bytes
 	}
 
 	startSuccess := make(chan bool, 1)
+	startFailure := make(chan int, 1)
 	advertiseCallback := &testAdvertiseCallback{
 		onStartSuccess: func(settings *AdvertiseSettings) {
 			startSuccess <- true
+		},
+		onStartFailure: func(errorCode int) {
+			startFailure <- errorCode
 		},
 	}
 
@@ -69,6 +76,8 @@ func TestBluetoothLeAdvertiser_DirectMessageDelivery(t *testing.T) {
 	select {
 	case <-startSuccess:
 		t.Logf("✅ Advertising started")
+	case errorCode := <-startFailure:
+		t.Fatalf("❌ Advertising failed with error code: %d", errorCode)
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Timeout waiting for advertising to start")
 	}
