@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/user/auraphone-blue/proto"
+	"github.com/user/auraphone-blue/util"
 )
 
 // ============================================================================
@@ -14,8 +15,7 @@ import (
 // ============================================================================
 
 func setupTestMeshView(t *testing.T, deviceID, hardwareUUID string) *MeshView {
-	// Create temp directory for this test
-	tempDir := t.TempDir()
+	tempDir := util.SetRandom()
 
 	// No photo cache for these unit tests
 	mv := NewMeshView(deviceID, hardwareUUID, tempDir, nil)
@@ -656,7 +656,7 @@ func TestFindNeighborsWithProfile_OnlyConnected(t *testing.T) {
 // ============================================================================
 
 func TestPersistence_SaveAndLoad(t *testing.T) {
-	tempDir := t.TempDir()
+	tempDir := util.SetRandom()
 
 	// Create mesh view and add devices
 	mv := NewMeshView("DEVICE001", "uuid-001", tempDir, nil)
@@ -702,8 +702,8 @@ func TestPersistence_SaveAndLoad(t *testing.T) {
 }
 
 func TestPersistence_FileLocation(t *testing.T) {
-	tempDir := t.TempDir()
 
+	tempDir := util.SetRandom()
 	mv := NewMeshView("DEVICE001", "uuid-001", tempDir, nil)
 	mv.UpdateDevice("DEVICE002", "photo", "Alice", 1)
 

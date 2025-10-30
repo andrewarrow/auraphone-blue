@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 )
 
-func SetRandom() {
+func SetRandom() string {
 	home, _ := os.UserHomeDir()
 	path := filepath.Join(home, ".apb")
 	os.MkdirAll(path, 0755)
@@ -13,6 +13,7 @@ func SetRandom() {
 	os.Setenv("AURAPHONE_BLUE_DIR", tempDir)
 	// Log temp directory for debugging test failures
 	println("🧪 Test temp directory:", tempDir)
+	return tempDir
 }
 
 // GetDataDir returns the data directory path
