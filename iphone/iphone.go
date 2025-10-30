@@ -178,8 +178,10 @@ func (ip *IPhone) setupGATTServices() {
 
 // startAdvertising begins BLE advertising
 func (ip *IPhone) startAdvertising() {
+	// REALISTIC iOS BLE: Advertising packet is limited to 31 bytes
+	// To fit within this limit, we only advertise service UUIDs
+	// Real iOS omits local name in background advertising for privacy and space
 	advData := map[string]interface{}{
-		"kCBAdvDataLocalName":    "AD-NAME-NOT-FOR-US",
 		"kCBAdvDataServiceUUIDs": []string{phone.AuraServiceUUID},
 	}
 
