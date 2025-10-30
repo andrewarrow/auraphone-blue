@@ -77,6 +77,36 @@ func (w *Wire) WriteCharacteristicNoResponse(peerUUID, serviceUUID, charUUID str
 	return w.WriteCharacteristic(peerUUID, serviceUUID, charUUID, data)
 }
 
+// WriteDescriptor writes to a descriptor (e.g., CCCD for enabling notifications)
+// This function looks up the descriptor handle from the discovery cache
+// Real BLE: CCCD descriptors are always at characteristic_handle + 1
+func (w *Wire) WriteDescriptor(peerUUID, serviceUUID, charUUID, descriptorUUID string, data []byte) error {
+	// For CCCD (0x2902), use characteristic handle + 1 (standard BLE)
+	// Real Android and iOS behavior: CCCD is always at char handle + 1
+	if descriptorUUID == "00002902-0000-1000-8000-00805f9b34fb" ||
+	   descriptorUUID == "2902" {
+		// CCCD write - use characteristic handle + 1
+		charHandle, err := w.uuidToHandle(peerUUID, serviceUUID, charUUID)
+		if err != nil {
+			return fmt.Errorf("failed to resolve characteristic handle for CCCD write: %w", err)
+		}
+		cccdHandle := charHandle + 1
+
+		msg := &GATTMessage{
+			Type:               "gatt_request",
+			Operation:          "write_descriptor",
+			ServiceUUID:        serviceUUID,
+			CharacteristicUUID: charUUID,
+			DescriptorHandle:   cccdHandle,
+			Data:               data,
+		}
+		return w.SendGATTMessage(peerUUID, msg)
+	}
+
+	// For other descriptors, we'd need to implement descriptor handle lookup
+	return fmt.Errorf("descriptor write for non-CCCD descriptors not yet implemented")
+}
+
 // ReadCharacteristic reads from a characteristic
 // Response will come via gatt_response message type to the peer's message handler
 func (w *Wire) ReadCharacteristic(peerUUID, serviceUUID, charUUID string) error {

@@ -679,6 +679,7 @@ func (pm *CBPeripheralManager) uuidMatches(uuid1, uuid2 string) bool {
 
 // parseUUID converts a string UUID to bytes
 // Supports both 16-bit (e.g., "1800") and 128-bit UUIDs
+// Real BLE: UUIDs are binary data, not ASCII strings
 func (pm *CBPeripheralManager) parseUUID(uuidStr string) []byte {
 	// Try to parse as 16-bit UUID first (4 hex chars)
 	if len(uuidStr) == 4 {
@@ -689,16 +690,19 @@ func (pm *CBPeripheralManager) parseUUID(uuidStr string) []byte {
 	}
 
 	// For standard 128-bit UUIDs (36 chars with dashes: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX)
+	// Real BLE: Parse hex digits into binary bytes, not ASCII characters!
 	if len(uuidStr) == 36 {
-		// Parse as 128-bit UUID
-		// BLE 128-bit UUIDs are transmitted in reverse byte order
-		uuid := make([]byte, 16)
-		// Simplified: just hash the string to get consistent 16 bytes
-		// Real implementation would properly parse the hex values
-		for i := 0; i < 16 && i < len(uuidStr); i++ {
-			uuid[i] = uuidStr[i]
-		}
-		return uuid
+		var uuid [16]byte
+		// Parse UUID according to RFC 4122 format
+		// Parse each hex byte pair and store in the byte array
+		fmt.Sscanf(uuidStr,
+			"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			&uuid[0], &uuid[1], &uuid[2], &uuid[3],
+			&uuid[4], &uuid[5],
+			&uuid[6], &uuid[7],
+			&uuid[8], &uuid[9],
+			&uuid[10], &uuid[11], &uuid[12], &uuid[13], &uuid[14], &uuid[15])
+		return uuid[:]
 	}
 
 	// For test/custom UUIDs, create a deterministic 16-byte UUID from the string

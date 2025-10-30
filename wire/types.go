@@ -63,11 +63,12 @@ type Connection struct {
 type GATTMessage struct {
 	Type               string `json:"type"`                         // "gatt_request", "gatt_response", "gatt_notification"
 	RequestID          string `json:"request_id,omitempty"`         // For request/response matching
-	Operation          string `json:"operation,omitempty"`          // "read", "write", "subscribe", "unsubscribe"
+	Operation          string `json:"operation,omitempty"`          // "read", "write", "subscribe", "unsubscribe", "write_descriptor"
 	ServiceUUID        string `json:"service_uuid"`
 	CharacteristicUUID string `json:"characteristic_uuid"`
 	CharUUID           string `json:"char_uuid,omitempty"`          // Alias for CharacteristicUUID (old API compat)
 	Data               []byte `json:"data,omitempty"`
+	DescriptorHandle   uint16 `json:"descriptor_handle,omitempty"`  // For descriptor operations (e.g., CCCD writes)
 	Status             string `json:"status,omitempty"`             // "success", "error"
 	SenderUUID         string `json:"sender_uuid,omitempty"`        // Who sent this message
 }

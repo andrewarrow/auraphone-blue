@@ -423,12 +423,13 @@ func (g *BluetoothGatt) WriteDescriptor(descriptor *BluetoothGattDescriptor) boo
 	// CRITICAL: Enqueue operation instead of rejecting
 	// Real Android queues operations and processes them serially
 	return g.enqueueOperation("writeDescriptor", func() error {
-		// Send descriptor write as a regular characteristic write to the descriptor UUID
-		// Wire layer treats descriptors as special characteristics
-		err := g.wire.WriteCharacteristic(
+		// Use wire.WriteDescriptor for proper descriptor writes
+		// This handles CCCD (0x2902) and other descriptors correctly
+		err := g.wire.WriteDescriptor(
 			g.remoteUUID,
 			descriptor.Characteristic.Service.UUID,
-			descriptor.UUID, // Descriptor UUID (e.g., 0x2902 for CCCD)
+			descriptor.Characteristic.UUID, // Characteristic UUID (to find handle)
+			descriptor.UUID,                // Descriptor UUID (e.g., 0x2902 for CCCD)
 			valueCopy,
 		)
 
@@ -484,14 +485,34 @@ func (g *BluetoothGatt) HandleGATTMessage(msg *wire.GATTMessage) {
 	// Find the characteristic this message is for
 	char := g.GetCharacteristic(msg.ServiceUUID, msg.CharacteristicUUID)
 	if char == nil {
-		// Log when characteristic not found - helps debug subscription issues
-		logger.Warn("BluetoothGatt", "⚠️  Characteristic not found: service=%s, char=%s, op=%s (remote=%s)",
-			msg.ServiceUUID[:8], msg.CharacteristicUUID[:8], msg.Operation, g.remoteUUID[:8])
-		logger.Debug("BluetoothGatt", "📋 Available services: %d", len(g.services))
-		for _, svc := range g.services {
-			logger.Debug("BluetoothGatt", "   Service: %s (%d characteristics)", svc.UUID[:8], len(svc.Characteristics))
-			for _, ch := range svc.Characteristics {
-				logger.Debug("BluetoothGatt", "      Char: %s", ch.UUID[:8])
+		// Real BLE: Response messages often don't include UUIDs (matched by request context)
+		// Only log warning if this is not a response message
+		if msg.Type != "gatt_response" {
+			// Log when characteristic not found - helps debug subscription issues
+			svcShort := msg.ServiceUUID
+			if len(svcShort) > 8 {
+				svcShort = svcShort[:8]
+			}
+			charShort := msg.CharacteristicUUID
+			if len(charShort) > 8 {
+				charShort = charShort[:8]
+			}
+			logger.Warn("BluetoothGatt", "⚠️  Characteristic not found: service=%s, char=%s, op=%s (remote=%s)",
+				svcShort, charShort, msg.Operation, g.remoteUUID[:8])
+			logger.Debug("BluetoothGatt", "📋 Available services: %d", len(g.services))
+			for _, svc := range g.services {
+				svcDebug := svc.UUID
+				if len(svcDebug) > 8 {
+					svcDebug = svcDebug[:8]
+				}
+				logger.Debug("BluetoothGatt", "   Service: %s (%d characteristics)", svcDebug, len(svc.Characteristics))
+				for _, ch := range svc.Characteristics {
+					chDebug := ch.UUID
+					if len(chDebug) > 8 {
+						chDebug = chDebug[:8]
+					}
+					logger.Debug("BluetoothGatt", "      Char: %s", chDebug)
+				}
 			}
 		}
 		return

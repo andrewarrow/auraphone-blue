@@ -97,6 +97,13 @@ func (w *Wire) SendGATTMessage(peerUUID string, msg *GATTMessage) error {
 				Handle: cccdHandle,
 				Value:  cccdValue,
 			}
+		case "write_descriptor":
+			// Real Android BLE: Descriptor writes (e.g., enabling notifications via CCCD)
+			// The descriptor handle is already resolved and provided in the message
+			attPacket = &att.WriteRequest{
+				Handle: msg.DescriptorHandle,
+				Value:  msg.Data,
+			}
 		default:
 			return fmt.Errorf("unsupported operation: %s", msg.Operation)
 		}
