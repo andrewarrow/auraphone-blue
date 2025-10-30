@@ -280,7 +280,19 @@ func bytesToUUIDString(uuid []byte) string {
 		}
 	}
 
-	// For 128-bit UUIDs or other formats, return as hex
+	// For 128-bit UUIDs, return in RFC 4122 format (with dashes, uppercase)
+	// REALISTIC BLE: iOS CoreBluetooth and Android BluetoothGatt return UUIDs in uppercase
+	// while RFC 4122 shows lowercase in examples, actual APIs use uppercase
+	if len(uuid) == 16 {
+		return fmt.Sprintf("%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+			uuid[0], uuid[1], uuid[2], uuid[3],
+			uuid[4], uuid[5],
+			uuid[6], uuid[7],
+			uuid[8], uuid[9],
+			uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15])
+	}
+
+	// For other lengths, return as plain hex
 	return fmt.Sprintf("%x", uuid)
 }
 

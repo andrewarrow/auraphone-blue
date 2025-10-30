@@ -201,20 +201,11 @@ func (g *BluetoothGatt) DiscoverServices() bool {
 			}
 		}
 
-		// STEP 2.5: Discover descriptors for each characteristic
-		// This is necessary to populate the discovery cache with CCCDs and other descriptors
-		for _, svc := range discoveredServices {
-			chars, err := g.wire.GetDiscoveredCharacteristics(g.remoteUUID, svc.StartHandle)
-			if err == nil {
-				for _, char := range chars {
-					// Discover descriptors for this characteristic
-					// Ignore errors - not all characteristics have descriptors
-					_ = g.wire.DiscoverDescriptors(g.remoteUUID, char.ValueHandle)
-				}
-			}
-		}
-
 		// STEP 3: Convert gatt.DiscoveredService to BluetoothGattService
+		// NOTE: We do NOT explicitly discover descriptors here because:
+		// 1. Real Android automatically adds CCCDs for notifiable characteristics (see below)
+		// 2. Explicit descriptor discovery adds unnecessary delays (100-500ms per characteristic)
+		// 3. The GATT cache automatically creates CCCDs when building characteristics
 		g.services = make([]*BluetoothGattService, 0)
 		for _, svc := range discoveredServices {
 			service := &BluetoothGattService{
@@ -602,14 +593,15 @@ func (g *BluetoothGatt) attemptReconnect() {
 }
 
 // uuidBytesToString converts UUID bytes to string format
+// REALISTIC BLE: Android java.util.UUID.toString() returns uppercase hex
 func uuidBytesToString(uuidBytes []byte) string {
 	if len(uuidBytes) == 2 {
-		// 16-bit UUID - convert to full UUID string
-		return fmt.Sprintf("%04x", uint16(uuidBytes[0])|(uint16(uuidBytes[1])<<8))
+		// 16-bit UUID - convert to full UUID string (uppercase)
+		return fmt.Sprintf("%04X", uint16(uuidBytes[0])|(uint16(uuidBytes[1])<<8))
 	}
 	if len(uuidBytes) == 16 {
-		// 128-bit UUID
-		return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		// 128-bit UUID (uppercase to match Android's java.util.UUID.toString())
+		return fmt.Sprintf("%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
 			uuidBytes[0], uuidBytes[1], uuidBytes[2], uuidBytes[3],
 			uuidBytes[4], uuidBytes[5],
 			uuidBytes[6], uuidBytes[7],

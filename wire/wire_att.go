@@ -579,26 +579,10 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 				operation = "unsubscribe"
 			}
 
-			// Look up the characteristic UUID from the attribute database
-			// We need to find the service and characteristic that this CCCD belongs to
-			var charUUIDStr string
-			var serviceUUIDStr string
-			w.dbMu.RLock()
-			if charAttr, err := w.attributeDB.GetAttribute(charHandle); err == nil {
-				// The characteristic value attribute's Type field contains the characteristic UUID
-				charUUIDStr = string(charAttr.Type)
-
-				// Find the service by looking backwards for a service declaration
-				for h := charHandle; h >= 1; h-- {
-					if attr, err := w.attributeDB.GetAttribute(h); err == nil {
-						if bytesEqual(attr.Type, gatt.UUIDPrimaryService) || bytesEqual(attr.Type, gatt.UUIDSecondaryService) {
-							serviceUUIDStr = string(attr.Value)
-							break
-						}
-					}
-				}
-			}
-			w.dbMu.RUnlock()
+			// REALISTIC BLE: Convert binary UUIDs to strings for application layer
+			// Real BLE stack converts 16-byte ATT UUIDs to string format for iOS/Android APIs
+			// Use the same handleToUUIDs function that regular writes use for consistency
+			serviceUUIDStr, charUUIDStr := w.handleToUUIDs(charHandle)
 
 			// Create a GATT message for the subscription change
 			// This will be delivered to the peripheral manager
