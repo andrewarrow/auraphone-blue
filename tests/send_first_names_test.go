@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/user/auraphone-blue/util"
 )
 
 // testFirstNameExchange is the shared test logic for custom first name exchange.
@@ -11,7 +13,9 @@ import (
 // 2. Custom first name updates via ProfileMessage
 // 3. Bidirectional profile receipt and persistence
 func testFirstNameExchange(t *testing.T, iphoneUUID, androidUUID string) {
-	// Setup: Clean directories and create devices
+	util.SetRandom()
+
+	// Setup: Create devices
 	ip, droid := setupTestDevices(t, iphoneUUID, androidUUID)
 	defer cleanupDevices(ip, droid)
 

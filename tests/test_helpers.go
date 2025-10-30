@@ -1,8 +1,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,19 +9,10 @@ import (
 	"github.com/user/auraphone-blue/phone"
 )
 
-// setupTestDevices cleans data directories and creates fresh iPhone and Android devices.
+// setupTestDevices creates fresh iPhone and Android devices.
 // Returns the initialized devices ready to be started.
+// Note: util.SetRandom() must be called at the start of each test to create isolated temp directory.
 func setupTestDevices(t *testing.T, iphoneUUID, androidUUID string) (*iphone.IPhone, *android.Android) {
-	// Clean up data directories from previous runs to ensure fresh state
-	dataDir := phone.GetDataDir()
-	iphoneDataDir := filepath.Join(dataDir, iphoneUUID)
-	androidDataDir := filepath.Join(dataDir, androidUUID)
-
-	os.RemoveAll(iphoneDataDir)
-	os.RemoveAll(androidDataDir)
-
-	t.Logf("🧹 Cleaned up test data directories")
-
 	// Create devices with default settings
 	ip := iphone.NewIPhone(iphoneUUID)
 	droid := android.NewAndroid(androidUUID)

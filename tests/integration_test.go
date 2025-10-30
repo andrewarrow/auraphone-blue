@@ -2,12 +2,16 @@ package main
 
 import (
 	"testing"
+
+	"github.com/user/auraphone-blue/util"
 )
 
 // testBasicDiscoveryNoProfile is the shared test logic for handshake verification.
 // It creates one iPhone and one Android, verifies bidirectional discovery and handshake exchange.
 func testBasicDiscoveryNoProfile(t *testing.T, iphoneUUID, androidUUID string) {
-	// Setup: Clean directories and create devices
+	util.SetRandom()
+
+	// Setup: Create devices
 	ip, droid := setupTestDevices(t, iphoneUUID, androidUUID)
 	defer cleanupDevices(ip, droid)
 
