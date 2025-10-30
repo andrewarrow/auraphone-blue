@@ -198,10 +198,13 @@ func (a *Android) startAdvertising() {
 		TxPowerLevel:  kotlin.ADVERTISE_TX_POWER_MEDIUM,
 	}
 
+	// REALISTIC Android BLE: Advertising packet is limited to 31 bytes
+	// To fit within this limit, we advertise service UUIDs and Tx power only
+	// Real Android apps typically omit device name to stay under the limit
 	advertiseData := &kotlin.AdvertiseData{
 		ServiceUUIDs:        []string{phone.AuraServiceUUID},
 		IncludeTxPowerLevel: true,
-		IncludeDeviceName:   true,
+		IncludeDeviceName:   false, // Omit to stay under 31-byte limit
 	}
 
 	a.advertiser.StartAdvertising(settings, advertiseData, nil, a)
