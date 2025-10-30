@@ -281,6 +281,12 @@ func (pm *CBPeripheralManager) StopAdvertising() {
 
 	pm.IsAdvertising = false
 
+	// REALISTIC BLE: Clear advertising data so device becomes undiscoverable
+	// Real BLE: When peripheral stops advertising, scanning Centrals can no longer discover it
+	if err := pm.wire.ClearAdvertisingData(); err != nil {
+		logger.Warn(fmt.Sprintf("%s iOS", pm.uuid[:8]), "Failed to clear advertising data: %v", err)
+	}
+
 	logger.Info(fmt.Sprintf("%s iOS", pm.uuid[:8]), "📡 Stopped Advertising")
 }
 

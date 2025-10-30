@@ -608,6 +608,10 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 			// Regular write - pass to GATT handler
 			msg := w.attToGATTMessage(packet)
 			if msg != nil {
+				// REALISTIC BLE: Set sender UUID so peripheral knows which Central sent the request
+				// Real BLE: The connection identifies the sender
+				msg.SenderUUID = peerUUID
+
 				w.handlerMu.RLock()
 				handler := w.gattHandler
 				w.handlerMu.RUnlock()
@@ -627,6 +631,10 @@ func (w *Wire) handleATTPacket(peerUUID string, connection *Connection, packet i
 		// TODO: Remove this conversion once higher layers use binary protocol directly
 		msg := w.attToGATTMessage(packet)
 		if msg != nil {
+			// REALISTIC BLE: Set sender UUID so handler knows which device sent the request
+			// Real BLE: The connection identifies the sender
+			msg.SenderUUID = peerUUID
+
 			w.handlerMu.RLock()
 			handler := w.gattHandler
 			w.handlerMu.RUnlock()

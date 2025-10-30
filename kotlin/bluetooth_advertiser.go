@@ -206,6 +206,12 @@ func (a *BluetoothLeAdvertiser) StopAdvertising() {
 
 	a.isAdvertising = false
 
+	// REALISTIC BLE: Clear advertising data so device becomes undiscoverable
+	// Real BLE: When peripheral stops advertising, scanning Centrals can no longer discover it
+	if err := a.wire.ClearAdvertisingData(); err != nil {
+		logger.Warn(fmt.Sprintf("%s Android", a.uuid[:8]), "Failed to clear advertising data: %v", err)
+	}
+
 	logger.Info(fmt.Sprintf("%s Android", a.uuid[:8]), "📡 Stopped Advertising")
 }
 

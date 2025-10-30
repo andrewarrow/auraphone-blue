@@ -38,6 +38,8 @@ func (w *Wire) StartDiscovery(callback func(deviceUUID string)) chan struct{} {
 }
 
 // ListAvailableDevices scans socket directory for .sock files and returns hardware UUIDs
+// REALISTIC BLE: Only returns devices that are currently advertising
+// Real BLE: Centrals can only discover Peripherals that are actively broadcasting advertising packets
 func (w *Wire) ListAvailableDevices() []string {
 	devices := make([]string, 0)
 
@@ -60,9 +62,21 @@ func (w *Wire) ListAvailableDevices() []string {
 		uuid := filename[len("auraphone-") : len(filename)-len(".sock")]
 
 		// Don't include ourselves
-		if uuid != w.hardwareUUID {
-			devices = append(devices, uuid)
+		if uuid == w.hardwareUUID {
+			continue
 		}
+
+		// REALISTIC BLE: Only include devices that are currently advertising
+		// Check if advertising.bin file exists for this device
+		deviceDir := util.GetDeviceCacheDir(uuid)
+		advPath := filepath.Join(deviceDir, "advertising.bin")
+		if _, err := os.Stat(advPath); err != nil {
+			// No advertising.bin file = device is not advertising
+			// Real BLE: Non-advertising devices are invisible to scanning Centrals
+			continue
+		}
+
+		devices = append(devices, uuid)
 	}
 
 	return devices
@@ -103,19 +117,20 @@ func (w *Wire) ReadAdvertisingData(deviceUUID string) (*AdvertisingData, error) 
 		deviceName = fmt.Sprintf("Device-%s", shortHash(deviceUUID))
 	}
 
-	// Extract 16-bit service UUIDs
+	// Extract 16-bit service UUIDs (UPPERCASE to match iOS/Android APIs)
 	uuids16 := advertising.Get16BitServiceUUIDs(structures)
 	serviceUUIDs := make([]string, len(uuids16))
 	for i, uuid := range uuids16 {
-		serviceUUIDs[i] = fmt.Sprintf("%04x", uuid)
+		serviceUUIDs[i] = fmt.Sprintf("%04X", uuid)
 	}
 
 	// Extract 128-bit service UUIDs
 	uuids128 := advertising.Get128BitServiceUUIDs(structures)
 	for _, uuid := range uuids128 {
-		// Convert 128-bit UUID to standard format
+		// Convert 128-bit UUID to standard format (UPPERCASE to match iOS/Android APIs)
+		// REALISTIC BLE: Both CoreBluetooth and Android return UUIDs in uppercase
 		serviceUUIDs = append(serviceUUIDs, fmt.Sprintf(
-			"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			"%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
 			uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5], uuid[6], uuid[7],
 			uuid[8], uuid[9], uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15],
 		))
@@ -275,6 +290,22 @@ func (w *Wire) WriteAdvertisingData(data *AdvertisingData) error {
 		if err == nil {
 			os.WriteFile(debugPath, jsonData, 0644)
 		}
+	}
+
+	return nil
+}
+
+// ClearAdvertisingData removes advertising data for this device
+// Real BLE: this stops broadcasting advertising packets (makes device undiscoverable)
+func (w *Wire) ClearAdvertisingData() error {
+	deviceDir := util.GetDeviceCacheDir(w.hardwareUUID)
+	advPath := filepath.Join(deviceDir, "advertising.bin")
+
+	// Remove advertising file
+	// REALISTIC BLE: When a device stops advertising, it becomes invisible to scanning Centrals
+	err := os.Remove(advPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove advertising.bin: %w", err)
 	}
 
 	return nil

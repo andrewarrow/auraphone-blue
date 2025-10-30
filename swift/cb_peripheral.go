@@ -312,8 +312,8 @@ func (p *CBPeripheral) discoverServicesLegacy(serviceUUIDs []string) {
 // Helper functions for UUID conversion
 func uuidBytesToString(uuid []byte) string {
 	if len(uuid) == 2 {
-		// 16-bit UUID - format as 4-char hex string
-		return fmt.Sprintf("%02x%02x", uuid[1], uuid[0]) // Little-endian
+		// 16-bit UUID - format as 4-char hex string (UPPERCASE to match iOS CoreBluetooth)
+		return fmt.Sprintf("%02X%02X", uuid[1], uuid[0]) // Little-endian
 	}
 	// For 16-byte UUIDs, try to convert back to original string format
 	// This handles test UUIDs that were converted from strings
@@ -333,9 +333,17 @@ func uuidBytesToString(uuid []byte) string {
 		if isAscii {
 			return string(uuid)
 		}
+		// 128-bit UUID - format in standard format with dashes (UPPERCASE to match iOS CoreBluetooth)
+		// REALISTIC BLE: iOS CoreBluetooth returns UUIDs in uppercase RFC 4122 format
+		return fmt.Sprintf("%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+			uuid[0], uuid[1], uuid[2], uuid[3],
+			uuid[4], uuid[5],
+			uuid[6], uuid[7],
+			uuid[8], uuid[9],
+			uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15])
 	}
-	// For other UUIDs, return as hex string
-	return fmt.Sprintf("%x", uuid)
+	// For other UUIDs, return as hex string (UPPERCASE)
+	return fmt.Sprintf("%X", uuid)
 }
 
 func bytesMatchUUID(uuidBytes []byte, uuidStr string) bool {
