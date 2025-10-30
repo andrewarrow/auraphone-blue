@@ -561,8 +561,10 @@ func (pm *CBPeripheralManager) handleCharacteristicMessage(msg *wire.Characteris
 				}
 				pm.Delegate.DidReceiveWriteRequests(pm, []*CBATTRequest{request})
 
-				// Update characteristic value
-				targetChar.Value = msg.Data
+				// REALISTIC iOS BEHAVIOR: Do NOT automatically update characteristic.Value with incoming writes
+				// Real iOS CoreBluetooth only updates CBMutableCharacteristic.value when the app explicitly sets it
+				// The write data is available via request.Value, but doesn't modify the characteristic's stored value
+				// If the app wants to update the characteristic value, it must do so explicitly
 			}
 		}
 

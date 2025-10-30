@@ -5,7 +5,9 @@ import (
 
 	"github.com/user/auraphone-blue/logger"
 	"github.com/user/auraphone-blue/phone"
+	pb "github.com/user/auraphone-blue/proto"
 	"github.com/user/auraphone-blue/swift"
+	"google.golang.org/protobuf/proto"
 )
 
 // ============================================================================
@@ -28,7 +30,45 @@ func (ip *IPhone) DidReceiveReadRequest(peripheralManager *swift.CBPeripheralMan
 	logger.Trace(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "📖 Read request from %s for %s",
 		shortHash(request.Central.UUID), shortHash(request.Characteristic.UUID))
 
-	// For now, respond with empty data
+	// REALISTIC BLE: Generate proper response based on which characteristic was read
+	if request.Characteristic.UUID == phone.AuraProtocolCharUUID {
+		// Generate handshake response with OUR data, not echoing back what was written
+		ip.mu.RLock()
+		photoHashBytes := []byte{}
+		if ip.photoHash != "" {
+			// Convert hex string to bytes
+			for i := 0; i < len(ip.photoHash); i += 2 {
+				var b byte
+				fmt.Sscanf(ip.photoHash[i:i+2], "%02x", &b)
+				photoHashBytes = append(photoHashBytes, b)
+			}
+		}
+		profileVersion := ip.profileVersion
+		firstName := ip.firstName
+		deviceID := ip.deviceID
+		ip.mu.RUnlock()
+
+		// Use protobuf HandshakeMessage
+		pbHandshake := &pb.HandshakeMessage{
+			DeviceId:        deviceID,
+			FirstName:       firstName,
+			ProtocolVersion: 1,
+			TxPhotoHash:     photoHashBytes,
+			ProfileVersion:  profileVersion,
+		}
+
+		data, err := proto.Marshal(pbHandshake)
+		if err != nil {
+			logger.Error(fmt.Sprintf("%s iOS", ip.hardwareUUID[:8]), "Failed to marshal handshake for read response: %v", err)
+			peripheralManager.RespondToRequest(request, 1) // 1 = error
+			return
+		}
+
+		// Set the response data
+		request.Value = data
+	}
+
+	// Respond with success (data is in request.Value or characteristic.Value)
 	peripheralManager.RespondToRequest(request, 0) // 0 = success
 }
 
