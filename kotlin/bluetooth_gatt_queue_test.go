@@ -28,6 +28,22 @@ func TestBluetoothGatt_OperationQueue(t *testing.T) {
 	}
 	defer w2.Stop()
 
+	// Create peripheral with GATT server (REALISTIC: peripheral must advertise services)
+	callback2 := &testGattServerCallback{}
+	gattServer := NewBluetoothGattServer("peripheral-uuid", callback2, "Test Device", w2)
+
+	service := &BluetoothGattService{
+		UUID: phone.AuraServiceUUID,
+		Type: SERVICE_TYPE_PRIMARY,
+		Characteristics: []*BluetoothGattCharacteristic{
+			{
+				UUID:       phone.AuraProtocolCharUUID,
+				Properties: PROPERTY_WRITE,
+			},
+		},
+	}
+	gattServer.AddService(service)
+
 	// Connect devices
 	if err := w1.Connect("peripheral-uuid"); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -38,7 +54,11 @@ func TestBluetoothGatt_OperationQueue(t *testing.T) {
 	// Track completed operations
 	var completedOps atomic.Int32
 	writeCompleted := make(chan int, 10)
+	servicesDiscovered := make(chan bool, 1)
 	callback := &testGattCallback{
+		onServicesDiscovered: func(gatt *BluetoothGatt, status int) {
+			servicesDiscovered <- (status == GATT_SUCCESS)
+		},
 		onCharacteristicWrite: func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic, status int) {
 			if status == GATT_SUCCESS {
 				// Simulate slow callback processing (50ms)
@@ -57,26 +77,24 @@ func TestBluetoothGatt_OperationQueue(t *testing.T) {
 
 	gatt := device.ConnectGatt(nil, false, callback)
 
-	// Set up GATT table with multiple characteristics
-	service := &BluetoothGattService{
-		UUID:            phone.AuraServiceUUID,
-		Type:            SERVICE_TYPE_PRIMARY,
-		Characteristics: []*BluetoothGattCharacteristic{},
-	}
+	// REALISTIC: Must discover services before writing (real Android BLE requirement)
+	gatt.DiscoverServices()
 
-	// Create 5 characteristics to write to
-	for i := 0; i < 5; i++ {
-		char := &BluetoothGattCharacteristic{
-			UUID:       phone.AuraProtocolCharUUID,
-			Properties: PROPERTY_WRITE,
-			Service:    service,
-			Value:      []byte("write data"),
-			WriteType:  WRITE_TYPE_DEFAULT,
+	// Wait for discovery
+	select {
+	case success := <-servicesDiscovered:
+		if !success {
+			t.Fatal("Service discovery failed")
 		}
-		service.Characteristics = append(service.Characteristics, char)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Timeout waiting for service discovery")
 	}
 
-	gatt.services = []*BluetoothGattService{service}
+	// Get characteristic reference from discovered services
+	char := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
+	if char == nil {
+		t.Fatal("Failed to get characteristic after discovery")
+	}
 
 	// Rapidly queue 5 write operations (no delay between calls)
 	// OLD BEHAVIOR: Would reject 4 of them (only 1 succeeds)
@@ -84,7 +102,6 @@ func TestBluetoothGatt_OperationQueue(t *testing.T) {
 	t.Logf("Queueing 5 write operations rapidly...")
 	successCount := 0
 	for i := 0; i < 5; i++ {
-		char := service.Characteristics[i]
 		if gatt.WriteCharacteristic(char) {
 			successCount++
 		}

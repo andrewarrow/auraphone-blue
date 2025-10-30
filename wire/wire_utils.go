@@ -136,13 +136,9 @@ func stringToUUIDBytes(uuid string) []byte {
 				return []byte{byte(uuid16), byte(uuid16 >> 8)}
 			}
 		}
-		// For other 128-bit UUIDs, parse the full UUID
-		// For now, simplified: just use first 16 bytes of string
-		bytes := make([]byte, 16)
-		for i := 0; i < 16 && i < len(uuid); i++ {
-			bytes[i] = uuid[i]
-		}
-		return bytes
+		// For other 128-bit UUIDs, remove dashes and fall through to hex parsing below
+		// Don't just copy characters - we need to parse hex!
+		// Fall through to the hex parsing logic below by not returning here
 	}
 
 	// For test/custom UUIDs or pure hex strings, try to determine the format

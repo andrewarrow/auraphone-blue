@@ -102,6 +102,22 @@ func TestBluetoothGatt_WriteCharacteristic(t *testing.T) {
 	}
 	defer w2.Stop()
 
+	// Create peripheral with GATT server (REALISTIC: peripheral must advertise services)
+	callback2 := &testGattServerCallback{}
+	gattServer := NewBluetoothGattServer("peripheral-uuid", callback2, "Test Device", w2)
+
+	service := &BluetoothGattService{
+		UUID: phone.AuraServiceUUID,
+		Type: SERVICE_TYPE_PRIMARY,
+		Characteristics: []*BluetoothGattCharacteristic{
+			{
+				UUID:       phone.AuraProtocolCharUUID,
+				Properties: PROPERTY_WRITE,
+			},
+		},
+	}
+	gattServer.AddService(service)
+
 	// Connect devices
 	if err := w1.Connect("peripheral-uuid"); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -109,9 +125,13 @@ func TestBluetoothGatt_WriteCharacteristic(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Create GATT connection
+	// Create GATT connection with discovery callback
 	writeCompleted := make(chan bool, 10)
+	servicesDiscovered := make(chan bool, 1)
 	callback := &testGattCallback{
+		onServicesDiscovered: func(gatt *BluetoothGatt, status int) {
+			servicesDiscovered <- (status == GATT_SUCCESS)
+		},
 		onCharacteristicWrite: func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic, status int) {
 			if status == GATT_SUCCESS {
 				writeCompleted <- true
@@ -127,21 +147,24 @@ func TestBluetoothGatt_WriteCharacteristic(t *testing.T) {
 
 	gatt := device.ConnectGatt(nil, false, callback)
 
-	// Set up GATT table
-	service := &BluetoothGattService{
-		UUID:            phone.AuraServiceUUID,
-		Type:            SERVICE_TYPE_PRIMARY,
-		Characteristics: []*BluetoothGattCharacteristic{},
+	// REALISTIC: Must discover services before writing (real Android BLE requirement)
+	gatt.DiscoverServices()
+
+	// Wait for discovery
+	select {
+	case success := <-servicesDiscovered:
+		if !success {
+			t.Fatal("Service discovery failed")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Timeout waiting for service discovery")
 	}
-	char := &BluetoothGattCharacteristic{
-		UUID:       phone.AuraProtocolCharUUID,
-		Properties: PROPERTY_WRITE,
-		Service:    service,
-		Value:      []byte("test write data"),
-		WriteType:  WRITE_TYPE_DEFAULT,
+
+	// Get characteristic reference from discovered services
+	char := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
+	if char == nil {
+		t.Fatal("Failed to get characteristic after discovery")
 	}
-	service.Characteristics = append(service.Characteristics, char)
-	gatt.services = []*BluetoothGattService{service}
 
 	// Write characteristic (new async pattern without write queue)
 	success := gatt.WriteCharacteristic(char)
@@ -178,6 +201,26 @@ func TestBluetoothGatt_OperationSerialization(t *testing.T) {
 	}
 	defer w2.Stop()
 
+	// Create peripheral with GATT server (REALISTIC: must have GATT server with services)
+	callback2 := &testGattServerCallback{}
+	gattServer := NewBluetoothGattServer("peripheral-uuid", callback2, "Test Device", w2)
+
+	service := &BluetoothGattService{
+		UUID: phone.AuraServiceUUID,
+		Type: SERVICE_TYPE_PRIMARY,
+		Characteristics: []*BluetoothGattCharacteristic{
+			{
+				UUID:       phone.AuraProtocolCharUUID,
+				Properties: PROPERTY_WRITE,
+			},
+			{
+				UUID:       phone.AuraPhotoCharUUID,
+				Properties: PROPERTY_WRITE,
+			},
+		},
+	}
+	gattServer.AddService(service)
+
 	// Connect devices
 	if err := w1.Connect("peripheral-uuid"); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -185,9 +228,13 @@ func TestBluetoothGatt_OperationSerialization(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Create GATT connection
+	// Create GATT connection with discovery callback
 	writeCompleted := make(chan bool, 10)
+	servicesDiscovered := make(chan bool, 1)
 	callback := &testGattCallback{
+		onServicesDiscovered: func(gatt *BluetoothGatt, status int) {
+			servicesDiscovered <- (status == GATT_SUCCESS)
+		},
 		onCharacteristicWrite: func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic, status int) {
 			if status == GATT_SUCCESS {
 				// Simulate slow operation (100ms)
@@ -205,42 +252,37 @@ func TestBluetoothGatt_OperationSerialization(t *testing.T) {
 
 	gatt := device.ConnectGatt(nil, false, callback)
 
-	// Set up GATT table with two characteristics
-	service := &BluetoothGattService{
-		UUID: phone.AuraServiceUUID,
-		Type: SERVICE_TYPE_PRIMARY,
-		Characteristics: []*BluetoothGattCharacteristic{
-			{
-				UUID:       phone.AuraProtocolCharUUID,
-				Properties: PROPERTY_WRITE,
-				Service:    nil, // Will be set below
-				Value:      []byte("write 1"),
-				WriteType:  WRITE_TYPE_DEFAULT,
-			},
-			{
-				UUID:       phone.AuraPhotoCharUUID,
-				Properties: PROPERTY_WRITE,
-				Service:    nil, // Will be set below
-				Value:      []byte("write 2"),
-				WriteType:  WRITE_TYPE_DEFAULT,
-			},
-		},
+	// REALISTIC: Must discover services before writing (real Android BLE requirement)
+	gatt.DiscoverServices()
+
+	// Wait for discovery
+	select {
+	case success := <-servicesDiscovered:
+		if !success {
+			t.Fatal("Service discovery failed")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Timeout waiting for service discovery")
 	}
-	// Set service reference for both characteristics
-	for _, char := range service.Characteristics {
-		char.Service = service
+
+	// Get characteristic references from discovered services
+	char1 := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
+	if char1 == nil {
+		t.Fatal("Failed to get first characteristic after discovery")
 	}
-	gatt.services = []*BluetoothGattService{service}
+
+	char2 := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraPhotoCharUUID)
+	if char2 == nil {
+		t.Fatal("Failed to get second characteristic after discovery")
+	}
 
 	// Start first write operation
-	char1 := service.Characteristics[0]
 	success1 := gatt.WriteCharacteristic(char1)
 	if !success1 {
 		t.Fatal("First WriteCharacteristic should succeed")
 	}
 
 	// Immediately try second write (should be queued, not rejected)
-	char2 := service.Characteristics[1]
 	success2 := gatt.WriteCharacteristic(char2)
 	if !success2 {
 		t.Fatal("Second WriteCharacteristic should be queued (not rejected)!")

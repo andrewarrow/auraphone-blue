@@ -393,6 +393,22 @@ func TestBluetoothGatt_WriteNoResponseProperty(t *testing.T) {
 	}
 	defer w2.Stop()
 
+	// Create peripheral with GATT server (REALISTIC: peripheral must advertise services)
+	callback2 := &testGattServerCallback{}
+	gattServer := NewBluetoothGattServer("peripheral-uuid", callback2, "Test Device", w2)
+
+	service := &BluetoothGattService{
+		UUID: phone.AuraServiceUUID,
+		Type: SERVICE_TYPE_PRIMARY,
+		Characteristics: []*BluetoothGattCharacteristic{
+			{
+				UUID:       phone.AuraProtocolCharUUID,
+				Properties: PROPERTY_WRITE_NO_RESPONSE,
+			},
+		},
+	}
+	gattServer.AddService(service)
+
 	// Connect devices
 	if err := w1.Connect("peripheral-uuid"); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -400,9 +416,13 @@ func TestBluetoothGatt_WriteNoResponseProperty(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Create GATT connection
+	// Create GATT connection with discovery callback
 	writeCompleted := make(chan bool, 1)
+	servicesDiscovered := make(chan bool, 1)
 	callback := &testGattCallback{
+		onServicesDiscovered: func(gatt *BluetoothGatt, status int) {
+			servicesDiscovered <- (status == GATT_SUCCESS)
+		},
 		onCharacteristicWrite: func(gatt *BluetoothGatt, char *BluetoothGattCharacteristic, status int) {
 			if status == GATT_SUCCESS {
 				writeCompleted <- true
@@ -418,24 +438,27 @@ func TestBluetoothGatt_WriteNoResponseProperty(t *testing.T) {
 
 	gatt := device.ConnectGatt(nil, false, callback)
 
-	// Set up GATT table with write_no_response characteristic
-	service := &BluetoothGattService{
-		UUID: phone.AuraServiceUUID,
-		Type: SERVICE_TYPE_PRIMARY,
-		Characteristics: []*BluetoothGattCharacteristic{
-			{
-				UUID:       phone.AuraProtocolCharUUID,
-				Properties: PROPERTY_WRITE_NO_RESPONSE,
-				Service:    nil,
-				Value:      []byte("test write"),
-				WriteType:  WRITE_TYPE_NO_RESPONSE, // CRITICAL: Use write without response
-			},
-		},
-	}
-	service.Characteristics[0].Service = service
-	gatt.services = []*BluetoothGattService{service}
+	// REALISTIC: Must discover services before writing (real Android BLE requirement)
+	gatt.DiscoverServices()
 
-	char := service.Characteristics[0]
+	// Wait for discovery
+	select {
+	case success := <-servicesDiscovered:
+		if !success {
+			t.Fatal("Service discovery failed")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Timeout waiting for service discovery")
+	}
+
+	// Get characteristic reference from discovered services
+	char := gatt.GetCharacteristic(phone.AuraServiceUUID, phone.AuraProtocolCharUUID)
+	if char == nil {
+		t.Fatal("Failed to get characteristic after discovery")
+	}
+
+	// Set write type to NO_RESPONSE (CRITICAL for testing this property)
+	char.WriteType = WRITE_TYPE_NO_RESPONSE
 
 	// Write characteristic
 	success := gatt.WriteCharacteristic(char)
