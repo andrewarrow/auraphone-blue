@@ -310,12 +310,13 @@ func TestBluetoothGatt_PropertyParsing(t *testing.T) {
 	gatt.DiscoverServices()
 
 	// Wait for discovery
+	// Real Android: Service discovery can take 1-2 seconds with realistic BLE delays
 	select {
 	case success := <-servicesDiscovered:
 		if !success {
 			t.Fatal("Service discovery failed")
 		}
-	case <-time.After(1 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("Timeout waiting for service discovery")
 	}
 
