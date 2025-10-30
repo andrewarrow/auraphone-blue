@@ -293,7 +293,7 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 					row := obj.(*fyne.Container)
 
 					// Use HardwareUUID as key for lookups (needed by both text and image rendering)
-					key := device.HardwareUUID
+					key := device.PeripheralUUID
 					if key == "" {
 						key = device.DeviceID
 					}
@@ -349,7 +349,7 @@ func (pw *PhoneWindow) getTabContent(tabName string) fyne.CanvasObject {
 						// Show deviceID if available, otherwise show hardware UUID
 						deviceLabel := truncateHash(device.DeviceID, 8)
 						if deviceLabel == "" {
-							deviceLabel = truncateHash(device.HardwareUUID, 8)
+							deviceLabel = truncateHash(device.PeripheralUUID, 8)
 						}
 						deviceIDText.Text = fmt.Sprintf("Device: %s", deviceLabel)
 						deviceIDText.Refresh()
@@ -664,7 +664,7 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 	}
 
 	logger.Debug(prefix, "📱 [GUI CALLBACK] onDeviceDiscovered: deviceID=%s, hardwareUUID=%s, name=%s, photoHash=%s, photoDataLen=%d",
-		deviceIDDisplay, device.HardwareUUID[:8], device.Name, truncateHash(device.PhotoHash, 8), len(device.PhotoData))
+		deviceIDDisplay, device.PeripheralUUID[:8], device.Name, truncateHash(device.PhotoHash, 8), len(device.PhotoData))
 
 	// Log current state BEFORE processing
 	logger.Debug(prefix, "   📊 BEFORE: %d devices, %d hashes, %d images in memory",
@@ -672,14 +672,14 @@ func (pw *PhoneWindow) onDeviceDiscovered(device phone.DiscoveredDevice) {
 
 	// Use HardwareUUID as the primary key for deduplication
 	// This ensures the same device doesn't appear twice (once with hardware UUID, once with logical deviceID)
-	key := device.HardwareUUID
+	key := device.PeripheralUUID
 	if key == "" {
 		// Fallback to deviceID if hardware UUID not available (shouldn't happen)
 		key = device.DeviceID
 	}
 
 	logger.Debug(prefix, "   🔑 Using key: %s (from hardwareUUID=%s, deviceID=%s)",
-		truncateHash(key, 8), truncateHash(device.HardwareUUID, 8), deviceIDDisplay)
+		truncateHash(key, 8), truncateHash(device.PeripheralUUID, 8), deviceIDDisplay)
 
 	// Add or update device in map (deduplicates by hardware UUID)
 	pw.devicesMap[key] = device
@@ -851,7 +851,7 @@ func (pw *PhoneWindow) showPersonModal(device phone.DiscoveredDevice) {
 
 	// Create profile image (larger for modal)
 	// Use HardwareUUID as key to match how photos are stored in onDeviceDiscovered
-	key := device.HardwareUUID
+	key := device.PeripheralUUID
 	if key == "" {
 		key = device.DeviceID
 	}
@@ -938,7 +938,7 @@ func (pw *PhoneWindow) showPersonModal(device phone.DiscoveredDevice) {
 	contactWays.Add(widget.NewSeparator())
 	deviceIDLabel := truncateHash(device.DeviceID, 8)
 	if deviceIDLabel == "" {
-		deviceIDLabel = truncateHash(device.HardwareUUID, 8)
+		deviceIDLabel = truncateHash(device.PeripheralUUID, 8)
 	}
 	contactWays.Add(widget.NewLabel(fmt.Sprintf("Device ID: %s", deviceIDLabel)))
 	contactWays.Add(widget.NewLabel(fmt.Sprintf("RSSI: %.0f dBm", device.RSSI)))

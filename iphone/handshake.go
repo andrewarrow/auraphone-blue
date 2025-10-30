@@ -195,11 +195,11 @@ func (ip *IPhone) handleHandshakeProto(pbHandshake *pb.HandshakeMessage, peerUUI
 	alreadyHandshaked := ip.handshaked[peerUUID] != nil
 
 	// Mark handshake complete (store as JSON struct for compatibility)
+	// Note: peripheralUUID is the map key, so we don't need to store it in the value
 	ip.handshaked[peerUUID] = &HandshakeMessage{
-		HardwareUUID: peerUUID,
-		DeviceID:     pbHandshake.DeviceId,
-		DeviceName:   pbHandshake.FirstName,
-		FirstName:    pbHandshake.FirstName,
+		DeviceID:   pbHandshake.DeviceId,
+		DeviceName: pbHandshake.FirstName,
+		FirstName:  pbHandshake.FirstName,
 	}
 
 	// Update discovered device with DeviceID, name, and photo hash

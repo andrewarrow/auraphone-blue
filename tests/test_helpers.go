@@ -63,9 +63,8 @@ func verifyBasicHandshake(t *testing.T, ip *iphone.IPhone, droid *android.Androi
 	}
 
 	// 3. Verify handshake data from Android is correct (default name)
-	if handshakeFromAndroid.HardwareUUID != androidUUID {
-		t.Errorf("Expected hardware UUID %s, got %s", androidUUID, handshakeFromAndroid.HardwareUUID)
-	}
+	// Note: HardwareUUID is no longer in handshake (never sent over BLE)
+	// It's only used as the map key (peripheralUUID for routing)
 	if handshakeFromAndroid.DeviceID == "" {
 		t.Errorf("Android device ID is empty")
 	}
@@ -76,8 +75,8 @@ func verifyBasicHandshake(t *testing.T, ip *iphone.IPhone, droid *android.Androi
 	androidDeviceID = handshakeFromAndroid.DeviceID
 
 	t.Logf("✅ iPhone received handshake from Android:")
-	t.Logf("   Hardware UUID: %s", handshakeFromAndroid.HardwareUUID[:8])
-	t.Logf("   Device ID: %s", androidDeviceID)
+	t.Logf("   Peripheral UUID (routing key): %s", androidUUID[:8])
+	t.Logf("   Device ID (identity): %s", androidDeviceID)
 	t.Logf("   First Name: %s", handshakeFromAndroid.FirstName)
 
 	// ========================================
@@ -103,9 +102,8 @@ func verifyBasicHandshake(t *testing.T, ip *iphone.IPhone, droid *android.Androi
 	}
 
 	// 3. Verify handshake data from iPhone is correct (default name)
-	if handshakeFromIPhone.HardwareUUID != iphoneUUID {
-		t.Errorf("Expected hardware UUID %s, got %s", iphoneUUID, handshakeFromIPhone.HardwareUUID)
-	}
+	// Note: HardwareUUID is no longer in handshake (never sent over BLE)
+	// It's only used as the map key (peripheralUUID for routing)
 	if handshakeFromIPhone.DeviceID == "" {
 		t.Errorf("iPhone device ID is empty")
 	}
@@ -116,8 +114,8 @@ func verifyBasicHandshake(t *testing.T, ip *iphone.IPhone, droid *android.Androi
 	iphoneDeviceID = handshakeFromIPhone.DeviceID
 
 	t.Logf("✅ Android received handshake from iPhone:")
-	t.Logf("   Hardware UUID: %s", handshakeFromIPhone.HardwareUUID[:8])
-	t.Logf("   Device ID: %s", iphoneDeviceID)
+	t.Logf("   Peripheral UUID (routing key): %s", iphoneUUID[:8])
+	t.Logf("   Device ID (identity): %s", iphoneDeviceID)
 	t.Logf("   First Name: %s", handshakeFromIPhone.FirstName)
 
 	t.Logf("✅ Baseline handshake verification complete")

@@ -301,9 +301,9 @@ func (a *Android) handleIncomingCentralConnection(peerUUID string) {
 		// Central connected to us but we haven't discovered them yet
 		// Add them to discovered map so photo callback will work later
 		a.discovered[peerUUID] = phone.DiscoveredDevice{
-			HardwareUUID: peerUUID,
-			Name:         deviceName,
-			RSSI:         0,
+			PeripheralUUID: peerUUID,
+			Name:           deviceName,
+			RSSI:           0,
 		}
 		if a.callback != nil {
 			a.callback(a.discovered[peerUUID])
